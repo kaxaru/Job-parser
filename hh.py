@@ -203,8 +203,8 @@ def _do_autoclick(args):
     from hrwork.application.apply import autoclick
     if args.login:
         autoclick.login()
-    elif args.sync_status:
-        autoclick.sync_statuses(headless=not args.headed)
+    elif args.sync_status or args.sync_full:
+        autoclick.sync_statuses(headless=not args.headed, full=args.sync_full)
     else:
         autoclick.run(apply_limit=args.apply_limit, daily_cap=args.daily_cap,
                       headless=not args.headed, cover_mode=args.cover,
@@ -275,7 +275,10 @@ def main():
     parser.add_argument('--cover', choices=['template', 'llm'], default='template',
                         help='autoclick: сопроводительное письмо — шаблон (по умолч.) или LLM')
     parser.add_argument('--sync-status', action='store_true',
-                        help='autoclick: собрать статусы откликов (отказ/приглашение/…) -> response_status.json')
+                        help='autoclick: собрать статусы откликов (отказ/приглашение/…) -> response_status.json; '
+                             'инкремент — чаты без активности 7 дней берутся из кеша')
+    parser.add_argument('--sync-full', action='store_true',
+                        help='autoclick: полный синк ВСЕХ чатов без кеша (долго, ~50 чатов/45с)')
     parser.add_argument('--headed', action='store_true',
                         help='autoclick: показывать окно браузера (отладка)')
     # chat: по умолчанию DRY-RUN — реальная отправка только с явным --send

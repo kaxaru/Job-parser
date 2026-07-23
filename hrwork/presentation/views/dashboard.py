@@ -6,6 +6,7 @@ import shutil
 import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader
 
+from hrwork.application.funnel import write_funnel_csv as _write_funnel_csv
 from hrwork.config import (
     ACCENT,
     BG,
@@ -27,6 +28,7 @@ from .charts import (
     chart_companies,
     chart_companies_remote,
     chart_companies_sizes,
+    chart_company_funnel,
     chart_freshness,
     chart_heatmap_city_lang,
     chart_js_stack,
@@ -53,6 +55,7 @@ _CHARTS = {
     "companies":        (chart_companies,         "Компании",              "11_companies.csv"),
     "companies_all":    (chart_companies_sizes,   "Все работодатели",      "11c_company_sizes.csv"),
     "companies_remote": (chart_companies_remote,  "Удалёнка: компании",    "11_companies.csv"),
+    "company_funnel":   (chart_company_funnel,    "Автоотказы / воронка",  "13_company_funnel.csv"),
     "by_source":        (chart_by_source,         "Порталы",               "12_sources.csv"),
 }
 
@@ -71,6 +74,16 @@ def build_dashboard():
             src_dirs[src] = d
     _reporter.run_reports(vacs, out_dir=REPORTS_DIR)        # 'all' последним -> дефолтный каталог
     sources = ["all"] + (list(present) if len(present) > 1 else [])
+
+    # Воронка автоотказов — CRM-данные (отклики/чаты), НЕ рыночные Vacancy, поэтому пишется
+    # отдельно от run_reports: строго после его cleanup() (иначе снесёт как «неучтённый» CSV)
+    # и только в общий срез (отклики не делятся по источнику). Пусто/нет данных -> нет вкладки.
+    try:
+        ov = _write_funnel_csv(REPORTS_DIR / "13_company_funnel.csv")
+        log.info("Воронка: откликов {}, отказов {} (<=1ч {}), приглашений {}, медиана отказа {} мин",
+                 ov["applied"], ov["rejected"], ov["le_1h"], ov["invited"], ov["median_reject_min"])
+    except Exception as e:                                  # CRM-состояние может отсутствовать
+        log.warning("Воронку автоотказов пропускаю: {}", e)
 
     # Набор и порядок вкладок = _CHARTS (единый реестр), чьи CSV есть в общем срезе. Условные
     # (freshness/companies/by_source) появляются только когда собран соответствующий отчёт.

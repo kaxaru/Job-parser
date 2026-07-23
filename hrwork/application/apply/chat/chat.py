@@ -213,8 +213,12 @@ def quick_replies(request_ctx, xsrf: str, chat_id, message_id) -> list[dict]:
 
 
 def list_chats(request_ctx, xsrf: str, pages: int = 30) -> list[dict]:
-    """Все чаты постранично -> [{chatId, vacancyId, applicantId}]. Пагинация до пустой
-    страницы (или `pages` максимум). Cookie-only."""
+    """Все чаты постранично -> [{chatId, vacancyId, applicantId, lastMessageTime}].
+    Пагинация до пустой страницы (или `pages` максимум). Cookie-only.
+    lastMessageTime (ISO с tz) — creationTime последнего сообщения из самого списка:
+    по нему инкрементальный синк решает «качать или взять из кеша» без запроса в чат.
+    НЕ lastActivityTime: то поле обновляет в том числе НАШЕ чтение chat_data (замер
+    23.07: после полного синка 84 % чатов «активны за сутки») — самоотравляющийся сигнал."""
     out: list[dict] = []
     for page in range(pages):
         got = False
@@ -230,7 +234,9 @@ def list_chats(request_ctx, xsrf: str, pages: int = 30) -> list[dict]:
                 vac = _chat_vacancy_ids(it)
                 if vac:
                     out.append({"chatId": it.get("id"), "vacancyId": vac[0],
-                                "applicantId": it.get("currentParticipantId")})
+                                "applicantId": it.get("currentParticipantId"),
+                                "lastMessageTime":
+                                    ((it.get("lastMessage") or {}).get("creationTime")) or ""})
         if not got:
             break
     return out

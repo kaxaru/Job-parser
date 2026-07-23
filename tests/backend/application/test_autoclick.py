@@ -1,4 +1,5 @@
 """Тесты отбора кандидатов, дневной квоты и single-instance lock (без браузера)."""
+import datetime
 import json
 
 import pytest
@@ -402,3 +403,39 @@ def test_get_apply_worker_singleton_thread_safe(monkeypatch):
     assert len(created) == 1                  # ровно один воркер, несмотря на гонку
     assert len({id(w) for w in workers}) == 1
     autoclick._apply_worker = None
+
+
+# ── инкрементальный синк: «кеш vs сеть» по lastMessageTime из списка + терминальный статус ──
+_NOW = datetime.datetime(2026, 7, 23, 12, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def _chat_item(vid="1", ts="2026-07-01T10:00:00+03:00"):
+    return {"chatId": 9, "vacancyId": vid, "applicantId": 7, "lastMessageTime": ts}
+
+
+@pytest.mark.parametrize("ts, skip", [
+    ("2026-07-01T10:00:00+03:00", True),    # сообщение 22 дня назад + DISCARD -> из кеша
+    ("2026-07-22T10:00:00+03:00", False),   # вчера -> синкаем
+    ("", False),                            # метки нет -> недоверие -> синкаем
+    ("garbage", False),                     # битая метка -> синкаем
+    ("2026-07-01T10:00:00", False),         # наивная метка (TypeError при сравнении) -> синкаем
+])
+def test_sync_cache_decision_by_last_message(ts, skip):
+    cached = {"1": {"messages": []}}
+    st = {"1": "DISCARD"}
+    assert autoclick._sync_from_cache(_chat_item(ts=ts), cached, st, {"1"}, _NOW) is skip
+
+
+@pytest.mark.parametrize("status", ["RESPONSE", "INTERVIEW", "INVITATION", None])
+def test_sync_never_skips_non_terminal_status(status):
+    # нетерминальный статус может флипнуться МОЛЧА (отказ без письма) -> качаем всегда
+    st = {"1": status} if status else {}
+    old = _chat_item(ts="2026-07-01T10:00:00+03:00")
+    assert autoclick._sync_from_cache(old, {"1": {}}, st, {"1"}, _NOW) is False
+
+
+def test_sync_never_skips_chat_missing_from_cache_or_journal():
+    old = _chat_item(ts="2026-07-01T10:00:00+03:00")
+    st = {"1": "DISCARD"}
+    assert autoclick._sync_from_cache(old, {}, st, {"1"}, _NOW) is False       # нет в кеше
+    assert autoclick._sync_from_cache(old, {"1": {}}, st, set(), _NOW) is False  # не журналирован

@@ -14,6 +14,7 @@ Playwright — опциональная зависимость (паттерн p
 без него остальные режимы hh.py работают, а pick_candidates() тестируется без браузера.
 """
 import contextlib
+import datetime
 import faulthandler
 import os
 import queue
@@ -493,12 +494,40 @@ def _journal_name(data: dict, vid: str, name_map: dict) -> str:
     return vac.get("name") or ""
 
 
-def sync_statuses(headless: bool = True, limit: int | None = None) -> dict:
+SYNC_FRESH_DAYS = 7          # сообщения старше -> чат считается устоявшимся
+_TERMINAL_STATES = {"DISCARD", "HIRED"}   # назад не флипаются -> кешевый статус вечен
+
+
+def _sync_from_cache(c: dict, cached_msgs: dict, cached_statuses: dict,
+                     journaled: set, now) -> bool:
+    """True -> чат можно НЕ качать: он в кеше, статус ТЕРМИНАЛЬНЫЙ и сообщений не было
+    SYNC_FRESH_DAYS. Решение по lastMessageTime из СПИСКА чатов (не по кешу): новое
+    сообщение в старом чате обновляет метку, и чат синкается снова. Нетерминальные
+    (RESPONSE/INTERVIEW/…) качаем всегда — их статус может флипнуться МОЛЧА, без
+    сообщения (~20 % отказов приходят без письма в чат). lastActivityTime для отсечки
+    непригоден: его обновляет само наше чтение chat_data (см. chat.py::list_chats).
+    Любое сомнение (нет в кеше/журнале, битая метка) -> False, качаем."""
+    vid = str(c["vacancyId"])
+    if (vid not in cached_msgs or vid not in journaled
+            or cached_statuses.get(vid) not in _TERMINAL_STATES):
+        return False
+    try:
+        last = datetime.datetime.fromisoformat(c.get("lastMessageTime") or "")
+        return (now - last) >= datetime.timedelta(days=SYNC_FRESH_DAYS)
+    except (ValueError, TypeError):      # TypeError: naive vs aware — недоверие -> синк
+        return False
+
+
+def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = False) -> dict:
     """Синхронизация из чатов — БЕЗ БРАУЗЕРА (cookie-only HTTP, без fingerprint).
     Один chat_data на чат даёт СРАЗУ:
       1) статус отклика (currentApplicantState) -> response_status.json;
       2) дожурналивание НОВЫХ откликов в applied_log.jsonl с реальной датой (creationTime
          сообщения-отклика) — в т.ч. сделанных РУКАМИ на hh.ru (любой отклик = чат).
+
+    По умолчанию ИНКРЕМЕНТ: чаты без активности SYNC_FRESH_DAYS, уже лежащие в кеше,
+    не перекачиваются — их статус/переписка берутся из кеша (полный прогон ~1300 чатов
+    занимал ~20 мин, активных за неделю — сотни). full=True (--sync-full) — качать всё.
 
     Работает поверх состояния сессии (data/hh_state.json), которое сохраняет любой браузерный
     прогон. Chromium НЕ поднимается и `autoclick.lock` НЕ берётся — синк независим от откликов
@@ -516,18 +545,30 @@ def sync_statuses(headless: bool = True, limit: int | None = None) -> dict:
     added = 0
     counts: dict[str, int] = {}
     with req:
-        chats = chat.list_chats(req, xsrf)
-        if not chats:
+        chats = chat.list_chats(req, xsrf, pages=120)   # потолок высокий: list_chats сам
+        if not chats:                                   # стопится на пустой странице (было 30 -> резало на ~600)
             log.warning("Чаты не получены (сессия от {} могла протухнуть) — обновит "
                         "следующий браузерный прогон.", session.state_age_hint())
             return {}
         if limit:
             chats = chats[:limit]
+        cached_msgs = {} if full else store.chat_messages()
+        cached_statuses = {} if full else store.statuses()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        from_cache = 0
         log.info("Синк из чатов (HTTP, без браузера): {} — статусы + журнал + переписка…",
                  len(chats))
         msgs_out: dict[str, dict] = {}
         for i, c in enumerate(chats, 1):
             vid = str(c["vacancyId"])
+            if not full and _sync_from_cache(c, cached_msgs, cached_statuses, seen, now):
+                msgs_out[vid] = cached_msgs[vid]   # save_* перезаписывают файлы целиком —
+                st = cached_statuses.get(vid)      # пропущенным переносим кешевые записи
+                if st:
+                    statuses[vid] = st
+                    counts[st] = counts.get(st, 0) + 1
+                from_cache += 1
+                continue                           # без сети и без sleep
             data = chat.chat_data(req, xsrf, c["chatId"], c["applicantId"])
             # переписку сохраняем ЗДЕСЬ: chat_data уже получен, отдельных запросов не нужно
             ch = data.get("chat") or {}
@@ -568,7 +609,8 @@ def sync_statuses(headless: bool = True, limit: int | None = None) -> dict:
         store.merge_marks(fresh)
         log.info("Синк: отмечено в marks как откликнутые: +{} (в marks стало {})",
                  len(fresh), len(known) + len(fresh))
-    log.success("Синк: статусов {}, новых в журнал {} -> {}", len(statuses), added,
+    log.success("Синк: статусов {}, новых в журнал {}, из кеша (старше {} дн) {} -> {}",
+                len(statuses), added, SYNC_FRESH_DAYS, from_cache,
                 {chat.STATE_LABELS.get(k, k): v for k, v in counts.items()})
     return statuses
 

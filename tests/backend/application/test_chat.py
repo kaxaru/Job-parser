@@ -65,11 +65,13 @@ def _chats_page(items):
 # ── list_chats: chatId + vacancyId + applicantId по страницам ──
 def test_list_chats_collects_across_pages():
     p0 = _chats_page([
-        {"id": 111, "currentParticipantId": "23015572", "resources": {"VACANCY": ["134809303"]}},
+        {"id": 111, "currentParticipantId": "23015572", "resources": {"VACANCY": ["134809303"]},
+         "lastMessage": {"creationTime": "2026-07-20T10:00:00+03:00"}},
     ])
     p1 = _chats_page([])                            # пустая -> стоп
     chats = chat.list_chats(_FakeReq([p0, p1]), "x")
-    assert chats == [{"chatId": 111, "vacancyId": "134809303", "applicantId": "23015572"}]
+    assert chats == [{"chatId": 111, "vacancyId": "134809303", "applicantId": "23015572",
+                      "lastMessageTime": "2026-07-20T10:00:00+03:00"}]
 
 
 # ── deep_get: извлечение currentApplicantState на любой глубине (для autoclick) ──

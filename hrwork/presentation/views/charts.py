@@ -425,3 +425,61 @@ def chart_tech_heatmap(base=REPORTS_DIR, top_n: int = 40) -> go.Figure:
         height=height,
     )
     return fig
+
+
+# латентность отказа: горячее = быстрее (вероятный ATS-автобан), холодное = дольше (человек смотрел)
+_FUNNEL_BUCKETS = [
+    ("<=10 мин",  "#B22222"),   # мгновенный автобан
+    ("10-60 мин", "#E45756"),
+    ("1 ч-1 день", "#F58518"),
+    (">1 дня",    "#4C78A8"),   # медленно = скорее человек
+    ("без метки", "#8C8C8C"),   # отказ по статусу, чат-сообщения нет -> латентность неизвестна
+]
+
+
+def chart_company_funnel(base=REPORTS_DIR, top_n: int = 18) -> go.Figure:
+    """Латентность автоотказа по компаниям: горизонтальный стек по бакетам времени
+    «отклик -> отказ». Быстрые (горячие) сегменты = вероятный ATS-автобан, где резюме
+    не читали. Работодатель неизвестен («вне выдачи») в бары не идёт — не actionable.
+
+    Гипотеза родительской задачи: доля <=1ч показывает, кто банит фильтром, а не человеком.
+    """
+    rows = _read(base, "13_company_funnel.csv")
+
+    # сводка по ВСЕМ строкам (включая «вне выдачи») — для подписи; бары — только по known
+    tot_rej = sum(int(r["Отказов"]) for r in rows)
+    tot_1h  = sum(int(r["<=1ч"]) for r in rows)
+    known = [r for r in rows if r["Компания"] != "(вне выдачи)" and int(r["Отказов"]) > 0]
+    # автобан сверху: сначала быстрые отказы, затем объём отказов
+    known.sort(key=lambda r: (int(r["<=1ч"]), int(r["Отказов"])))
+    known = known[-top_n:]                                # top_n снизу-вверх -> самые «горячие» вверху
+
+    comps = [r["Компания"][:34] for r in known]
+    seg = {name: [] for name, _c in _FUNNEL_BUCKETS}
+    for r in known:
+        rej, meas = int(r["Отказов"]), int(r["Измерено"])
+        le10, le1h, le1d = int(r["<=10м"]), int(r["<=1ч"]), int(r["<=1д"])
+        seg["<=10 мин"].append(le10)
+        seg["10-60 мин"].append(le1h - le10)
+        seg["1 ч-1 день"].append(le1d - le1h)
+        seg[">1 дня"].append(meas - le1d)
+        seg["без метки"].append(rej - meas)              # отказ по статусу без чат-сообщения
+
+    fig = go.Figure()
+    for name, color in _FUNNEL_BUCKETS:
+        fig.add_trace(go.Bar(
+            name=name, x=seg[name], y=comps, orientation="h", marker_color=color,
+            hovertemplate="%{y}<br>" + name + ": %{x} отказов<extra></extra>",
+        ))
+    height = max(520, len(comps) * 32 + 140)
+    pct_1h = round(tot_1h * 100 / tot_rej) if tot_rej else 0
+    fig.update_layout(
+        **_layout(f"Латентность автоотказа по компаниям  "
+                  f"(всего отказов {tot_rej}, из них <=1ч — {tot_1h} = {pct_1h}%)"),
+        barmode="stack",
+        height=height,
+        xaxis=dict(title="Отказов", showgrid=True, gridcolor=GRID),
+        yaxis=dict(showgrid=False, tickfont=dict(size=12)),
+        legend=dict(orientation="h", y=-0.08, yanchor="top", x=0.5, xanchor="center"),
+    )
+    return fig
