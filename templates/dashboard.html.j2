@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>HR Market Dashboard — Программисты РФ</title>
+<link rel="stylesheet" href="dashboard.css">
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>HR Market Dashboard &mdash; Рынок труда программистов РФ</h1>
+  <p>Данные: hh.ru &nbsp;|&nbsp; {{ total_vacancies }} вакансий &nbsp;|&nbsp; {{ total_cities }} городов &nbsp;|&nbsp; {{ year }}</p>
+</header>
+
+{% if sources|length > 1 %}
+<nav class="src-tabs">
+  <span class="src-label">Источник:</span>
+  {% for s in sources %}
+  <button class="src-btn" id="src-{{ s }}" onclick="showSource('{{ s }}')">{{ source_labels[s] }}</button>
+  {% endfor %}
+</nav>
+{% endif %}
+
+<nav class="tabs">
+  {% for k in keys %}
+  <button class="tab-btn" id="btn-{{ k }}" onclick="showTab('{{ k }}')">{{ labels[k] }}</button>
+  {% endfor %}
+</nav>
+
+<div class="content">
+  {% for s in sources %}
+  {% for k in keys %}
+  {% if variants[s][k] %}
+  <div class="tab-pane" id="pane-{{ s }}-{{ k }}" data-src="{{ s }}" data-key="{{ k }}">{{ variants[s][k] }}</div>
+  {% endif %}
+  {% endfor %}
+  {% endfor %}
+</div>
+
+<script src="dashboard.js"></script>
+<script>initDashboard('{{ first_source }}', '{{ first_key }}');</script>
+</body>
+</html>

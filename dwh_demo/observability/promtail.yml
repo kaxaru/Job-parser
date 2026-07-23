@@ -1,0 +1,81 @@
+# Promtail: собирает логи Docker-контейнеров (через docker socket) и шлёт в Loki.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml      # докуда дочитали (чтобы не слать повторно)
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push   # куда отправлять (имя сервиса в сети compose)
+
+scrape_configs:
+  - job_name: docker
+    docker_sd_configs:                 # service discovery: найти контейнеры через Docker API
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # берём ТОЛЬКО контейнеры нашего compose-проекта (иначе ловим чужие
+      # контейнеры хоста с древней историей -> Loki ругается "too old")
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        regex: "hh-dwh"
+        action: keep
+      # имя контейнера -> метка container (по ней фильтруем в Grafana)
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      # stdout/stderr -> метка stream
+      - source_labels: ["__meta_docker_container_log_stream"]
+        target_label: stream
+      # compose-проект -> метка project
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_project"]
+        target_label: project
+
+    # ── pipeline_stages: парсинг уровня лога в метку `level` ──
+    # форматы разные -> match по контейнеру, под каждый свой парсер; в конце
+    # нормализуем в верхний регистр и промоутим в метку (level — низкая
+    # кардинальность, безопасно как label). Так в Grafana: {level="ERROR"}.
+    pipeline_stages:
+      # logfmt: level=info  (Loki / Promtail / Grafana)
+      - match:
+          selector: '{container=~"hh-loki|hh-promtail|hh-grafana"}'
+          stages:
+            - logfmt:
+                mapping:
+                  level:
+      # ClickHouse: <Information> / <Error> / <Warning> / ...
+      - match:
+          selector: '{container="hh-clickhouse"}'
+          stages:
+            - regex:
+                expression: '<(?P<level>Trace|Debug|Information|Warning|Error|Fatal)>'
+      # Postgres: [pid] LOG: / ERROR: / WARNING: / FATAL: / ...
+      - match:
+          selector: '{container="hh-postgres"}'
+          stages:
+            - regex:
+                expression: '\]\s+(?P<level>LOG|ERROR|WARNING|FATAL|PANIC|DETAIL|HINT|NOTICE)\s*:'
+      # Airflow / Metabase: слово-уровень INFO / WARNING / ERROR / DEBUG
+      - match:
+          selector: '{container=~"hh-dwh-airflow.*|hh-metabase"}'
+          stages:
+            - regex:
+                expression: '(?P<level>DEBUG|INFO|WARNING|WARN|ERROR|CRITICAL|FATAL)'
+      # MS SQL Server: явного уровня в строке нет (spid<N>...); ловим Error/Warning по тексту
+      - match:
+          selector: '{container="hh-mssql"}'
+          stages:
+            - regex:
+                expression: '\b(?P<level>Error|Warning)\b'
+      # MinIO: structured-логи бывают с level=...
+      - match:
+          selector: '{container="hh-minio"}'
+          stages:
+            - regex:
+                expression: '(?i)\b(?P<level>ERROR|WARNING|INFO|FATAL)\b'
+      # нормализация регистра + промоут в метку (один раз для всех)
+      - template:
+          source: level
+          template: '{{ ToUpper .Value }}'
+      - labels:
+          level:

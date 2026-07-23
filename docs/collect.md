@@ -1,0 +1,241 @@
+# Сбор данных
+
+**Слой:** `hrwork/infrastructure/sources/`, `net/`. Оркестрация — `hh.py:collect()`.
+
+## Назначение
+
+Собрать вакансии из нескольких порталов, привести к доменной модели, сохранить в кеш.
+Не потерять уже собранное, если источник заблокировал.
+
+## Границы
+
+Входит: HTTP-доступ к источникам, ретраи, прокси, ACL источник -> `VacancyRecord`,
+инкрементальный кеш описаний, санити-гейт перезаписи.
+
+Не входит: классификация ролей и техов (это `domain/parsing.py`), хранение
+(`storage/repository.py`), аналитика.
+
+## Реестр источников
+
+`sources/base.py` — ABC `Source` с единственным методом `async collect() -> list[VacancyRecord]`.
+Реестр `_REGISTRY` + декоратор `@register_source(name)`; `get_source(name)` возвращает `None`
+на неизвестное имя, а не бросает.
+
+Добавить портал = подкласс + имя в `config.SOURCES`. Оркестратор `collect()` не знает
+конкретных классов.
+
+Источники собираются **параллельно** (`asyncio.gather`), каждый обёрнут в `try/except` —
+падение одного портала не убивает прогон (`hh.py::collect`).
+
+## HH — HTML-скрейпинг
+
+API `dev.hh.ru` закрыт для анонимного доступа, поэтому данные берутся из поисковой выдачи.
+
+Endpoint: `https://hh.ru/search/vacancy?text=&area=&page=&items_on_page=`,
+карточка — `https://hh.ru/vacancy/<id>`.
+
+**Ключевой приём:** данные не парсятся из HTML-разметки, а вынимаются из встроенного JSON
+`<template id="HH-Lux-InitialState">` (`sources/hh.py::_extract_state`). Разметка меняется, JSON-состояние
+стабильно.
+
+**Транспорт — curl-подпроцессы**, не aiohttp: через VPN на Windows aiohttp падал с
+`WinError 64` (`sources/hh.py::HHHtmlClient`).
+
+**Ретраи** (`_get_state`, `sources/hh.py::_get_state`): 5 попыток, бэкофф 1 с -> ×2, потолок 20 с.
+Ретрай срабатывает не только на сбое curl, но и на «HTML пришёл, а state нет» — так ловится
+soft-блок DDoS-Guard, который отдаёт 200 с заглушкой.
+
+**Два этапа** (`collect_all`, `sources/hh.py::collect_all`):
+
+1. **Поиск** — все `SEARCH_QUERIES × CITIES` параллельно; страницы внутри города
+   последовательно. Лимит `MAX_PAGES=20 × PER_PAGE=100` = 2000 вакансий на город.
+   Дедуп по id, затем отсев `is_hard_non_it` **по тайтлу до enrich** — экономит самый долгий этап.
+2. **Enrich карточек** — батчами `CONCURRENCY × HH_ENRICH_BATCH_MULT`, пауза `PAGE_DELAY=0.25`.
+
+Город берётся из **параметров поиска**, а не из поля `area` вакансии.
+
+Тайминги `creationTime` / `publicationTime` есть **только в поисковой выдаче**, на карточке
+их нет — отсюда двухэтапность нельзя развернуть в «сразу карточки».
+
+`sig` = `publicationTime | creationTime` — маркер изменения: переоткрытие вакансии его бампит.
+
+### ACL: что приходит и что получается
+
+`sources/hh.py::_record_from_search_item` переводит внешний JSON **сразу в домен** —
+промежуточного raw-dict нет.
+
+Вход — элемент поиска из `HH-Lux-InitialState`. Ключи ниже взяты из кода маппинга,
+значения — из соответствующей сохранённой записи:
+
+```json
+{
+  "vacancyId": 135125416,
+  "name": "Python-разработчик",
+  "compensation": {"from": 150000, "to": null, "currencyCode": "RUR", "gross": false},
+  "workExperience": "noExperience",
+  "workFormats": [{"workFormatsElement": ["ON_SITE"]}],
+  "company": {"visibleName": "НПП МетаСофт Про"},
+  "creationTime": "2026-07-13T12:04:03.511+03:00",
+  "publicationTime": {"$": "2026-07-19T12:04:03.511+03:00"},
+  "totalResponsesCount": 432,
+  "links": {"desktop": "https://hh.ru/vacancy/135125416"}
+}
+```
+
+Выход — `VacancyRecord`, на диск ложится так:
+
+```json
+{
+  "id": "135125416",
+  "name": "Python-разработчик",
+  "area": {"id": "1", "name": "Москва"},
+  "salary": {"from": 150000, "to": null, "currency": "RUR", "gross": false},
+  "experience": {"id": "noExperience"},
+  "schedule": {"id": "fullDay"},
+  "employer": {"name": "НПП МетаСофт Про"},
+  "created_at": "2026-07-13T12:04:03.511+03:00",
+  "published_at": "2026-07-19T12:04:03.511+03:00",
+  "responses": 432,
+  "_source": "hh",
+  "_sig": "2026-07-19T12:04:03.511+03:00",
+  "_enriched": false
+}
+```
+
+Что происходит в маппинге, и это видно только на паре вход/выход:
+
+- **Зарплата приводится к net** через `Salary(...).net()`. У этой записи источник уже отдал
+  `gross: false`, поэтому сумма не изменилась; при `gross: true` она была бы умножена
+  на `NET_FROM_GROSS = 0.87`. На диск в любом случае ложится net, поэтому повторное чтение
+  не вычитает НДФЛ снова
+- **`workFormats`** — список вложенных элементов, схлопывается в один `Schedule`
+  по приоритету REMOTE > HYBRID > OFFICE
+- **`company.visibleName`**, а не `name` — у HH это разные поля
+- **`area` не из вакансии**, а из параметров поиска: так вакансия числится за городом,
+  под которым найдена
+- **`publicationTime`** приходит объектом то с ключом `$`, то с `@timestamp` — ACL
+  разбирает оба
+- **`_enriched: false`** — на этом этапе `techs` и `role` посчитаны только по тайтлу,
+  `detect_text=name`; полный текст добавит `_rebuild_techs` на втором этапе
+- Границы вилки проверяются через `is not None`, не truthiness: `from=0` валиден
+
+## hirify — JSON-API
+
+Endpoint `https://api.hirify.me/api/vacancies?{HIRIFY_PARAMS}&page=N`, деталь — `/{slug}`.
+Публичный API, прокси не нужны, ретраи легче (4 попытки, потолок 10 с).
+
+Пагинация Laravel-стиля: страница 1 отдаёт `last_page` на верхнем уровне, дальше 2..N
+параллельно. Страховка `max_pages=2000` от кривого `last_page`.
+
+**Нормализация периода зарплаты** — эвристика, потому что периода в JSON нет
+(`sources/hirify.py::_infer_period`): по USD-серединке `< $300` -> часовая, `> $25 000` -> годовая,
+иначе месячная; затем приведение к месяцу (час × `WORK_HOURS_PER_MONTH=160`,
+год / `MONTHS_PER_YEAR=12`) **в исходной валюте**. Пороги вынесены в `config.py::HIRIFY_HOURLY_MAX_USD`.
+
+Спорный диапазон $15–25k существует и разрешается в пользу «месяц» — это осознанная
+неточность, а не недосмотр.
+
+**Три пути описания** (`sources/hirify.py::HirifySource.collect`): кеш (сеть не трогаем) · полный `/slug`
+(не более `HIRIFY_ENRICH_MAX=600` за прогон, свежие в приоритете) · tldr-заглушка с
+`enriched=False`, доберётся в следующий прогон. Покрытие описаниями растёт день за днём —
+на 18k вакансий per-vacancy fetch за один раз непрактичен.
+
+## talanto — JSON-API
+
+Endpoint `https://talanto.work/api/jobs/?{TALANTO_PARAMS}&offset=N` (limit/offset,
+`items`+`total`; limit=100 подтверждён), деталь — `/api/jobs/{id}` (HTML-описание + `url`
+первоисточника: телеграм-канал/сайт). Публичный API, прокси не нужны. `/contacts` — только
+под авторизацией, не трогаем. Без `period` — все активные (~40–50k; сайт показывает меньше,
+API отдаёт шире — старые уходят в ghost-класс свежести).
+
+Нормализация (`sources/talanto.py::_normalize`): `remote_type` -> `Schedule` (мягкий маппинг,
+неизвестное -> OFFICE), `level` (junior/mid/senior/lead) -> `Experience` (неизвестное ->
+None), зарплата RUB как есть (`gross` в API нет — НДФЛ не вычитаем повторно), `skills[]` в
+`detect_text`. Enrich — тот же инкрементальный паттерн, что hirify (кеш по `_sig` =
+`last_verified_at`, `TALANTO_ENRICH_MAX=600` за прогон), плюс `is_hard_non_it` ДО enrich —
+карточки заведомо не-IT не качаются вовсе.
+
+## Сеть
+
+**`net/http.py`** — единственный примитив `fetch_bytes(url, *, headers, proxy, max_time)`.
+Бэкенд по `config.HTTP_BACKEND`: `curl` (дефолт) или `httpx` (пул keep-alive, экспериментальный).
+
+Любое исключение, не-200 или пустой ответ -> `None`. Ретраи здесь **не делаются** — у HH и
+hirify разные политики, каждый ретраит сам.
+
+Проксированный запрос под httpx всё равно идёт через curl: пул не умеет ротацию IP
+(`net/http.py::fetch_bytes`).
+
+**`net/proxy.py`** — `proxie.txt` / `proxy.txt` в корне. Формат: URL как есть, либо
+`host:port` -> `socks5://`, либо `host:port:user:pass` с `quote()`-экранированием.
+`HH_DISABLE_PROXIES=1` отключает. `mask_proxy()` прячет креды в логах.
+
+**`net/rates.py`** — курсы валют `open.er-api.com` (без ключа), кеш `data/fx_rates.json`,
+TTL 24 ч. Каскад фолбэков: свежий кеш -> фетч -> **старый кеш даже протухший** ->
+хардкод `_FALLBACK`. Лента не должна падать из-за FX.
+
+Алиасы валют: `RUR->RUB`, `BYR->BYN`, `USDT->USD`. Пустая валюта трактуется как RUB
+(HH по умолчанию рублёвый).
+
+## Инкрементальный кеш описаний
+
+Самый дорогой этап — карточки, поэтому описание переиспользуется, пока вакансия в выдаче
+и её `sig` не менялся.
+
+`cache_hit_usable(hit, cur_sig)` (`storage/files.py::cache_hit_usable`) требует три условия: sig совпал,
+описание непустое, возраст < `DESC_CACHE_MAX_AGE_DAYS` (14).
+
+Третье условие — предохранитель от **тихой правки вакансии без смены сигнала**. `0` отключает
+ограничение по времени (чистый signal-based режим).
+
+`load_desc_cache()` берёт только записи с `_enriched` **и** непустым описанием: tldr-заглушки
+не должны блокировать будущую дозагрузку.
+
+## Санити-гейт перезаписи
+
+Главная защита данных. Живёт в `hh.py::_degraded_source`, пороги — `config.py::COLLECT_MIN_RATIO`.
+
+```python
+def _degraded_source(by_src, prior_by_src):
+    for src, prev_n in prior_by_src.items():
+        if prev_n >= COLLECT_SANITY_MIN and by_src.get(src, 0) < prev_n * COLLECT_MIN_RATIO:
+            return src
+    return None
+```
+
+Смысл: транзиентный блок источника на этапе поиска даёт резко меньший срез. Если источник,
+дававший в прошлый раз >= 500 записей, просел ниже 50 % — сбор считается сбойным,
+`repo.save()` **не вызывается**, возвращается старый кеш.
+
+Порог значимости (`COLLECT_SANITY_MIN`) отсекает шум на мелких источниках, где падение
+с 3 до 1 записи ничего не значит.
+
+**Три уровня защиты в `collect()`:**
+
+1. `cache_valid()` -> вообще не собираем (моложе `CACHE_TTL_HOURS`)
+2. пустой результат -> кеш не трогаем (`hh.py::collect`)
+3. `_degraded_source` -> кеш не трогаем (`hh.py::collect`)
+
+Обход — `--force`. `cron/cron_collect.bat` запускается **без него** намеренно: для работы без
+присмотра эту защиту снимать нельзя, один сбойный прогон уничтожил бы данные.
+
+## Крайние случаи
+
+- **Пустая первая страница hirify** -> warning + `[]`, не падение.
+- **Пустой ответ на карточку HH** -> `return` без записи: ранее добытое описание не затирается.
+- **Неизвестный источник в `SOURCES`** -> warning + пропуск.
+- **Битый `cache_meta.json`** -> пересбор с нуля.
+- **`cache_valid` учитывает состав** городов, запросов и `SOURCES`: правка `SEARCH_QUERIES`
+  инвалидирует кеш, даже если он свежий по времени.
+
+## Проверка
+
+```
+python hh.py collect            # уважает кеш и санити-гейт
+python hh.py collect --force    # обход обеих защит — только руками
+python hh.py enrich --only-empty
+```
+
+Ожидаемо в логе: `Всего уникальных: N вакансий (hh: X, hirify: Y, talanto: Z)` и путь до
+`data/vacancies_raw.json`. Если вместо этого `Источник hh: 300 << 16000 (< 50%)` — гейт
+сработал, кеш цел, надо разбираться с блокировкой, а не запускать `--force` рефлекторно.

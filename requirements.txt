@@ -1,0 +1,11 @@
+# Рантайм-зависимости HH-анализатора (корневой проект).
+# Установка:  pip install -r requirements.txt   |   uv pip install -r requirements.txt
+aiohttp>=3.12          # async HTTP (engine=api)
+aiohttp-socks>=0.10    # SOCKS-прокси для aiohttp
+python-dotenv>=1.1     # чтение .env
+jinja2>=3.1            # шаблоны фида/дашборда (templates/*.j2)
+loguru>=0.7            # логирование
+plotly>=6.5            # графики дашборда
+psycopg2-binary>=2.9   # /api/search -> PostgreSQL full-text (опц.: без БД serve работает)
+playwright>=1.40       # autoclick: вход + поднятие резюме + автоотклики (опц.;
+                       #   после установки: python -m playwright install chromium)

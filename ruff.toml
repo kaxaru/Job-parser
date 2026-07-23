@@ -1,0 +1,17 @@
+# Линтер ruff для корневого проекта (HH-анализатор). У dwh_demo свой ruff.toml.
+target-version = "py310"     # floor: .venv3 = 3.10
+line-length = 110
+
+# не линтим чужой/сгенерированный код и под-проект со своим конфигом
+extend-exclude = ["dwh_demo", "data", "templates", "logs"]
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = [
+    "E501",    # длину строк держит line-length
+    "RUF001",  # кириллица в строках/идентификаторах — норма для проекта
+    "RUF002",
+    "RUF003",
+    "C408",    # dict(...) — идиоматичный стиль Plotly (charts.py), не переписываем
+    "B905",    # zip без strict= — на легаси добавление strict рискует поведением
+]

@@ -1,0 +1,50 @@
+# Мониторинг hr_work — САМОДОСТАТОЧНЫЙ лёгкий стек: Loki + Promtail + Grafana.
+# НЕ зависит от dwh_demo (там свой стек ради ETL-демо). Порты смещены (3002/3101),
+# чтобы оба могли работать одновременно без конфликта.
+#
+# Задачи (hh_apply/chat/collect) остаются на Windows Task Scheduler — этот стек их только
+# НАБЛЮДАЕТ, читая logs/*.log. Поднять:  cd observability && docker compose up -d
+# Открыть:  http://localhost:3002  (admin / admin)
+services:
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: hrw-loki
+    command: -config.file=/etc/loki/config.yml
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    ports:
+      - "3101:3100"                                       # 3100 может быть занят dwh_demo-Loki
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: hrw-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./promtail.yml:/etc/promtail/config.yml:ro
+      - ../logs:/var/log/hr_work:ro                       # хостовые крон-логи (только чтение)
+      - promtail-pos:/tmp
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: hrw-grafana
+    ports:
+      - "3002:3000"                                       # 3001 может быть занят dwh_demo-Grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/ds.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dash.yml:ro
+      - ./dashboards:/etc/grafana/provisioning/dashboards/json:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - loki
+
+volumes:
+  loki-data:
+  promtail-pos:
+  grafana-data:

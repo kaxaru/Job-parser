@@ -1,0 +1,10 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.5.0/schema.json",
+  "files": { "includes": ["src/**/*.js"] },
+  "linter": {
+    "enabled": true,
+    "rules": { "recommended": true }
+  },
+  "formatter": { "enabled": false },
+  "javascript": { "globals": ["VACANCIES", "SAL_MAX", "SAVED_MARKS"] }
+}

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Лента вакансий</title>
+<link rel="stylesheet" href="feed.css">
+</head>
+<body>
+
+<header>
+  <h1>Лента вакансий</h1>
+  <span id="counter">Показано {{ total_records }} из {{ total_records }}</span>
+  <span class="hdr-actions">
+    <span id="sync-status" class="sync-status"></span>
+    <button id="marks-export" class="hdr-btn" title="Скачать отметки в marks.json">💾 Экспорт</button>
+    <label class="hdr-btn" title="Загрузить marks.json">📂 Импорт<input id="marks-import" type="file" accept="application/json" hidden></label>
+  </span>
+</header>
+
+<div class="filter-bar">
+  <!-- Languages -->
+  <div class="filter-group">
+    <span class="filter-label">Язык</span>
+    <div class="lang-grid">
+      {% for lang in langs %}
+      <input type="checkbox" class="lang-cb" id="lang-{{ loop.index }}" value="{{ lang }}">
+      <label class="lang-label" for="lang-{{ loop.index }}">{{ lang }}</label>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Roles -->
+  <div class="filter-group">
+    <span class="filter-label">Роль</span>
+    <div class="lang-grid">
+      {% for role in roles %}
+      <input type="checkbox" class="role-cb" id="role-{{ loop.index }}" value="{{ role }}">
+      <label class="lang-label" for="role-{{ loop.index }}">{{ role }}</label>
+      {% endfor %}
+    </div>
+    <button class="sched-btn nonit-btn" id="nonit-toggle"
+            title="Показать вакансии без IT-роли (продажи, инженеры-конструкторы и т.п.)">+ не-IT ({{ nonit }})</button>
+  </div>
+
+  <!-- Currency (валюта показа зарплат) -->
+  <div class="filter-group">
+    <span class="filter-label">Валюта</span>
+    <div class="sched-btns">
+      <button class="sched-btn active" data-cur="RUB" title="Показывать зарплаты в рублях">₽ руб</button>
+      <button class="sched-btn" data-cur="USD" title="Показывать зарплаты в долларах">$ USD</button>
+      <button class="sched-btn" data-cur="EUR" title="Показывать зарплаты в евро">€ EUR</button>
+    </div>
+  </div>
+
+  <!-- Salary -->
+  <div class="filter-group">
+    <span class="filter-label">Зарплата /мес</span>
+    <div class="salary-wrap">
+      <div class="salary-row">
+        <span class="lbl">от</span>
+        <input type="range" id="sal-min" min="0" max="{{ sal_max }}" step="10000" value="0">
+        <span class="sal-val" id="sal-min-val">0</span>
+      </div>
+      <div class="salary-row">
+        <span class="lbl">до</span>
+        <input type="range" id="sal-max" min="0" max="{{ sal_max }}" step="10000" value="{{ sal_max }}">
+        <span class="sal-val" id="sal-max-val">{{ sal_max }}</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- City -->
+  <div class="filter-group">
+    <span class="filter-label">Город</span>
+    <select id="city-sel">
+      <option value="">Все города</option>
+      {% for city in cities %}
+      <option value="{{ city }}">{{ city }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  {% if sources|length > 1 %}
+  <!-- Portal (источник-агрегатор) -->
+  <div class="filter-group">
+    <span class="filter-label">Портал</span>
+    <div class="sched-btns">
+      <button class="sched-btn active" data-source="all">Все</button>
+      {% for s in sources %}
+      <button class="sched-btn" data-source="{{ s }}">{{ s }}</button>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Schedule -->
+  <div class="filter-group">
+    <span class="filter-label">Формат</span>
+    <div class="sched-btns">
+      <button class="sched-btn active" data-sched="all">Все</button>
+      <button class="sched-btn" data-sched="remote">Удалённо</button>
+      <button class="sched-btn" data-sched="office">Офис</button>
+    </div>
+  </div>
+
+  <!-- Experience -->
+  <div class="filter-group">
+    <span class="filter-label">Опыт</span>
+    <div class="lang-grid">
+      <input type="checkbox" class="lang-cb exp-cb" id="exp-0" value="Без опыта">
+      <label class="lang-label" for="exp-0">Без опыта</label>
+      <input type="checkbox" class="lang-cb exp-cb" id="exp-1" value="1–3 года">
+      <label class="lang-label" for="exp-1">1–3 года</label>
+      <input type="checkbox" class="lang-cb exp-cb" id="exp-2" value="3–6 лет">
+      <label class="lang-label" for="exp-2">3–6 лет</label>
+      <input type="checkbox" class="lang-cb exp-cb" id="exp-3" value="6+ лет">
+      <label class="lang-label" for="exp-3">6+ лет</label>
+    </div>
+  </div>
+
+  <!-- Resume match -->
+  <div class="filter-group">
+    <span class="filter-label">Под меня</span>
+    <div class="sched-btns">
+      <button class="sched-btn resume-btn" id="resume-toggle"
+              title="Python-стек + опыт до 3 лет + удалёнка (по тегу или тексту)">🎯 По резюме</button>
+    </div>
+  </div>
+
+  <!-- Sort -->
+  <div class="filter-group">
+    <span class="filter-label">Сортировка</span>
+    <div class="sched-btns">
+      <button class="sched-btn active" data-sort="none">По умолч.</button>
+      <button class="sched-btn" data-sort="desc">↓ Зарплата</button>
+      <button class="sched-btn" data-sort="asc">↑ Зарплата</button>
+      <button class="sched-btn" data-sort="date_new">🔥 Свежие</button>
+      <button class="sched-btn" data-sort="date_old">👻 Старые</button>
+    </div>
+    <button class="sched-btn match-toggle" id="match-toggle"
+            title="Сортировать по % совпадения (основной ключ; зарплата ↑/↓ — вторичный)">★ Совпадение</button>
+  </div>
+
+  {% if has_status %}
+  <!-- Response status (CRM) -->
+  <div class="filter-group">
+    <span class="filter-label">Статус отклика</span>
+    <div class="sched-btns">
+      <button class="sched-btn active" data-status="all">Все</button>
+      <button class="sched-btn" data-status="invited" title="Приглашение / интервью / тестовое">✅ Приглашения</button>
+      <button class="sched-btn" data-status="response" title="Откликнулись, ответа пока нет">⏳ Без ответа</button>
+      <button class="sched-btn" data-status="discard" title="Отказ работодателя / вакансия закрыта">✖ Отказы</button>
+      <button class="sched-btn" data-status="form" title="Требуют заполнения формы-опросника">📝 Формы ({{ n_forms }})</button>
+    </div>
+  </div>
+  {% endif %}
+
+  <button class="reset-btn" onclick="resetFilters()">Сбросить</button>
+</div>
+
+<div id="cards" class="cards-grid"></div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal-box" id="modal-box">
+    <!-- filled by showModal() -->
+  </div>
+</div>
+
+<!-- Данные вынесены из HTML: feed-data.js (карточки) грузится отдельно,
+     описания (feed-desc.js) — лениво при клике. HTML остаётся лёгким каркасом. -->
+<script src="feed-data.js"></script>
+<script src="feed.js"></script>
+</body>
+</html>

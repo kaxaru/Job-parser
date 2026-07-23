@@ -1,0 +1,40 @@
+# Promtail hr_work: читает ТОЛЬКО хостовые крон-логи (logs/*.log), шлёт в Loki.
+# Без docker_sd — этот стек наблюдает Task Scheduler на хосте, не контейнеры.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: hr_work
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: hr_work
+          __path__: /var/log/hr_work/*.log
+    # loguru-формат: "YYYY-MM-DD HH:MM:SS | LEVEL    | message".
+    pipeline_stages:
+      # уровень (loguru пишет и SUCCESS как свой уровень) -> метка level
+      - regex:
+          expression: '\|\s+(?P<level>DEBUG|INFO|SUCCESS|WARNING|ERROR|CRITICAL)\s+\|'
+      - template:
+          source: level
+          template: '{{ ToUpper .Value }}'
+      - labels:
+          level:
+      # имя файла -> метка task. ВАЖНО: per-process логи hr_work_<pid>.log и
+      # hr_work.<дата>.log схлопываем в один "hr_work" — иначе десятки PID раздувают
+      # кардинальность метки (Loki-индекс пухнет). cron_* остаются как есть (их 4-5).
+      - regex:
+          source: filename
+          expression: '(?P<task>[^/]+)\.log$'
+      - template:
+          source: task
+          template: '{{ regexReplaceAll "hr_work[._].*" .Value "hr_work" }}'
+      - labels:
+          task:

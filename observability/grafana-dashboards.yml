@@ -1,0 +1,11 @@
+# Провайдер дашбордов: Grafana подхватывает все *.json из dashboards/.
+apiVersion: 1
+providers:
+  - name: hr_work
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json
+      foldersFromFilesStructure: false

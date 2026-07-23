@@ -1,0 +1,94 @@
+{
+  "uid": "hr-work-cron",
+  "title": "hr_work — крон-задачи (Task Scheduler)",
+  "tags": ["hr_work", "cron"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "task",
+        "label": "Задача",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "loki" },
+        "query": { "label": "task", "stream": "{job=\"hr_work\"}", "type": 1 },
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Зависания (WATCHDOG) за период",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "sum(count_over_time({job=\"hr_work\"} |= \"WATCHDOG\" [$__range]))", "refId": "A" } ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 1 }, { "color": "red", "value": 3 } ] } } }
+    },
+    {
+      "id": 2, "type": "stat", "title": "Ошибки (ERROR) за период",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "sum(count_over_time({job=\"hr_work\", level=\"ERROR\"} [$__range]))", "refId": "A" } ],
+      "options": { "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 5 }, { "color": "red", "value": 50 } ] } } }
+    },
+    {
+      "id": 3, "type": "stat", "title": "Откликов сегодня (максимум)",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "max(max_over_time({job=\"hr_work\"} |~ `Отклик \\(сегодня` | regexp `сегодня (?P<n>\\d+)` | unwrap n [$__range]))", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": { "defaults": { "max": 200, "thresholds": { "steps": [
+        { "color": "blue", "value": null }, { "color": "green", "value": 50 }, { "color": "orange", "value": 190 } ] } } }
+    },
+    {
+      "id": 4, "type": "stat", "title": "Автоответов отправлено",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "sum(count_over_time({job=\"hr_work\"} |= \"Отправлено #\" [$__range]))", "refId": "A" } ],
+      "options": { "colorMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Здоровье прогонов — уровни логов во времени",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "expr": "sum by (level) (count_over_time({job=\"hr_work\", task=~\"$task\"} [$__interval]))", "refId": "A", "legendFormat": "{{level}}" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" }, "fillOpacity": 70 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "ERROR" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "WARNING" }, "properties": [ { "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } } ] },
+          { "matcher": { "id": "byName", "options": "SUCCESS" }, "properties": [ { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } } ] }
+        ] }
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Синк чатов + автоответы во времени",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [
+        { "expr": "sum(count_over_time({job=\"hr_work\"} |= `Синк: статусов` [$__interval]))", "refId": "A", "legendFormat": "прогоны синка" },
+        { "expr": "sum(count_over_time({job=\"hr_work\"} |= `Отправлено #` [$__interval]))", "refId": "B", "legendFormat": "автоответы" },
+        { "expr": "sum(count_over_time({job=\"hr_work\"} |= `WATCHDOG` [$__interval]))", "refId": "C", "legendFormat": "зависания" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "bars", "fillOpacity": 60 } },
+        "overrides": [ { "matcher": { "id": "byName", "options": "зависания" }, "properties": [ { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } } ] } ] }
+    },
+    {
+      "id": 7, "type": "logs", "title": "Проблемы: ERROR + WARNING + протухшая сессия",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 13 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "targets": [ { "expr": "{job=\"hr_work\", task=~\"$task\"} |~ `ERROR|WARNING|могла протухнуть|<<`", "refId": "A" } ],
+      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" }
+    }
+  ]
+}

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<!-- Демо прод-пути поиска: строка ввода -> fetch('/api/search') -> PostgreSQL tsvector -> рендер.
+     Ранжирование (ts_rank) и подсветка (<mark> из ts_headline) приходят С СЕРВЕРА, не из браузера —
+     в отличие от ленты, где фильтр клиентский. Самодостаточная страница (HTML+CSS+JS инлайн). -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Поиск вакансий — PG full-text</title>
+<style>
+  :root { --bg:#15171c; --paper:#1c1f27; --grid:#2a2d38; --text:#e6e8ee; --accent:#4fa3ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:860px; margin:0 auto; padding:24px 16px 60px; }
+  h1 { font-size:20px; margin:0 0 4px; }
+  .sub { color:#9aa1b1; font-size:13px; margin-bottom:18px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); padding:10px 0; }
+  input, button { font:inherit; border:1px solid var(--grid); border-radius:8px; background:var(--paper); color:var(--text); padding:9px 12px; }
+  #q { flex:1 1 320px; }
+  #city { flex:0 1 150px; }
+  #sal { flex:0 1 130px; }
+  button { background:var(--accent); color:#08121f; border-color:var(--accent); font-weight:600; cursor:pointer; }
+  .meta { color:#9aa1b1; font-size:13px; margin:10px 2px; }
+  .card { background:var(--paper); border:1px solid var(--grid); border-radius:10px; padding:13px 15px; margin-bottom:10px; }
+  .card h3 { margin:0 0 4px; font-size:16px; }
+  .card h3 a { color:var(--text); text-decoration:none; }
+  .card h3 a:hover { color:var(--accent); }
+  .row { display:flex; gap:12px; flex-wrap:wrap; color:#9aa1b1; font-size:13px; margin-bottom:6px; }
+  .sal { color:#7ddc8b; }
+  .rank { color:#caa45a; font-variant-numeric:tabular-nums; }
+  .age { font-size:12px; padding:1px 8px; border-radius:6px; white-space:nowrap; }
+  .age-fresh   { background:#173a22; color:#66d98a; }
+  .age-recent  { background:#3a3410; color:#e6c860; }
+  .age-ghost   { background:#2a2d38; color:#9aa1b1; }
+  .age-unknown { background:#242732; color:#7a8194; }
+  .src { font-size:12px; padding:1px 8px; border-radius:6px; }
+  .src-hh      { background:#1d2f45; color:#7bb3f0; }
+  .src-hirify  { background:#2c2540; color:#b79ae0; }
+  .src-talanto { background:#123027; color:#66c9a0; }
+  .snippet { font-size:13.5px; color:#c7ccd8; }
+  .snippet mark { background:#3a3410; color:#ffe27a; padding:0 2px; border-radius:3px; }
+  .techs { margin-top:7px; }
+  .tag { display:inline-block; background:#2a2d38; border-radius:6px; padding:1px 7px; font-size:12px; margin:2px 4px 0 0; color:#b9c0d0; }
+  .err { background:#3a1d1d; border:1px solid #5a2a2a; padding:12px; border-radius:8px; color:#ffb3b3; }
+  select { font:inherit; border:1px solid var(--grid); border-radius:8px; background:var(--paper); color:var(--text); padding:9px 12px; cursor:pointer; }
+  .pager { display:flex; gap:12px; align-items:center; justify-content:center; margin:16px 0; color:#9aa1b1; font-size:13px; }
+  .pager button { padding:7px 14px; }
+  .pager button:disabled { opacity:.4; cursor:default; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Поиск вакансий — PostgreSQL full-text</h1>
+  <div class="sub">Текст ищется по <code>tsvector</code> (морфология + ранжирование), фильтры — параметрами. Запрос → <code>/api/search</code> → PG.</div>
+
+  <div class="bar">
+    <input id="q" type="search" placeholder="🔍 python backend" autocomplete="off" autofocus>
+    <input id="city" type="text" placeholder="Город (напр. Москва)">
+    <input id="sal" type="number" placeholder="З/п от" min="0" step="10000">
+    <select id="source" title="Портал-источник вакансии">
+      <option value="">Все источники</option>
+      <option value="hh">hh.ru</option>
+      <option value="hirify">hirify</option>
+      <option value="talanto">talanto</option>
+    </select>
+    <select id="fresh" title="Свежесть вакансии (возраст с даты создания)">
+      <option value="">Любая свежесть</option>
+      <option value="fresh">🟢 Свежие ≤30 дн.</option>
+      <option value="recent">🟡 Недавние 31–60 дн.</option>
+      <option value="ghost">⚪ Гост &gt;60 дн.</option>
+    </select>
+    <select id="limit" title="Результатов на странице">
+      <option value="20">20 / стр.</option>
+      <option value="50">50 / стр.</option>
+      <option value="100">100 / стр.</option>
+    </select>
+    <button id="go">Найти</button>
+  </div>
+
+  <div class="meta" id="meta"></div>
+  <div id="results"></div>
+  <div class="pager" id="pager"></div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmtSal = r => {
+  const c = r.currency === 'RUR' ? '₽' : (r.currency || '');
+  const f = r.sal_from?.toLocaleString('ru'), t = r.sal_to?.toLocaleString('ru');
+  if (f && t) return `${f} — ${t} ${c}`;
+  if (f) return `от ${f} ${c}`;
+  if (t) return `до ${t} ${c}`;
+  return 'з/п не указана';
+};
+
+let offset = 0;                                  // смещение текущей страницы
+const getLimit = () => parseInt($('#limit').value, 10) || 20;
+
+// Бейдж возраста: «N дн.» с цветом по классу свежести (пороги — на сервере, из домена).
+const FRESH_LABEL = { fresh:'🟢', recent:'🟡', ghost:'⚪', unknown:'' };
+function ageBadge(r) {
+  if (r.age_days == null) return '';
+  const cls = r.fresh || 'unknown';
+  const d = r.age_days, days = d === 0 ? 'сегодня' : `${d} дн.`;
+  return `<span class="age age-${cls}" title="Создана ${d} дн. назад">${FRESH_LABEL[cls] || ''} ${days}</span>`;
+}
+
+async function run() {
+  const q = $('#q').value.trim();
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if ($('#city').value.trim()) params.set('city', $('#city').value.trim());
+  if ($('#sal').value) params.set('sal', $('#sal').value);
+  if ($('#source').value) params.set('source', $('#source').value);
+  if ($('#fresh').value) params.set('fresh', $('#fresh').value);
+  params.set('limit', String(getLimit()));     // лимит из селектора (20/50/100)
+  params.set('offset', String(offset));         // страница через offset
+
+  $('#meta').textContent = 'Ищу…';
+  let data;
+  try {
+    const res = await fetch('/api/search?' + params.toString());
+    data = await res.json();
+    if (!res.ok) throw new Error(data.error + (data.hint ? ` — ${data.hint}` : ''));
+  } catch (e) {
+    $('#results').innerHTML = `<div class="err">Ошибка: ${esc(e.message)}</div>`;
+    $('#meta').textContent = ''; $('#pager').innerHTML = '';
+    return;
+  }
+
+  $('#meta').textContent =
+    `Найдено ${data.total}` + (q ? ` · ранжировано по релевантности (ts_rank)` : ` · сортировка по зарплате`);
+
+  $('#results').innerHTML = data.results.map(r => {
+    const title = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
+    const techs = (r.techs || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
+    return `<div class="card">
+      <h3>${title}</h3>
+      <div class="row">
+        <span>${esc(r.employer || '—')}</span>
+        <span>${esc(r.city || '')}</span>
+        ${r.source ? `<span class="src src-${esc(r.source)}">${esc(r.source)}</span>` : ''}
+        <span class="sal">${fmtSal(r)}</span>
+        ${ageBadge(r)}
+        ${r.rank != null ? `<span class="rank">rank ${r.rank}</span>` : ''}
+      </div>
+      <div class="snippet">${r.snippet || ''}</div>
+      ${techs ? `<div class="techs">${techs}</div>` : ''}
+    </div>`;
+  }).join('') || '<div class="meta">Ничего не найдено.</div>';
+
+  renderPager(data);
+}
+
+// Пагинатор: «N–M из total» + Назад/Вперёд (через offset; total приходит с сервера).
+function renderPager(d) {
+  const from = d.total ? d.offset + 1 : 0;
+  const to = d.offset + d.count;
+  const hasPrev = d.offset > 0;
+  const hasNext = d.offset + d.count < d.total;
+  $('#pager').innerHTML = d.total > 0
+    ? `<button id="prev"${hasPrev ? '' : ' disabled'}>← Назад</button>`
+      + `<span>${from}–${to} из ${d.total}</span>`
+      + `<button id="next"${hasNext ? '' : ' disabled'}>Вперёд →</button>`
+    : '';
+  if (hasPrev) $('#prev').addEventListener('click', () => page(-1));
+  if (hasNext) $('#next').addEventListener('click', () => page(1));
+}
+
+function page(delta) {                  // листать страницу, сохраняя запрос/фильтры
+  offset = Math.max(0, offset + delta * getLimit());
+  run();
+}
+function newSearch() { offset = 0; run(); }   // изменился запрос/фильтр/лимит -> на 1-ю страницу
+
+// input с дебаунсом + Enter + кнопка (любое изменение -> newSearch, сброс offset)
+let t = null;
+const debounced = () => { clearTimeout(t); t = setTimeout(newSearch, 250); };
+$('#q').addEventListener('input', debounced);
+$('#city').addEventListener('input', debounced);
+$('#sal').addEventListener('input', debounced);
+$('#source').addEventListener('change', newSearch);
+$('#fresh').addEventListener('change', newSearch);
+$('#limit').addEventListener('change', newSearch);
+$('#go').addEventListener('click', newSearch);
+document.addEventListener('keydown', e => { if (e.key === 'Enter') newSearch(); });
+newSearch();   // первый показ (без q — топ по зарплате)
+</script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+# Список прокси для сбора HH (по одной на строку).
+# Формат: host:port:username:password
+# Пустые строки и строки с '#' игнорируются (см. hrwork/data/proxy.py).
+#
+# Реальные прокси держи в proxie.bak.txt (в .gitignore) — этот файл шаблонный.
+# По умолчанию сбор идёт без прокси: HH_DISABLE_PROXIES=1 (прямой доступ).
+#
+# Пример:
+# proxy-host.example.com:8080:myuser:mypassword

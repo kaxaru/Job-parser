@@ -1,0 +1,12 @@
+{
+  "name": "hr-work-feed",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Лента вакансий HH — фронт на ES-модулях (MVVM), сборка esbuild, тесты node:test",
+  "scripts": {
+    "test": "node --test \"tests/feed/**/*.test.js\"",
+    "build": "esbuild src/feed/main.js --bundle --format=iife --target=es2020 --outfile=data/feed.js",
+    "lint": "biome lint src"
+  }
+}

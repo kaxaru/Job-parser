@@ -1,0 +1,20 @@
+# Линтер/форматтер ruff для dwh_demo.
+# floor: минимальный поддерживаемый рантайм (.venv3 = 3.10), НЕ версия машины.
+# Гарантирует, что pyupgrade не предложит синтаксис новее 3.10 (ломающий .venv3).
+target-version = "py310"
+line-length = 110
+
+[lint]
+# E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B bugbear,
+# SIM flake8-simplify, C4 comprehensions, RUF ruff-specific
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = [
+    "E501",    # длину строк уже ограничивает line-length; не дублируем жёстко
+    "RUF001",  # «похожие» юникод-символы — у нас кириллица в строках, это норма
+    "RUF002",
+    "RUF003",
+]
+
+[lint.per-file-ignores]
+"tests/*" = ["B011"]              # assert в тестах — норма
+"dags/*"  = ["E402"]             # в DAG-файлах импорт после докстроки/настройки допустим

@@ -1,0 +1,478 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: {{ bg }};
+  color: {{ text }};
+  font-family: Arial, sans-serif;
+  min-height: 100vh;
+}
+header {
+  background: {{ paper }};
+  padding: 16px 24px;
+  border-bottom: 1px solid {{ grid }};
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+header h1 { font-size: 1.3rem; color: #fff; }
+#counter { font-size: 0.85rem; color: #888; }
+
+/* Экспорт/импорт отметок + индикатор синхронизации */
+.hdr-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.hdr-btn {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid {{ grid }};
+  color: #aaa;
+  padding: 4px 11px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: border-color .12s, color .12s;
+}
+.hdr-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
+.sync-status { font-size: 0.74rem; color: #777; white-space: nowrap; }
+.sync-status.ok    { color: #3fae6b; }
+.sync-status.busy  { color: {{ accent }}; }
+.sync-status.err   { color: #d35a5a; }
+.sync-status.local { color: #c79a3a; }
+
+/* ── Filter bar ───────────────────────────────────── */
+.filter-bar {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: {{ paper }};
+  border-bottom: 2px solid {{ grid }};
+  padding: 12px 24px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  align-items: flex-start;
+}
+.filter-group { display: flex; flex-direction: column; gap: 6px; }
+.filter-label {
+  font-size: 0.72rem;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Поиск по названию */
+.search-wrap { min-width: 240px; }
+.search-input {
+  width: 260px;
+  max-width: 100%;
+  background: {{ grid }};
+  color: {{ text }};
+  border: 1px solid {{ grid }};
+  border-radius: 6px;
+  padding: 6px 11px;
+  font-size: 0.85rem;
+}
+.search-input:focus { outline: none; border-color: {{ accent }}; }
+.search-input::placeholder { color: #777; }
+
+/* Lang pill checkboxes */
+.lang-grid { display: flex; flex-wrap: wrap; gap: 5px; }
+.lang-cb { display: none; }
+.lang-label {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  border: 1px solid {{ grid }};
+  cursor: pointer;
+  font-size: 0.78rem;
+  background: transparent;
+  color: {{ text }};
+  transition: background .12s, border-color .12s, color .12s;
+  user-select: none;
+}
+.lang-cb:checked + .lang-label {
+  background: {{ accent }};
+  border-color: {{ accent }};
+  color: #fff;
+}
+
+/* Salary range */
+.salary-wrap { display: flex; flex-direction: column; gap: 5px; min-width: 220px; }
+.salary-row  { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; }
+.salary-row span.lbl { color: #888; width: 18px; }
+input[type=range] { width: 160px; accent-color: {{ accent }}; cursor: pointer; }
+.sal-val { min-width: 56px; color: {{ accent }}; font-size: 0.8rem; }
+
+/* City dropdown */
+select {
+  background: {{ grid }};
+  color: {{ text }};
+  border: 1px solid {{ grid }};
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  max-width: 180px;
+}
+select option { background: {{ paper }}; }
+
+/* Schedule toggle */
+.sched-btns {
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid {{ grid }};
+}
+.sched-btn {
+  background: transparent;
+  border: none;
+  color: #888;
+  padding: 5px 13px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  transition: background .12s, color .12s;
+}
+.sched-btn + .sched-btn { border-left: 1px solid {{ grid }}; }
+.sched-btn:hover { background: {{ grid }}; color: {{ text }}; }
+.sched-btn.active { background: {{ accent }}; color: #fff; }
+
+/* Календарь «Мои отклики»: date-инпуты внутри .sched-btns */
+.date-input {
+  background: transparent;
+  border: none;
+  border-left: 1px solid {{ grid }};
+  color: {{ text }};
+  padding: 4px 8px;
+  font-size: 0.76rem;
+  color-scheme: dark;
+  cursor: pointer;
+}
+.date-dash { color: #888; align-self: center; padding: 0 2px; }
+
+/* Reset */
+.reset-btn {
+  background: transparent;
+  border: 1px solid #444;
+  color: #777;
+  padding: 5px 13px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  align-self: flex-end;
+  transition: border-color .12s, color .12s;
+}
+.reset-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
+
+/* ── Cards ────────────────────────────────────────── */
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 20px 24px 40px;
+}
+.card {
+  background: {{ paper }};
+  border: 1px solid {{ grid }};
+  border-radius: 8px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color .15s, box-shadow .15s;
+  cursor: pointer;
+}
+.card:hover { border-color: {{ accent }}; box-shadow: 0 0 0 1px {{ accent }}22; }
+.tags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 22px; }
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.card-title {
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  position: relative;
+  z-index: 1;        /* sits above card click area so link still works */
+}
+.card-title:hover { color: {{ accent }}; }
+.card-sub { font-size: 0.78rem; color: #888; }
+.card-sal {
+  font-size: 0.8rem;
+  color: #aaa;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Панель статусов под карточкой */
+.card-foot { display: flex; gap: 8px; margin-top: 2px; }
+
+/* Тогглы «откликнулся» (зелёный) / «отказ» (красный) */
+.status-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid {{ grid }};
+  color: #888;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.status-btn.st-applied-btn:hover   { border-color: #3fae6b; color: #3fae6b; }
+.status-btn.st-applied-btn.active  { background: #2e7d46; border-color: #2e7d46; color: #fff; }
+.status-btn.st-rejected-btn:hover  { border-color: #d35a5a; color: #d35a5a; }
+.status-btn.st-rejected-btn.active { background: #a33b3b; border-color: #a33b3b; color: #fff; }
+
+/* Статусы карточки: зелёная (откликнулся) / красная (отказ — будет позже) */
+.card.st-applied  { border-color: #2e7d46; background: #15241b; }
+.card.st-applied:hover  { border-color: #3fae6b; box-shadow: 0 0 0 1px #3fae6b55; }
+.card.st-rejected { border-color: #a33b3b; background: #251618; }
+.card.st-rejected:hover { border-color: #d35a5a; box-shadow: 0 0 0 1px #d35a5a55; }
+
+/* Протухшая форма (form_dead): вакансия, скорее всего, снята — гасим серым, как не актуальную */
+.card.st-dead { opacity: .55; filter: grayscale(.65); }
+.card.st-dead:hover { opacity: .85; }
+
+/* Совпадение с резюме: цвет от тёплого (100%) к холодному (0%) задаётся inline. */
+.match-badge {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1.6;
+  white-space: nowrap;
+  text-shadow: 0 1px 1px rgba(0,0,0,.35);
+  cursor: help;
+}
+.card-status { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0; }
+.card-status:empty { display: none; }
+.status-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 1.7;
+  white-space: nowrap;
+  text-shadow: 0 1px 1px rgba(0,0,0,.35);
+  cursor: help;
+}
+.no-results {
+  grid-column: 1 / -1;
+  text-align: center;
+  color: #444;
+  padding: 80px 0;
+  font-size: 1.1rem;
+}
+
+/* ── Modal ────────────────────────────────────────── */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.72);
+  z-index: 200;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  backdrop-filter: blur(2px);
+}
+.modal-overlay.open { display: flex; }
+
+.modal-box {
+  background: {{ paper }};
+  border: 1px solid {{ grid }};
+  border-radius: 12px;
+  width: 100%;
+  max-width: 700px;
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  animation: modal-in .15s ease;
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(12px) scale(.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+.modal-head {
+  padding: 20px 24px 18px;
+  border-bottom: 1px solid {{ grid }};
+  position: relative;
+}
+.modal-close {
+  position: absolute;
+  top: 14px;
+  right: 16px;
+  background: transparent;
+  border: 1px solid {{ grid }};
+  color: #888;
+  font-size: 1.2rem;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color .12s, color .12s;
+}
+.modal-close:hover { border-color: #e05; color: #e05; }
+
+.modal-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; padding-right: 36px; }
+.modal-title {
+  color: #fff;
+  text-decoration: none;
+  font-size: 1.15rem;
+  font-weight: 700;
+  line-height: 1.35;
+  display: block;
+  margin-bottom: 8px;
+}
+.modal-title:hover { color: {{ accent }}; }
+.modal-meta { font-size: 0.82rem; color: #888; margin-bottom: 4px; }
+.modal-sal  {
+  font-size: 0.9rem;
+  color: #bbb;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.modal-body { padding: 20px 24px; }
+
+/* ── Сопроводительное письмо ──────────────────────── */
+.cover {
+  background: {{ bg }};
+  border: 1px solid {{ grid }};
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 18px;
+}
+.cover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.cover-title { font-size: 0.85rem; font-weight: 700; color: #fff; }
+.cover-actions { display: flex; gap: 6px; }
+.cover-btn {
+  background: transparent;
+  border: 1px solid {{ grid }};
+  color: #aaa;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  transition: border-color .12s, color .12s, opacity .12s;
+}
+.cover-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
+.cover-copy { background: {{ accent }}; border-color: {{ accent }}; color: #fff; }
+.cover-copy:hover { color: #fff; opacity: .85; }
+.cover-text {
+  width: 100%;
+  min-height: 200px;
+  resize: vertical;
+  background: {{ paper }};
+  color: #ddd;
+  border: 1px solid {{ grid }};
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: inherit;
+  font-size: 0.82rem;
+  line-height: 1.6;
+}
+.cover-text:focus { outline: none; border-color: {{ accent }}; }
+.cover-hint { font-size: 0.72rem; color: #666; margin-top: 6px; }
+
+/* Full description HTML from hh.ru API */
+.vacancy-desc {
+  font-size: 0.85rem;
+  color: #ccc;
+  line-height: 1.7;
+}
+.vacancy-desc p  { margin-bottom: 10px; }
+.vacancy-desc ul,
+.vacancy-desc ol { padding-left: 20px; margin-bottom: 10px; }
+.vacancy-desc li { margin-bottom: 3px; }
+.vacancy-desc strong,
+.vacancy-desc b  { color: #fff; font-weight: 600; }
+.vacancy-desc em,
+.vacancy-desc i  { color: #bbb; }
+
+/* Loading / error state */
+.m-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #666;
+  font-size: 0.82rem;
+  padding: 4px 0;
+}
+.m-loading::before {
+  content: '';
+  width: 14px; height: 14px;
+  border: 2px solid #444;
+  border-top-color: {{ accent }};
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.m-error { color: #666; font-size: 0.82rem; }
+
+.modal-foot {
+  padding: 16px 24px;
+  border-top: 1px solid {{ grid }};
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+.apply-label { color: #aaa; font-size: 0.85rem; font-weight: 600; }
+.modal-apply-btn {
+  background: #54A24B;
+  color: #fff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .12s;
+}
+.modal-apply-btn:hover { opacity: .85; }
+.modal-apply-btn:disabled { opacity: .5; cursor: default; }
+.m-apply-status { font-size: 0.8rem; color: #aaa; }
+.modal-hh-btn {
+  background: {{ accent }};
+  color: #fff;
+  text-decoration: none;
+  padding: 8px 20px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  transition: opacity .12s;
+}
+.modal-hh-btn:hover { opacity: .85; }

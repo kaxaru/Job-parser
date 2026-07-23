@@ -1,0 +1,4 @@
+# Dev-зависимости: тесты + линтер. (dwh_demo имеет свои requirements.)
+-r requirements.txt
+pytest>=8
+ruff>=0.6

@@ -1,0 +1,223 @@
+name: hh-dwh
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.9.3-python3.11
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://hh:hh@hh-postgres:5432/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "hh-dwh-secret"
+    PYTHONPATH: /opt/airflow
+    # параметры подключения ETL к боевой БД (внутри сети compose)
+    PGHOST: hh-postgres
+    PGPORT: "5432"
+    PGDATABASE: hh
+    PGUSER: hh
+    PGPASSWORD: hh
+    CH_URL: http://hh-clickhouse:8123/
+    MSSQL_HOST: hh-mssql
+    MSSQL_PORT: "1433"
+    MSSQL_USER: sa
+    MSSQL_PASSWORD: "DwhDemo2026!"
+    MSSQL_DB: hh
+    DATA_FILE: /opt/airflow/data/vacancies_raw.json
+    _PIP_ADDITIONAL_REQUIREMENTS: pymssql>=2.3   # драйвер MS SQL для load_mssql
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./etl:/opt/airflow/etl
+    - ../data:/opt/airflow/data:ro
+    - airflow-logs:/opt/airflow/logs
+  user: "50000:0"
+  depends_on:
+    hh-postgres:
+      condition: service_healthy
+
+services:
+  hh-postgres:
+    image: postgres:16
+    container_name: hh-postgres
+    environment:
+      POSTGRES_USER: hh
+      POSTGRES_PASSWORD: hh
+      POSTGRES_DB: hh
+    ports:
+      - "5433:5432"
+    volumes:
+      - hh-pgdata:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hh -d hh"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username admin --password admin \
+          --firstname Admin --lastname User --role Admin \
+          --email admin@example.com || true
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8080:8080"
+    depends_on:
+      hh-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 12
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    depends_on:
+      hh-postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: hh-metabase
+    ports:
+      - "3000:3000"
+    environment:
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - metabase-data:/metabase-data
+    depends_on:
+      hh-postgres:
+        condition: service_healthy
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: hh-clickhouse
+    ports:
+      - "8123:8123"   # HTTP-интерфейс (драйвер Metabase, curl)
+      - "9000:9000"   # native TCP (clickhouse-client)
+    environment:
+      CLICKHOUSE_DB: hh
+      CLICKHOUSE_SKIP_USER_SETUP: "1"   # default-юзер без пароля — для локального демо
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --query 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  mssql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: hh-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "DwhDemo2026!"   # SA-пароль (сложность: верх/низ/цифра/спецсимвол)
+      MSSQL_PID: Developer                 # бесплатная Developer-редакция
+    ports:
+      - "1433:1433"
+    volumes:
+      - mssql-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$$MSSQL_SA_PASSWORD\" -C -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  # ───────────────────── Observability (логи + метрики) ─────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: hh-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9002:9000"     # S3 API (9000 занят ClickHouse -> наружу 9002)
+      - "9003:9001"     # web-консоль
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  minio-init:           # одноразово: создать бакет loki (Loki сам бакет не создаёт)
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin &&
+      mc mb --ignore-existing local/loki &&
+      echo 'bucket loki ready'"
+    restart: "no"
+
+  loki:
+    image: grafana/loki:3.1.0
+    container_name: hh-loki
+    command: -config.file=/etc/loki/loki-config.yaml     # ПРОД-конфиг: S3(MinIO)+retention+лимиты
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki                                  # локально только индекс-кэш/wal; чанки в MinIO
+    user: "0"
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+
+  promtail:
+    image: grafana/promtail:3.1.0
+    container_name: hh-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./observability/promtail.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock        # читает логи контейнеров через Docker API
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: hh-grafana
+    ports:
+      - "3001:3000"                                      # 3000 занят Metabase -> наружу 3001
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: DwhDemo2026!     # синхронизировано с Metabase-админом
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/dashboards:/etc/grafana/provisioning/dashboards/json:ro
+    depends_on:
+      - loki
+
+volumes:
+  hh-pgdata:
+  airflow-logs:
+  metabase-data:
+  clickhouse-data:
+  loki-data:
+  grafana-data:
+  minio-data:
+  mssql-data:

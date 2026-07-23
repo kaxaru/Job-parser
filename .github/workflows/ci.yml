@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# проект живёт в подкаталоге dwh_demo; checkout/setup идут в корне репо (hr_work),
+# а run-шаги — внутри dwh_demo
+jobs:
+  # ── быстрые юнит-тесты: домен + оркестрация на фейковом Warehouse, без БД ──
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dwh_demo
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -m unit -v
+
+  # ── интеграция: реальный ETL против Postgres + ClickHouse в service-контейнерах ──
+  integration:
+    runs-on: ubuntu-latest
+    needs: unit
+    defaults:
+      run:
+        working-directory: dwh_demo
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: hh
+          POSTGRES_PASSWORD: hh
+          POSTGRES_DB: hh
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U hh -d hh"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_DB: hh
+          CLICKHOUSE_SKIP_USER_SETUP: "1"
+        ports:
+          - 8123:8123
+          - 9000:9000
+        options: >-
+          --ulimit nofile=262144:262144
+          --health-cmd "clickhouse-client --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "DwhDemo2026!"
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P DwhDemo2026! -C -Q 'SELECT 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      PGHOST: localhost
+      PGPORT: "5433"
+      PGDATABASE: hh
+      PGUSER: hh
+      PGPASSWORD: hh
+      CH_URL: http://localhost:8123/
+      MSSQL_HOST: localhost
+      MSSQL_PORT: "1433"
+      MSSQL_USER: sa
+      MSSQL_PASSWORD: DwhDemo2026!
+      MSSQL_DB: hh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -m integration -v
+
+  # ── корневой скрапер: ruff + тесты (hh.py / hrwork/), без БД и сети ──
+  scraper:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+
+  # ── JS-линтер: Biome по клиентским скриптам ленты/дашборда (корень репо) ──
+  biome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: biomejs/setup-biome@v2
+        with:
+          version: 2.5.0
+      - run: biome lint src   # ES-модули ленты (src/feed) + статика дашборда (src/dashboard.js)
+
+  # ── JS-юниты: доменная модель ленты (src/feed/model.js) на node:test, без зависимостей ──
+  js-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test          # node --test по tests/feed/**/*.test.js (deps нет — install не нужен)
+
+  # ── CD-артефакт: собрать клиентский бандл ленты (esbuild) и выложить артефактом.
+  #    Данные не нужны — бандлится только src/feed/*.js. Деплоим на зелёном JS-CI. ──
+  build:
+    runs-on: ubuntu-latest
+    needs: [biome, js-unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm i -g esbuild
+      - run: esbuild src/feed/main.js --bundle --format=iife --target=es2020 --outfile=feed.js
+      - run: node --check feed.js   # gate: битый бандл не пройдёт
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feed-bundle
+          path: feed.js

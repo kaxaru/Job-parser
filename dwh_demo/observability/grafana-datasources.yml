@@ -1,0 +1,25 @@
+# Авто-провижининг источников данных Grafana (как код, без кликов в UI).
+apiVersion: 1
+
+datasources:
+  # ── ЛОГИ ── Loki: то, ради чего связка (Grafana рисует логи отсюда)
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+
+  # ── МЕТРИКИ/АНАЛИТИКА ── метаданные Airflow в Postgres (БД airflow) для health-дашборда
+  - name: HH-Postgres
+    uid: hh_postgres
+    type: postgres
+    access: proxy
+    url: hh-postgres:5432
+    user: hh
+    jsonData:
+      database: airflow
+      sslmode: disable
+      postgresVersion: 1600
+    secureJsonData:
+      password: hh

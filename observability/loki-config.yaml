@@ -1,0 +1,40 @@
+# Loki hr_work — минимальный локальный конфиг: filesystem-хранилище (не S3, как в dwh_demo).
+# Одна нода, локальный диск — достаточно для наблюдения одной машины.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  retention_period: 720h                 # 30 дней истории (дольше файловых логов с ротацией)
+  reject_old_samples: false              # крон-логи могут прийти с задержкой — не режем
+  reject_old_samples_max_age: 720h
+
+compactor:
+  working_directory: /loki/compactor
+  retention_enabled: true
+  delete_request_store: filesystem

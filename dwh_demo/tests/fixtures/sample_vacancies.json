@@ -1,0 +1,35 @@
+[
+  {"id": "1", "name": "Python Backend (FastAPI)", "area": {"id": "1", "name": "Москва"},
+   "salary": {"from": 150000, "to": 200000, "currency": "RUR", "gross": false},
+   "experience": {"id": "between1And3"}, "schedule": {"id": "remote"},
+   "employer": {"name": "Acme"}, "snippet": {"requirement": "Python FastAPI PostgreSQL Docker"},
+   "description_html": "<p>Возможна работа удалённо.</p>", "alternate_url": "https://hh.ru/vacancy/1",
+   "_city": "Москва", "_query": "программист"},
+
+  {"id": "2", "name": "Django Developer", "area": {"id": "2", "name": "Санкт-Петербург"},
+   "salary": {"from": 120000, "to": null, "currency": "RUR", "gross": true},
+   "experience": {"id": "between3And6"}, "schedule": {"id": "fullDay"},
+   "employer": {"name": "Beta"}, "snippet": {"requirement": "Python Django Redis"},
+   "description_html": "<p>Работа в офисе</p>", "alternate_url": "https://hh.ru/vacancy/2",
+   "_city": "Санкт-Петербург", "_query": "программист"},
+
+  {"id": "3", "name": "Data Engineer", "area": {"id": "1", "name": "Москва"},
+   "salary": null, "experience": {"id": "moreThan6"}, "schedule": {"id": "remote"},
+   "employer": {"name": "Acme"}, "snippet": {"requirement": "Python SQL Airflow ClickHouse Kafka"},
+   "description_html": "", "alternate_url": "https://hh.ru/vacancy/3",
+   "_city": "Москва", "_query": "программист"},
+
+  {"id": "4", "name": "Java Developer", "area": {"id": "88", "name": "Казань"},
+   "salary": {"from": 180000, "to": 250000, "currency": "RUR", "gross": false},
+   "experience": {"id": "between3And6"}, "schedule": {"id": "fullDay"},
+   "employer": {"name": "Gamma"}, "snippet": {"requirement": "Java Spring Kafka PostgreSQL"},
+   "description_html": "", "alternate_url": "https://hh.ru/vacancy/4",
+   "_city": "Казань", "_query": "программист"},
+
+  {"id": "5", "name": "Junior Python", "area": {"id": "1002", "name": "Минск"},
+   "salary": {"from": 60000, "to": 90000, "currency": "BYR", "gross": false},
+   "experience": {"id": "noExperience"}, "schedule": {"id": "flexible"},
+   "employer": {"name": "Delta"}, "snippet": {"requirement": "Python Flask Git Linux"},
+   "description_html": "", "alternate_url": "https://hh.ru/vacancy/5",
+   "_city": "Минск", "_query": "программист"}
+]

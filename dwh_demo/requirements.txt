@@ -1,0 +1,2 @@
+psycopg2-binary>=2.9    # Postgres-адаптер
+pymssql>=2.3            # MS SQL-адаптер (ClickHouse — через stdlib urllib, без зависимостей)
