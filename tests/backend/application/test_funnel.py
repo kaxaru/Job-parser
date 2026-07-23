@@ -145,7 +145,7 @@ def test_company_auto_reject_rate_from_measured(monkeypatch):
 def test_small_sample_companies_rank_below_min_n(monkeypatch):
     # 1/1=100% НЕ должен обгонять компанию с достаточной выборкой (>=3 измеренных)
     fast = _APPLY_DT + dt.timedelta(minutes=5)
-    applied = {v: _APPLY for v in ("a1", "a2", "a3", "b1")}
+    applied = dict.fromkeys(("a1", "a2", "a3", "b1"), _APPLY)
     statuses = dict.fromkeys(applied, "DISCARD")
     chats = {v: {"messages": [_reject_msg(fast)]} for v in applied}
     repo = _repo({"a1": "BigCo", "a2": "BigCo", "a3": "BigCo", "b1": "TinyCo"})
