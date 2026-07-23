@@ -51,6 +51,19 @@ export function fmtSal(v, cur = 'RUB') {
 
 export function fmtK(n) { return n >= 1000 ? `${n / 1000 | 0}к` : String(n); }
 
+/* Давность последнего сообщения работодателя для чат-бейджа: «сегодня»/«вчера»/«N дн».
+   now инъектируется в тестах; битая/пустая метка -> '' (бейдж без хвоста, не NaN). */
+export function chatAgeLabel(ts, now = Date.now()) {
+  if (!ts) return '';
+  const t = new Date(ts).getTime();
+  if (Number.isNaN(t)) return '';
+  const days = Math.floor((now - t) / 86400000);
+  if (days < 0) return '';
+  if (days === 0) return 'сегодня';
+  if (days === 1) return 'вчера';
+  return `${days} дн`;
+}
+
 export function hashId(s) {
   let h = 0; s = String(s);
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;

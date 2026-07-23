@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  ageColor, appliedInRange, cardColor, convert, esc, filterVacancies, fmtK, fmtSal, hashId,
+  ageColor, appliedInRange, cardColor, chatAgeLabel, convert, esc, filterVacancies, fmtK, fmtSal, hashId,
   matchColor, resolveCur, statusInfo, tagClr,
 } from '../../src/feed/model.js';
 
@@ -388,4 +388,18 @@ describe('filterVacancies — фильтр по порталу (source)', () => 
   it('all — оба портала', () => assert.deepEqual(ids('all').sort(), ['h', 'x']));
   it('hh — только hh', () => assert.deepEqual(ids('hh'), ['h']));
   it('hirify — только hirify', () => assert.deepEqual(ids('hirify'), ['x']));
+});
+
+describe('chatAgeLabel — давность последнего сообщения работодателя', () => {
+  const now = Date.parse('2026-07-23T12:00:00+03:00');
+  it('сегодня / вчера / N дн', () => {
+    assert.equal(chatAgeLabel('2026-07-23T09:00:00+03:00', now), 'сегодня');
+    assert.equal(chatAgeLabel('2026-07-22T09:00:00+03:00', now), 'вчера');
+    assert.equal(chatAgeLabel('2026-07-14T09:12:03+03:00', now), '9 дн');
+  });
+  it('пустая/битая/будущая метка -> пусто, не NaN', () => {
+    assert.equal(chatAgeLabel('', now), '');
+    assert.equal(chatAgeLabel('garbage', now), '');
+    assert.equal(chatAgeLabel('2026-07-25T09:00:00+03:00', now), '');
+  });
 });

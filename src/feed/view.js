@@ -4,7 +4,7 @@
 import { COVER_TEMPLATES, coverLetter } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
-  ageColor, cardColor, esc, filterVacancies, fmtSal, hashId,
+  ageColor, cardColor, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
   matchColor, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr,
 } from './model.js';
 import { resumeMatch } from './resume.js';
@@ -57,8 +57,10 @@ function statusBadge(v) {
              : '#4C9BD1';                            /* шаблонная рассылка */
     const tip = (c.preview || '').replace(/"/g, '&quot;');
     const locked = c.can_write === false ? ' 🔒' : '';
+    const age = chatAgeLabel(c.ts);                  /* давность последнего сообщения работодателя */
     out += `<span class="status-badge" style="background:${bg}"`
          + ` title="${esc(tip)}">${who}${who ? ' ' : ''}${esc(c.label || 'ответ')}`
+         + `${age ? ' · ' + age : ''}`
          + `${c.manual_only ? ' · решай сам' : ''}${locked}</span>`;
   }
   if (v.chat?.contact) {                      /* рекрутёр оставил связь прямо в переписке */
