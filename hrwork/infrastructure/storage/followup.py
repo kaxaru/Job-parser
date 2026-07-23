@@ -42,13 +42,16 @@ def save_chat_messages(data: dict) -> None:
 
 
 def append_applied(vid: str, name: str, url: str, via: str,
-                   status: str = "applied", ts: str = "") -> None:
+                   status: str = "applied", ts: str = "", employer: str = "") -> None:
     """Дозаписать факт отклика в журнал (append-only JSONL, по строке на отклик).
     Пишут крон-батч (via='cron') и лента (via='feed'); single-instance lock гарантирует,
-    что одновременно активен лишь один писатель — гонок нет. ts пустой -> сейчас (локальное)."""
+    что одновременно активен лишь один писатель — гонок нет. ts пустой -> сейчас (локальное).
+    employer фиксируется В МОМЕНТ отклика: вакансия уйдёт из выдачи — воронка по компаниям
+    (funnel.py) не потеряет работодателя (fix.md №9)."""
     rec = {
         "id": str(vid), "name": name or "", "url": url or "", "via": via, "status": status,
         "ts": ts or datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "employer": employer or "",
     }
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with open(APPLIED_LOG_FILE, "a", encoding="utf-8") as f:

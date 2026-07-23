@@ -362,7 +362,13 @@ function applyJournal(applied) {
    последним. Отдельная кнопка — «лично» (деньги/переезд, бот отвечать не должен). */
 function injectChatFilter(count, personal, contacts) {
   const bar = document.querySelector('.filter-bar');
-  if (!bar || document.getElementById('chat-group')) return;
+  if (!bar) return;
+  if (document.getElementById('chat-group')) {   /* ре-полл оверлея: освежить счётчики */
+    document.getElementById('chat-personal').textContent = `👤 Личные (${personal})`;
+    document.getElementById('chat-wait').textContent = `Все ждут ответа (${count})`;
+    document.getElementById('chat-contact').textContent = `📞 С контактами (${contacts})`;
+    return;
+  }
   const g = document.createElement('div');
   g.className = 'filter-group';
   g.id = 'chat-group';
@@ -471,6 +477,11 @@ async function initOverlay() {
     pullJson('api/chats'),
   ]);
   let changed = false;
+  /* Журнал — ПЕРВЫМ: applyJournal синтезирует карточки-призраки для вакансий, выпавших из
+     выдачи; формы/статусы/чаты, обработанные ДО него, призраков не находили и терялись
+     (чаты: инцидент «46 из 93»; формы: 52 в очереди vs 51 подсвеченных — fix.md №12). */
+  const nApplied = applyJournal(applied);
+  if (nApplied) { injectAppliedControl(nApplied); changed = true; }
   for (const [id, rec] of Object.entries(forms || {})) {
     const v = V_MAP[id];
     if (!v) continue;
@@ -484,11 +495,6 @@ async function initOverlay() {
     const v = V_MAP[id];
     if (v && v.status !== st) { v.status = st; bustCard(id); changed = true; }
   }
-  const nApplied = applyJournal(applied);
-  if (nApplied) { injectAppliedControl(nApplied); changed = true; }
-  /* Переписка — ПОСЛЕ applyJournal: тот синтезирует карточки-призраки для вакансий, выпавших
-     из выдачи (после пересбора их в VACANCIES уже нет). Раньше обрабатывали до него и теряли
-     половину чатов — 46 из 93. */
   let waiting = 0, personal = 0, contacts = 0;
   for (const [id, info] of Object.entries(chats || {})) {
     const v = V_MAP[id];
@@ -509,3 +515,6 @@ async function initOverlay() {
 store.update({});   /* notify -> render */
 initSync();
 initOverlay();
+/* Вкладка живёт открытой весь день, а one-shot оверлей устаревал до F5 (fix.md №11):
+   ре-полл раз в 5 мин — все ветки initOverlay идемпотентны (инжекты обновляют счётчики). */
+setInterval(initOverlay, 5 * 60 * 1000);

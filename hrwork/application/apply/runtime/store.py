@@ -66,8 +66,9 @@ class ApplicationStore:
     # ── Журнал откликов (applied_log.jsonl, append-only) ──
     @staticmethod
     def log_applied(vid: str, name: str, url: str, via: ApplyChannel,
-                    status: str = "applied", ts: str = "") -> None:
-        followup.append_applied(vid, name, url, via=via.code, status=status, ts=ts)
+                    status: str = "applied", ts: str = "", employer: str = "") -> None:
+        followup.append_applied(vid, name, url, via=via.code, status=status, ts=ts,
+                                employer=employer)
 
     @staticmethod
     def applied_log() -> list[dict]:

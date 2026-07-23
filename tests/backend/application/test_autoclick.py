@@ -413,6 +413,9 @@ def _chat_item(vid="1", ts="2026-07-01T10:00:00+03:00"):
     return {"chatId": 9, "vacancyId": vid, "applicantId": 7, "lastMessageTime": ts}
 
 
+_CACHED = {"1": {"messages": [{"text": "отказ", "ts": "2026-07-01T10:00:00+03:00"}]}}
+
+
 @pytest.mark.parametrize("ts, skip", [
     ("2026-07-01T10:00:00+03:00", True),    # сообщение 22 дня назад + DISCARD -> из кеша
     ("2026-07-22T10:00:00+03:00", False),   # вчера -> синкаем
@@ -421,9 +424,15 @@ def _chat_item(vid="1", ts="2026-07-01T10:00:00+03:00"):
     ("2026-07-01T10:00:00", False),         # наивная метка (TypeError при сравнении) -> синкаем
 ])
 def test_sync_cache_decision_by_last_message(ts, skip):
-    cached = {"1": {"messages": []}}
     st = {"1": "DISCARD"}
-    assert autoclick._sync_from_cache(_chat_item(ts=ts), cached, st, {"1"}, _NOW) is skip
+    assert autoclick._sync_from_cache(_chat_item(ts=ts), _CACHED, st, {"1"}, _NOW) is skip
+
+
+@pytest.mark.parametrize("status", ["DISCARD", "DISCARD_BY_EMPLOYER", "HIRED"])
+def test_sync_skips_all_terminal_states(status):
+    # единый словарь статусов (chat.TERMINAL_STATES): DISCARD_BY_EMPLOYER тоже терминал
+    old = _chat_item(ts="2026-07-01T10:00:00+03:00")
+    assert autoclick._sync_from_cache(old, _CACHED, {"1": status}, {"1"}, _NOW) is True
 
 
 @pytest.mark.parametrize("status", ["RESPONSE", "INTERVIEW", "INVITATION", None])
@@ -431,11 +440,18 @@ def test_sync_never_skips_non_terminal_status(status):
     # нетерминальный статус может флипнуться МОЛЧА (отказ без письма) -> качаем всегда
     st = {"1": status} if status else {}
     old = _chat_item(ts="2026-07-01T10:00:00+03:00")
-    assert autoclick._sync_from_cache(old, {"1": {}}, st, {"1"}, _NOW) is False
+    assert autoclick._sync_from_cache(old, _CACHED, st, {"1"}, _NOW) is False
+
+
+def test_sync_never_skips_empty_cached_messages():
+    # пустая кешевая переписка (артефакт неудачного фетча) не должна замораживаться навсегда
+    old = _chat_item(ts="2026-07-01T10:00:00+03:00")
+    st = {"1": "DISCARD"}
+    assert autoclick._sync_from_cache(old, {"1": {"messages": []}}, st, {"1"}, _NOW) is False
 
 
 def test_sync_never_skips_chat_missing_from_cache_or_journal():
     old = _chat_item(ts="2026-07-01T10:00:00+03:00")
     st = {"1": "DISCARD"}
-    assert autoclick._sync_from_cache(old, {}, st, {"1"}, _NOW) is False       # нет в кеше
-    assert autoclick._sync_from_cache(old, {"1": {}}, st, set(), _NOW) is False  # не журналирован
+    assert autoclick._sync_from_cache(old, {}, st, {"1"}, _NOW) is False        # нет в кеше
+    assert autoclick._sync_from_cache(old, _CACHED, st, set(), _NOW) is False   # не журналирован

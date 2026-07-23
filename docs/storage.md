@@ -192,10 +192,12 @@ save(records) -> None
 
 ```json
 {"id": "134809303", "name": "BI-аналитик", "url": "https://hh.ru/vacancy/134809303",
- "via": "cron", "status": "applied", "ts": "2026-07-05T03:27:34"}
+ "via": "cron", "status": "applied", "ts": "2026-07-23T14:03:26+04:00", "employer": "ООО Ромашка"}
 ```
 
-`via` — `cron` | `feed` | `hh` (`ApplyChannel`).
+`via` — `cron` | `feed` | `hh` (`ApplyChannel`). `employer` фиксируется в момент отклика —
+вакансия уйдёт из выдачи, а воронка (`funnel.py`) работодателя не потеряет; в старых
+записях поля нет (и наивный `ts` без зоны — читается как локальная зона машины).
 
 **Пишет.** `followup.py::append_applied` — **единственная неатомарная запись в проекте**,
 обычный `open("a")`. **Читает.** `followup.py::load_applied_log`.

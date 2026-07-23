@@ -39,6 +39,14 @@ STATE_LABELS = {
     "DISCARD_VACANCY_CLOSED": "Вакансия закрыта",
 }
 
+# Наборы состояний — ЕДИНЫЙ источник для воронки (funnel) и инкремент-синка (autoclick):
+# раньше каждый держал свой и наборы тихо разъезжались (fix.md №6).
+DISCARD_STATES = frozenset({"DISCARD", "DISCARD_BY_EMPLOYER", "DISCARD_VACANCY_CLOSED"})
+INVITED_STATES = frozenset({"INVITATION", "PHONE_INTERVIEW", "INTERVIEW",
+                            "ASSESSMENT", "HIRED", "CONSIDER"})
+# назад не флипаются -> кешевый статус вечен (наш собственный отказ — тоже терминал)
+TERMINAL_STATES = DISCARD_STATES | {"DISCARD_BY_APPLICANT", "HIRED"}
+
 def _headers(xsrf: str) -> dict:
     return {
         "accept": "application/json",

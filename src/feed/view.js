@@ -33,8 +33,12 @@ function statusBadge(v) {
   }
   const st = statusInfo(v);
   if (st) {
+    /* давность последнего сообщения чата и на статус-бейдже (отказ и т.п.), не только
+       у «ждёт ответа»: видно, когда пришёл отказ, без открытия переписки */
+    const stAge = v.chat?.needs_reply ? '' : chatAgeLabel(v.chat?.ts);
     out += `<span class="status-badge" style="background:${st.color}"`
-         + ` title="Статус на HH: ${esc(st.label)}">${esc(st.label)}</span>`;
+         + ` title="Статус на HH: ${esc(st.label)}">${esc(st.label)}`
+         + `${stAge ? ' · ' + stAge : ''}</span>`;
   }
   if (v.needs_form) {
     out += '<span class="status-badge" style="background:#B279A2"'

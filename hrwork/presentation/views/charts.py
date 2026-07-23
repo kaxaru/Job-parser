@@ -450,9 +450,9 @@ def chart_company_funnel(base=REPORTS_DIR, top_n: int = 18) -> go.Figure:
     tot_rej = sum(int(r["Отказов"]) for r in rows)
     tot_1h  = sum(int(r["<=1ч"]) for r in rows)
     known = [r for r in rows if r["Компания"] != "(вне выдачи)" and int(r["Отказов"]) > 0]
-    # автобан сверху: сначала быстрые отказы, затем объём отказов
-    known.sort(key=lambda r: (int(r["<=1ч"]), int(r["Отказов"])))
-    known = known[-top_n:]                                # top_n снизу-вверх -> самые «горячие» вверху
+    # порядок строк CSV = ранжирование funnel.compute_funnel (единое для таблицы и графика);
+    # горизонтальные бары рисуются снизу вверх -> разворачиваем, чтобы топ был сверху
+    known = list(reversed(known[:top_n]))
 
     comps = [r["Компания"][:34] for r in known]
     seg = {name: [] for name, _c in _FUNNEL_BUCKETS}

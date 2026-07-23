@@ -495,21 +495,21 @@ def _journal_name(data: dict, vid: str, name_map: dict) -> str:
 
 
 SYNC_FRESH_DAYS = 7          # сообщения старше -> чат считается устоявшимся
-_TERMINAL_STATES = {"DISCARD", "HIRED"}   # назад не флипаются -> кешевый статус вечен
 
 
 def _sync_from_cache(c: dict, cached_msgs: dict, cached_statuses: dict,
                      journaled: set, now) -> bool:
-    """True -> чат можно НЕ качать: он в кеше, статус ТЕРМИНАЛЬНЫЙ и сообщений не было
-    SYNC_FRESH_DAYS. Решение по lastMessageTime из СПИСКА чатов (не по кешу): новое
+    """True -> чат можно НЕ качать: он в кеше С ПЕРЕПИСКОЙ, статус ТЕРМИНАЛЬНЫЙ и сообщений
+    не было SYNC_FRESH_DAYS. Решение по lastMessageTime из СПИСКА чатов (не по кешу): новое
     сообщение в старом чате обновляет метку, и чат синкается снова. Нетерминальные
     (RESPONSE/INTERVIEW/…) качаем всегда — их статус может флипнуться МОЛЧА, без
     сообщения (~20 % отказов приходят без письма в чат). lastActivityTime для отсечки
     непригоден: его обновляет само наше чтение chat_data (см. chat.py::list_chats).
-    Любое сомнение (нет в кеше/журнале, битая метка) -> False, качаем."""
+    Пустая кешевая переписка (артефакт неудачного фетча) — не повод скипать: иначе она
+    замораживается навсегда (fix.md №5). Любое сомнение -> False, качаем."""
     vid = str(c["vacancyId"])
-    if (vid not in cached_msgs or vid not in journaled
-            or cached_statuses.get(vid) not in _TERMINAL_STATES):
+    if (not (cached_msgs.get(vid) or {}).get("messages") or vid not in journaled
+            or cached_statuses.get(vid) not in chat.TERMINAL_STATES):
         return False
     try:
         last = datetime.datetime.fromisoformat(c.get("lastMessageTime") or "")
@@ -525,51 +525,55 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
       2) дожурналивание НОВЫХ откликов в applied_log.jsonl с реальной датой (creationTime
          сообщения-отклика) — в т.ч. сделанных РУКАМИ на hh.ru (любой отклик = чат).
 
-    По умолчанию ИНКРЕМЕНТ: чаты без активности SYNC_FRESH_DAYS, уже лежащие в кеше,
-    не перекачиваются — их статус/переписка берутся из кеша (полный прогон ~1300 чатов
-    занимал ~20 мин, активных за неделю — сотни). full=True (--sync-full) — качать всё.
+    По умолчанию ИНКРЕМЕНТ: терминальные чаты без сообщений SYNC_FRESH_DAYS, уже лежащие
+    в кеше, не перекачиваются (полный прогон ~1300 чатов занимал ~20 мин). full=True
+    (--sync-full) — качать всё. Запись в обоих режимах — MERGE поверх кеша, не replace:
+    сетевая ошибка одного чата или limit не должны стирать ранее известное (fix.md №4).
 
     Работает поверх состояния сессии (data/hh_state.json), которое сохраняет любой браузерный
     прогон. Chromium НЕ поднимается и `autoclick.lock` НЕ берётся — синк независим от откликов
     и не встаёт вместе с ними (раньше зависший браузер морозил статусы неделями).
     `headless` не используется (браузера нет) — параметр сохранён ради совместимости с CLI.
     limit — потолок чатов. Возвращает карту {vacancyId: state}."""
-    statuses: dict[str, str] = {}
     req, xsrf = session.open_client()
     if req is None:
         log.error("Нет сохранённой сессии ({}) — запусти браузерный прогон "
                   "(python hh.py autoclick --login), он её сохранит.", session.STATE_FILE)
         return {}
-    name_map = {rec.id: rec.vacancy.name for rec in vacancy_repository().load()}
+    repo = vacancy_repository().load()
+    name_map = {rec.id: rec.vacancy.name for rec in repo}
+    employer_map = {rec.id: (rec.vacancy.employer or "") for rec in repo}
     seen = store.applied_ids()
-    added = 0
-    counts: dict[str, int] = {}
+    added = failed = 0
     with req:
-        chats = chat.list_chats(req, xsrf, pages=120)   # потолок высокий: list_chats сам
-        if not chats:                                   # стопится на пустой странице (было 30 -> резало на ~600)
+        # потолок страниц — от числа известных откликов (по 20 чатов на страницу): один раз
+        # магический дефолт 30 уже резал корпус на ~600 при 1287 реальных (fix.md №10)
+        pages = max(120, len(seen) // 20 + 10)
+        chats = chat.list_chats(req, xsrf, pages=pages)
+        if not chats:
             log.warning("Чаты не получены (сессия от {} могла протухнуть) — обновит "
                         "следующий браузерный прогон.", session.state_age_hint())
             return {}
         if limit:
             chats = chats[:limit]
-        cached_msgs = {} if full else store.chat_messages()
-        cached_statuses = {} if full else store.statuses()
+        cached_msgs = store.chat_messages()
+        cached_statuses = store.statuses()
         now = datetime.datetime.now(datetime.timezone.utc)
         from_cache = 0
         log.info("Синк из чатов (HTTP, без браузера): {} — статусы + журнал + переписка…",
                  len(chats))
-        msgs_out: dict[str, dict] = {}
+        # merge-база = кеш: прогон обновляет поверх, пропуски/сбои не стирают известное
+        msgs_out: dict[str, dict] = dict(cached_msgs)
+        statuses: dict[str, str] = dict(cached_statuses)
         for i, c in enumerate(chats, 1):
             vid = str(c["vacancyId"])
             if not full and _sync_from_cache(c, cached_msgs, cached_statuses, seen, now):
-                msgs_out[vid] = cached_msgs[vid]   # save_* перезаписывают файлы целиком —
-                st = cached_statuses.get(vid)      # пропущенным переносим кешевые записи
-                if st:
-                    statuses[vid] = st
-                    counts[st] = counts.get(st, 0) + 1
-                from_cache += 1
+                from_cache += 1                    # база уже содержит кешевые записи
                 continue                           # без сети и без sleep
             data = chat.chat_data(req, xsrf, c["chatId"], c["applicantId"])
+            if not data:                           # сетевая ошибка — кешевую запись не затираем
+                failed += 1
+                continue
             # переписку сохраняем ЗДЕСЬ: chat_data уже получен, отдельных запросов не нужно
             ch = data.get("chat") or {}
             items = ((ch.get("messages") or {}).get("items")) or []
@@ -587,16 +591,21 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
             st = chat.deep_get(data, "currentApplicantState")
             if st:
                 statuses[vid] = st
-                counts[st] = counts.get(st, 0) + 1
             if vid not in seen:                    # новый отклик -> в журнал с реальной датой
                 store.log_applied(vid, _journal_name(data, vid, name_map),
                                   f"https://hh.ru/vacancy/{vid}", via=ApplyChannel.HH,
-                                  ts=chat.response_time(data))
+                                  ts=chat.response_time(data),
+                                  employer=employer_map.get(vid, ""))
                 seen.add(vid)
                 added += 1
             if i % 50 == 0:
                 log.info("  …{}/{}", i, len(chats))
             time.sleep(random.uniform(0.1, 0.3))   # мягко, но быстрее браузерного пути
+    if failed:
+        log.warning("Синк: {} чатов не получены (сетевые сбои) — остались кешевыми", failed)
+    counts: dict[str, int] = {}
+    for st in statuses.values():
+        counts[st] = counts.get(st, 0) + 1
     store.save_statuses(statuses)
     store.save_chat_messages(msgs_out)          # переписка -> лента подсветит «ждёт ответа»
     # Чат на вакансии = отклик БЫЛ. Отмечаем это в marks, иначе pick_candidates выбирает их
@@ -657,7 +666,8 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
             total = store.bump_quota(1)
             log.success("[{}/{}] Отклик (сегодня {}): {}  {}",
                         len(applied), eff, total, cand.name, cand.url)
-            store.log_applied(cand.id, cand.name, cand.url, via=ApplyChannel.CRON)
+            store.log_applied(cand.id, cand.name, cand.url, via=ApplyChannel.CRON,
+                              employer=cand.employer)
             _send_cover_via_chat(page, cand, cover.build_cover(cand, cover_mode))
         elif status is ApplyOutcome.ALREADY:
             reconciled[cand.id] = "applied"
@@ -735,7 +745,8 @@ def _apply_one_vacancy(page, vid: str, url: str, cover_text: str, name: str = ""
         store.mark_applied(vid)
         total = store.bump_quota(1)
         log.success("Отклик из ленты: {} (сегодня {})", vid, total)
-        store.log_applied(vid, name, cand.url, via=ApplyChannel.FEED)
+        store.log_applied(vid, name, cand.url, via=ApplyChannel.FEED,
+                          employer=cand.employer)
         if cover_text:
             result["letter"] = _send_cover_via_chat(page, cand, cover_text)
     elif st is ApplyOutcome.ALREADY:
