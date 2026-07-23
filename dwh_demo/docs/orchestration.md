@@ -90,4 +90,4 @@ docker compose exec -T airflow-scheduler airflow dags list-runs -d hh_etl
 ```
 
 Ожидаемо: последний ран в состоянии `success`, четыре таски (`init_schema` плюс три
-`load_*`), в логах каждой — строки вида `[etl] [postgres] loaded: 9831`.
+`load_*`), в логах каждой — строки вида `[etl] [postgres] loaded: 92730`.

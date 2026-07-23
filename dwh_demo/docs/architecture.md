@@ -2,7 +2,7 @@
 
 ## Что это за система
 
-Демо-DWH уровня Data / Analytics Engineer на реальных данных: ~10k вакансий, собранных
+Демо-DWH уровня Data / Analytics Engineer на реальных данных: ~92730 вакансий, собранных
 парсером родительского проекта (`../data/vacancies_raw.json`).
 
 Один и тот же extract + transform питает **три хранилища** — PostgreSQL, ClickHouse,
@@ -63,7 +63,7 @@ TARGETS = tuple(REGISTRY)
         │              │                  │                 │
         └──────────────┴──────────────────┴─────────────────┘
                        ▼
-                   Metabase  (дашборды /2 /3 /4 /5)
+                   Metabase  (дашборды /2 /3 /4 /5 + sources)
                        +
               Power BI (опционально, поверх MS SQL, вне Docker)
 ```
@@ -82,7 +82,8 @@ TARGETS = tuple(REGISTRY)
 **core** — звезда: факт `vacancies` плюс измерения `cities`, `employers`, `skills` и мост
 `vacancy_skills` (связь многие-ко-многим по навыкам).
 
-**mart** — витрины: `city_stats`, `skill_demand`, `salary_by_experience`, `top_employers`.
+**mart** — витрины: `city_stats`, `skill_demand`, `salary_by_experience`, `top_employers`,
+`source_stats` (объём/зарплата/remote в разрезе портала-источника).
 
 Исключение — ClickHouse: там вместо звезды **широкий факт** с массивом `skills`. Это не
 непоследовательность, а демонстрация разницы парадигм; подробности в

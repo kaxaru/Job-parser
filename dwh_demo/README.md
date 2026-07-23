@@ -1,7 +1,7 @@
 # HH DWH — ETL → PostgreSQL / ClickHouse / MS SQL → Metabase + Airflow + Grafana/Loki
 
 Портфолио-проект уровня Data / Analytics Engineer на реальных данных вакансий HH
-(`../data/vacancies_raw.json`, ~10k записей от парсера родительского проекта).
+(`../data/vacancies_raw.json`, ~92730 записей — три источника: hh/hirify/talanto).
 
 Один и тот же extract + transform питает **три хранилища**, все показаны в одном BI,
 оркестрация — Airflow, наблюдаемость — Grafana + Loki.
@@ -19,7 +19,7 @@
 - **Observability как код** — Grafana + Loki + Promtail, Loki на S3 (MinIO) с retention;
   дашборд «здоровье пайплайна»
 - **Текст-майнинг** — разметка 37 навыков регэкспами и флаг удалёнки по тексту
-- **Тесты** — unit без БД плюс integration на живых Postgres и ClickHouse
+- **Тесты** — unit без БД плюс integration на живых Postgres, ClickHouse и MS SQL (+ CI)
 
 > **Две ниши BI на одном проекте.** Metabase — аналитика данных (категориальные срезы),
 > Grafana — операционный взгляд (метрики Airflow и логи из Loki).
@@ -39,7 +39,7 @@
               │                   │ │ (on-insert)     │ │ MERGE/IDENTITY   │
               └─────────┬─────────┘ └────────┬────────┘ └───────┬──────────┘
                         └──────────► Metabase ◄──────────────────┘
-                             (дашборды /2, /3, /4, /5)
+                             (дашборды /2, /3, /4, /5, /6-sources)
             (Power BI/DAX — опционально, поверх MS SQL, вне Docker)
 ```
 
@@ -70,7 +70,7 @@ python -m bi all                              # 4. дашборды Metabase
 python -m etl all                  # init схем + load во все бэкенды
 python -m etl -t postgres load     # только Postgres, только загрузка
 python -m bi overview              # пересобрать один дашборд
-python -m pytest                   # 36 unit; integration отфильтрованы
+python -m pytest                   # 40 unit; integration отфильтрованы
 docker compose down -v             # полный сброс, включая тома
 ```
 
@@ -80,10 +80,10 @@ docker compose down -v             # полный сброс, включая т�
 [etl] [postgres] schema ready
 [etl] [clickhouse] schema ready
 [etl] [mssql] schema ready
-[etl] prepare: 9831 вакансий (extract+transform)
-[etl] [postgres] loaded: 9831
-[etl] [clickhouse] loaded: 9831
-[etl] [mssql] loaded: 9831
+[etl] prepare: 92730 вакансий (extract+transform)
+[etl] [postgres] loaded: 92730
+[etl] [clickhouse] loaded: 92730
+[etl] [mssql] loaded: 92730
 ```
 
 Совпадение чисел по всем бэкендам — главная проверка согласованности адаптеров.
@@ -122,7 +122,7 @@ dwh_demo/
 ├─ bi/                  провижининг Metabase (python -m bi)
 │  ├─ client.py         фасад REST
 │  ├─ registry.py       реестр дашбордов
-│  └─ dashboards/       base · overview · comparison · cooccurrence · mssql_overview
+│  └─ dashboards/       base · overview · comparison · cooccurrence · mssql_overview · source_comparison
 ├─ dags/hh_etl_dag.py   Airflow DAG (fan-out)
 ├─ observability/       Grafana + Loki как код
 ├─ search_demo/         PoC поиска: load.py, bench.py, REPORT.md
