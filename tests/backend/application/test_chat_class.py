@@ -199,7 +199,7 @@ def test_contact_not_detected(text):
 
 
 def test_contact_ignores_our_own_messages():
-    assert find_contacts([_m("мой ник @kxrIns", mine=True)]) == ""
+    assert find_contacts([_m("мой ник @my_own_nick", mine=True)]) == ""
 
 
 def test_contact_skips_telegram_bots():

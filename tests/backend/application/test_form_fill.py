@@ -154,14 +154,38 @@ def test_resume_ctx_excludes_salary_and_citizenship():
     assert "salary" not in ctx and "граждан" not in ctx
 
 
-@pytest.mark.parametrize("pii", ["граждан", "тольятти", "проживает", "+375", "khidechi", "@kxr"])
-def test_resume_md_pii_scrubbed_from_ctx(pii):
+# Полностью синтетический CV вместо личного personal/resume.md: тест герметичен (на чистом
+# клоне/CI личного файла нет — вскрыто CI 23.07), PII-строки построены под _PII_LINE-триггеры,
+# реальных данных не содержит.
+_FAKE_CV = """# Иван Тестов
+Гражданство: РФ, город проживания Приволжск
+Телефон: +7 (900) 000-00-00, telegram @test_handle, почта candidate@example.com
+Ожидания по зарплате: 200 000
+
+## Опыт
+Разработка API на Python/FastAPI, PostgreSQL.
+
+## Образование
+Высшее техническое.
+"""
+
+
+@pytest.fixture
+def fake_resume_md(monkeypatch, tmp_path):
+    md = tmp_path / "resume.md"
+    md.write_text(_FAKE_CV, encoding="utf-8")
+    monkeypatch.setattr(F, "_RESUME_MD", md)
+
+
+@pytest.mark.parametrize("pii", ["граждан", "приволжск", "проживания", "+7 (900",
+                                 "candidate@", "@test_handle"])
+def test_resume_md_pii_scrubbed_from_ctx(fake_resume_md, pii):
     # resume.md идёт как контекст, но строки с PII (гражданство/город/контакты) не уходят наружу
     assert pii.lower() not in F.build_resume_ctx().lower()
 
 
-def test_scrub_keeps_professional_context():
-    # профессиональный контекст (навыки/опыт) остаётся — иначе смысл resume.md теряется
+def test_scrub_keeps_professional_context(fake_resume_md):
+    # профессиональный контекст (навыки/опыт/образование) остаётся — иначе смысл resume.md теряется
     ctx = F.build_resume_ctx().lower()
     assert "fastapi" in ctx and "образование" in ctx
 
@@ -213,8 +237,8 @@ def test_match_answer_option_miss_is_none(monkeypatch):
 
 
 def test_match_answer_text_field(monkeypatch):
-    monkeypatch.setattr(F, "form_answers", lambda: [{"q": r"город", "a": "Тольятти"}])
-    assert F.match_answer("В каком городе?", ()) == ("Тольятти", None)
+    monkeypatch.setattr(F, "form_answers", lambda: [{"q": r"город", "a": "Приволжск"}])
+    assert F.match_answer("В каком городе?", ()) == ("Приволжск", None)
 
 
 def test_match_answer_no_pattern(monkeypatch):
