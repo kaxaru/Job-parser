@@ -2,6 +2,7 @@
 # Установка:  pip install -r requirements.txt   |   uv pip install -r requirements.txt
 aiohttp>=3.12          # async HTTP (engine=api)
 aiohttp-socks>=0.10    # SOCKS-прокси для aiohttp
+httpx>=0.27            # sync HTTP: cookie-синк чатов (session.py), LLM (openrouter.py)
 python-dotenv>=1.1     # чтение .env
 jinja2>=3.1            # шаблоны фида/дашборда (templates/*.j2)
 loguru>=0.7            # логирование
