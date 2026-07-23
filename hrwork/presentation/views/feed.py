@@ -201,6 +201,10 @@ def build_feed():
 
     # 5. HTML — лёгкий каркас: фильтры (server-side) + <script src> на данные
     n_status = sum(1 for r in records if r["status"])
+    # чип «Формы»: живые+протухшие ПО ВЫДАЧЕ (не len(forms) — очередь содержит и выпавшие
+    # из выдачи вакансии); формат совпадает с живым пересчётом refreshFormsChip (main.js)
+    n_alive = sum(1 for r in records if r["needs_form"] and not r["form_dead"])
+    n_dead = sum(1 for r in records if r["needs_form"] and r["form_dead"])
     html = env.get_template("feed.html.j2").render(
         cities=cities,
         langs=langs,
@@ -209,7 +213,7 @@ def build_feed():
         sal_max=sal_max,
         total_records=len(records),
         has_status=bool(statuses) or bool(forms),
-        n_forms=len(forms),
+        n_forms=f"{n_alive}+{n_dead}⌛" if n_dead else str(n_alive),
         sources=sources,
     )
     FEED_OUT.write_text(html, encoding="utf-8")

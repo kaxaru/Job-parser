@@ -111,7 +111,7 @@ document.getElementById('modal-box').addEventListener('click', async e => {
       setStatus(id, 'applied');                 /* отметить в ленте */
     } else if (res.status === 'form') {
       const v = V_MAP[id];
-      if (v) { v.needs_form = true; refreshCardStatus(v); }  /* живой бейдж «форма», без пересборки */
+      if (v) { v.needs_form = true; refreshCardStatus(v); refreshFormsChip(); }  /* живой бейдж «форма» */
       /* кнопку НЕ включаем: форма уже в очереди, повторный автоклик не нужен */
     } else if (res.status === 'queued') {
       if (statusEl) statusEl.textContent = `➕ в очереди крона (${res.position || '?'} в ожидании) — дожмёт после батча`;
@@ -450,6 +450,18 @@ function injectAppliedControl(count) {
   });
 }
 
+/* Живой счётчик чипа «Формы»: число из шаблона запечено при сборке ленты и отстаёт от
+   очереди (крон дописывает формы весь день). Считаем по факту оверлея: актуальные/всего. */
+function refreshFormsChip() {
+  const btn = document.querySelector('.sched-btns [data-status="form"]');
+  if (!btn) return;
+  const inFeed = VACANCIES.filter(v => v.needs_form);
+  const alive = inFeed.filter(v => !v.form_dead).length;
+  btn.textContent = inFeed.length === alive
+    ? `📝 Формы (${alive})`
+    : `📝 Формы (${alive}+${inFeed.length - alive}⌛)`;   /* живые + протухшие (серые) */
+}
+
 /* ── Живой оверлей форм/статусов/журнала с сервера: подхватывает изменения, случившиеся
    ПОСЛЕ сборки ленты (форма после отклика, свежий --sync-status, журнал откликов), без
    пересборки feed-data.js. file:// -> fetch падает -> null -> no-op. ── */
@@ -459,10 +471,15 @@ async function initOverlay() {
     pullJson('api/chats'),
   ]);
   let changed = false;
-  for (const id of Object.keys(forms || {})) {
+  for (const [id, rec] of Object.entries(forms || {})) {
     const v = V_MAP[id];
-    if (v && !v.needs_form) { v.needs_form = true; bustCard(id); changed = true; }
+    if (!v) continue;
+    const dead = !!(rec && rec.dead);
+    if (!v.needs_form || v.form_dead !== dead) {
+      v.needs_form = true; v.form_dead = dead; bustCard(id); changed = true;
+    }
   }
+  refreshFormsChip();
   for (const [id, st] of Object.entries(statuses || {})) {
     const v = V_MAP[id];
     if (v && v.status !== st) { v.status = st; bustCard(id); changed = true; }

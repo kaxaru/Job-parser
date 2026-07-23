@@ -24,6 +24,7 @@ from typing import NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 from hrwork.application.apply.chat import chat_class
+from hrwork.application.apply.forms.form_status import FormSweepStatus
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import DATA_DIR, SERVE_PORT, log
 
@@ -97,8 +98,15 @@ class _Handler(SimpleHTTPRequestHandler):
         return _json(200, store.marks())
 
     def _forms_get(self) -> Resp:
-        """Форм-очередь с диска — фронт накладывает бейдж «форма» БЕЗ пересборки ленты."""
-        return _json(200, store.forms())
+        """Форм-очередь с диска + признак протухшести (свип не нашёл полей/страница умерла) —
+        фронт накладывает бейджи «форма»/«не актуальна» и живой счётчик БЕЗ пересборки ленты."""
+        cache = store.form_cache()
+        out = {}
+        for vid, rec in store.forms().items():
+            s = FormSweepStatus.from_code((cache.get(vid) or {}).get("status"))
+            out[vid] = {**(rec if isinstance(rec, dict) else {}),
+                        "dead": bool(s and s.is_dead)}
+        return _json(200, out)
 
     def _statuses_get(self) -> Resp:
         """Статусы откликов с HH — фронт освежает CRM-бейджи без пересборки ленты."""
