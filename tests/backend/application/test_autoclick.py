@@ -1,6 +1,9 @@
 """Тесты отбора кандидатов, дневной квоты и single-instance lock (без браузера)."""
 import datetime
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
@@ -347,10 +350,78 @@ def test_lock_holder_broken_json_recent_is_held(tmp_lock):
 def test_lock_holder_broken_json_old_is_free(tmp_lock, monkeypatch):
     # битый lock со старым mtime -> осиротевший, отдаём
     tmp_lock.write_text("{not json", encoding="utf-8")
-    import os
     old = lock.time.time() - lock.LOCK_TTL - 10
     os.utime(tmp_lock, (old, old))
     assert lock._lock_holder() is None
+
+
+# ── Живость pid: осиротевший lock должен отдаваться СРАЗУ, а не по TTL ──
+def test_pid_alive_true_for_running_process():
+    assert lock._pid_alive(os.getpid()) is True
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="zombie-pid — свойство хендлов Windows")
+def test_pid_alive_false_for_killed_pid_while_handle_open():
+    # ИНЦИДЕНТ 25.07.2026: watchdog расстрелял дерево, lock остался с pid=26652. OpenProcess
+    # на мёртвый pid УСПЕВАЛ (объект жив, пока чужой хендл его держит) -> _pid_alive врал
+    # «жив» -> автоотклики стояли 3ч до LOCK_TTL. Держим хендл сами, воспроизводя условие.
+    import ctypes
+    p = subprocess.Popen([sys.executable, "-c", "pass"])
+    h = ctypes.windll.kernel32.OpenProcess(0x1000, False, p.pid)   # объект не исчезнет
+    try:
+        p.wait(timeout=30)
+        assert lock._pid_alive(p.pid) is False
+    finally:
+        if h:
+            ctypes.windll.kernel32.CloseHandle(h)
+
+
+# ── release_if_mine: аварийная отдача lock перед сносом дерева ──
+def test_release_if_mine_drops_own_lock(tmp_lock):
+    tmp_lock.write_text(json.dumps({"pid": os.getpid(), "ts": lock.time.time()}), encoding="utf-8")
+    assert lock.release_if_mine() is True
+    assert not tmp_lock.exists()
+
+
+def test_release_if_mine_keeps_foreign_lock(tmp_lock):
+    # чужой lock не наш, чтобы снимать: иначе второй Chromium на persistent-профиль
+    tmp_lock.write_text(json.dumps({"pid": 424242, "ts": lock.time.time()}), encoding="utf-8")
+    assert lock.release_if_mine() is False
+    assert tmp_lock.exists()
+
+
+@pytest.mark.parametrize("body", [None, "{битый", '{"ts": 1}'])
+def test_release_if_mine_survives_absent_broken_and_pidless(tmp_lock, body):
+    if body is not None:
+        tmp_lock.write_text(body, encoding="utf-8")
+    assert lock.release_if_mine() is False           # ничего не сняли и не упали
+
+
+def test_exit_keeps_lock_reclaimed_by_another_instance(tmp_lock):
+    # Прогон, переживший LOCK_TTL, к выходу мог уже лишиться lock: другой инстанс счёл его
+    # протухшим и перезабрал. Безусловный unlink в `finally` снёс бы ЧУЖОЙ файл -> второй
+    # Chromium на persistent-профиль. Снимаем только свой.
+    with lock._single_instance():
+        tmp_lock.write_text(json.dumps({"pid": 424242, "ts": lock.time.time()}),
+                            encoding="utf-8")          # lock «угнали» пока мы работали
+    assert json.loads(tmp_lock.read_text())["pid"] == 424242      # чужой lock уцелел
+
+
+def test_watchdog_releases_lock_before_killing_tree(monkeypatch):
+    # ИНЦИДЕНТ 25.07.2026: снос дерева не давал сработать `finally` -> lock с мёртвым pid
+    # блокировал крон-слоты откликов 3ч. Порядок обязателен: сперва отдать lock, потом стрелять.
+    calls = []
+
+    def _release():
+        calls.append("release")
+        return True
+
+    monkeypatch.setattr(autoclick, "release_if_mine", _release)
+    monkeypatch.setattr(autoclick.faulthandler, "dump_traceback", lambda **kw: None)
+    monkeypatch.setattr(autoclick.subprocess, "run", lambda *a, **kw: calls.append("taskkill"))
+    monkeypatch.setattr(autoclick.os, "_exit", lambda code: calls.append(f"exit{code}"))
+    autoclick._kill_own_tree()
+    assert calls == ["release", "taskkill", "exit1"]
 
 
 # ── ApplyWorker: submit не виснет при падении браузера (дедлок) ──

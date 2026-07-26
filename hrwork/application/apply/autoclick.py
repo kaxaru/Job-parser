@@ -30,7 +30,7 @@ from hrwork.application.apply.candidates import Candidate, pick_candidates
 from hrwork.application.apply.chat import chat
 from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome
 from hrwork.application.apply.runtime import bump_state
-from hrwork.application.apply.runtime.lock import _single_instance
+from hrwork.application.apply.runtime.lock import _single_instance, release_if_mine
 from hrwork.application.apply.runtime.quota import DAILY_CAP_DEFAULT
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import DATA_DIR, FORMS_ENABLED, log
@@ -82,6 +82,13 @@ def _kill_own_tree() -> None:
     когда основной поток намертво заблокирован в Playwright и вернуть управление невозможно."""
     log.error("WATCHDOG: прогон завис (>{} мин) — снимаю дерево процессов", WATCHDOG_KILL_S // 60)
     faulthandler.dump_traceback(file=sys.stderr)          # стек ПЕРЕД сносом
+    # ИНЦИДЕНТ 25.07.2026: taskkill /T снимает и НАС САМИХ, поэтому `finally` в
+    # _single_instance не наступает — lock оставался с мёртвым pid. Отдаём его сами, ДО
+    # выстрела, иначе файл переживает прогон и блокирует крон-слоты. Осознанная цена —
+    # под-секундное окно, в котором ждущий инстанс может взять lock, пока наш Chromium ещё
+    # умирает (docs/errors.md: «Осиротевший lock»); выигрыш — иммунитет к reuse pid.
+    if release_if_mine():
+        log.info("WATCHDOG: autoclick.lock отдан до сноса дерева")
     with contextlib.suppress(Exception):
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())],
                        capture_output=True, timeout=30)

@@ -13,20 +13,35 @@ from hrwork.config import DATA_DIR, log
 LOCK_FILE = DATA_DIR / "autoclick.lock"          # один браузер на persistent-профиль
 # TTL должен ПОКРЫВАТЬ самый долгий прогон: батч 25 откликов ~30 мин, полный на 200 —
 # до ~4ч. Меньший TTL ложно счёл бы живой батч «протухшим» → второй Chromium на профиль
-# → краш. Мёртвый pid отдаёт lock сразу (см. _lock_holder); TTL страхует лишь reuse pid.
+# → краш. Мёртвый pid отдаёт lock сразу (см. _lock_holder); TTL страхует лишь случаи, где
+# живость определить нельзя: reuse pid и процесс, вышедший с кодом ровно 259.
 LOCK_TTL  = 4 * 3600                              # 4 часа
+_STILL_ACTIVE = 259                               # GetExitCodeProcess: процесс ещё бежит
 
 
 def _pid_alive(pid: int) -> bool:
+    """Бежит ли процесс СЕЙЧАС.
+
+    ИНЦИДЕНТ 25.07.2026: watchdog расстрелял дерево (pid 26652 вышел с кодом 1), но
+    `OpenProcess` на него по-прежнему УСПЕВАЛ — объект процесса живёт в таблице, пока
+    чужой хендл его держит, хотя в списке процессов его уже нет. Проверка «хендл открылся
+    → жив» врала, `_lock_holder` считала lock занятым, и крон-слоты откликов отваливались
+    3 часа с «lock занят (pid=26652)» — до истечения LOCK_TTL. Открытие хендла живость НЕ
+    доказывает: спрашиваем код выхода."""
     if not pid:
         return False
     with contextlib.suppress(Exception):
         import ctypes
         h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFO
-        if h:
+        if not h:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code)):
+                return True      # спросить не смогли — считаем живым, профиль вслепую не отдаём
+            return code.value == _STILL_ACTIVE
+        finally:
             ctypes.windll.kernel32.CloseHandle(h)
-            return True
-        return False
     with contextlib.suppress(Exception):     # не-Windows фолбэк
         os.kill(pid, 0)
         return True
@@ -54,6 +69,21 @@ def _lock_holder():
     return None
 
 
+def release_if_mine() -> bool:
+    """Снять lock, если его держит ЭТОТ процесс. True — сняли.
+
+    Нужно аварийному выходу: watchdog расстреливает СОБСТВЕННОЕ дерево
+    (`autoclick.py::_kill_own_tree`), поэтому `finally` в `_single_instance` не наступает и
+    файл остаётся с мёртвым pid. Чужой lock не трогаем никогда — иначе второй Chromium
+    на persistent-профиль."""
+    with contextlib.suppress(OSError, TypeError, ValueError):
+        info = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+        if int(info.get("pid", 0)) == os.getpid():
+            LOCK_FILE.unlink(missing_ok=True)
+            return True
+    return False
+
+
 @contextmanager
 def _single_instance(wait_retries: int = 0, wait_s: float = 60):
     """Отказ, если уже бежит свежий инстанс (lock не старше LOCK_TTL и PID жив).
@@ -77,5 +107,7 @@ def _single_instance(wait_retries: int = 0, wait_s: float = 60):
     try:
         yield
     finally:
-        with contextlib.suppress(OSError):
-            LOCK_FILE.unlink()
+        # Снимаем ТОЛЬКО свой файл: прогон, переживший LOCK_TTL, к этому моменту мог уже
+        # лишиться lock (другой инстанс счёл его протухшим и перезабрал) — безусловный unlink
+        # снёс бы чужой lock и пустил второй Chromium на профиль.
+        release_if_mine()
