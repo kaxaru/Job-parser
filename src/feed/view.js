@@ -5,7 +5,7 @@ import { COVER_TEMPLATES, coverLetter } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
   ageColor, cardColor, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
-  matchColor, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr,
+  isFrozenChat, matchColor, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr,
 } from './model.js';
 import { resumeMatch } from './resume.js';
 
@@ -53,16 +53,20 @@ function statusBadge(v) {
      (шаблонную рассылку часто шлют от имени рекрутера, флаг API её не ловит). */
   if (v.chat?.needs_reply) {
     const c = v.chat;
-    const frozen = c.kind === 'ack';                 /* «резюме получено, свяжемся» — тупик, висит неделями */
+    const frozen = isFrozenChat(c);                  /* тупик: заглушка «свяжемся» или бот-интервью */
+    const botIv = c.kind === 'bot_interview';        /* интервью у бота в Telegram/Max — полумёртвое */
     const who = frozen ? '' : c.sender === 'human' ? '👤' : c.sender === 'bot' ? '🤖' : '📋';
-    const bg = frozen ? '#5b8fb0'                    /* фриз — ледяной, отличать от живых вопросов */
+    const bg = botIv ? '#E8C11C'                     /* жёлтый — уводит во внешний мессенджер */
+             : frozen ? '#5b8fb0'                    /* фриз — ледяной, отличать от живых вопросов */
              : c.sender === 'human' ? '#D64550'      /* личное — требует внимания */
              : c.sender === 'bot' ? '#7B8794'        /* бот — серый, фоновый */
              : '#4C9BD1';                            /* шаблонная рассылка */
+    /* белый текст бейджа на жёлтом нечитаем — только для этого вида даём тёмный */
+    const fg = botIv ? ';color:#1f2937' : '';
     const tip = (c.preview || '').replace(/"/g, '&quot;');
     const locked = c.can_write === false ? ' 🔒' : '';
     const age = chatAgeLabel(c.ts);                  /* давность последнего сообщения работодателя */
-    out += `<span class="status-badge" style="background:${bg}"`
+    out += `<span class="status-badge" style="background:${bg}${fg}"`
          + ` title="${esc(tip)}">${who}${who ? ' ' : ''}${esc(c.label || 'ответ')}`
          + `${age ? ' · ' + age : ''}`
          + `${c.manual_only ? ' · решай сам' : ''}${locked}</span>`;

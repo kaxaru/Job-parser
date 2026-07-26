@@ -133,6 +133,14 @@ export const STATE_LABELS = (typeof STATE_LABELS_PY !== 'undefined' && STATE_LAB
   HIRED: 'Оффер', DISCARD: 'Отказ', DISCARD_BY_EMPLOYER: 'Отказ',
   DISCARD_BY_APPLICANT: 'Вы отказались', DISCARD_VACANCY_CLOSED: 'Закрыта',
 };
+/* Тупиковые виды чата («фриз»): заглушка «резюме получено, свяжемся» и интервью с ботом
+   в чужом мессенджере — висят неделями и ответа по существу не ждут. Единый источник —
+   Python (chat_class.FROZEN_KINDS), инжектится как CHAT_FROZEN_PY; хардкод — фолбэк
+   для офлайна/тестов. Раньше код 'ack' был захардкожен в трёх местах ленты. */
+export const FROZEN_CHAT_KINDS = new Set(
+  (typeof CHAT_FROZEN_PY !== 'undefined' && CHAT_FROZEN_PY) || ['ack', 'bot_interview']);
+export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
+
 /* «Приглашение» — работодатель проявил активность (не просто RESPONSE и не отказ). */
 const INVITED = new Set(['INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT', 'HIRED', 'CONSIDER']);
 
@@ -222,11 +230,12 @@ export function filterVacancies(vacancies, f) {
     if (f.chatFilter === 'wait' && !v.chat?.needs_reply) return false;
     if (f.chatFilter === 'manual' && !v.chat?.manual_only) return false;
     /* 'personal' — живой человек И чат открыт для ответа: реальный список дел,
-       без шаблонной рассылки, без чатов, куда HH писать не даст, и БЕЗ фриз-заглушек
-       «резюме получено, свяжемся» (kind=ack) — их пишет человек, но диалога там нет */
+       без шаблонной рассылки, без чатов, куда HH писать не даст, и БЕЗ фризов
+       (заглушка «резюме получено, свяжемся» и бот-интервью в чужом мессенджере —
+       диалога там нет) */
     if (f.chatFilter === 'personal'
         && !(v.chat?.needs_reply && v.chat.sender === 'human'
-             && v.chat.can_write !== false && v.chat.kind !== 'ack')) {
+             && v.chat.can_write !== false && !isFrozenChat(v.chat))) {
       return false;
     }
     /* 'contact' — рекрутёр оставил телефон/телеграм в переписке (независимо от needs_reply:

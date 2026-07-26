@@ -2,6 +2,8 @@
 import pytest
 
 from hrwork.application.apply.chat.chat_class import (
+    FROZEN_CODES,
+    FROZEN_KINDS,
     ChatKind,
     analyze,
     build_template_index,
@@ -19,7 +21,7 @@ def _m(text, mine=False, bot=False):
 # ── тип сообщения ──
 def test_classify_order_screening_before_question():
     # у бот-скрининга тоже бывает «?», но отвечать в чат бессмысленно — уводит на внешнюю форму
-    assert classify("Пройдите короткое первичное интервью с ГигаРекрутером?") is ChatKind.SCREENING
+    assert classify("Пройдите первичное интервью, это ускорит рассмотрение?") is ChatKind.SCREENING
     assert classify("К сожалению, мы не готовы пригласить вас") is ChatKind.REJECT
     assert classify("Буду рад обсудить детали, когда вам удобно?") is ChatKind.INVITE
     assert classify("Занимались ли вы A/B-тестами?") is ChatKind.QUESTION
@@ -33,6 +35,43 @@ def test_imperative_ask_without_question_mark():
     # но «заполните анкету» — это внешний скрининг, а не вопрос в чате
     assert classify("Спасибо за отклик! Заполните небольшую анкету") is ChatKind.SCREENING
     assert classify("Приглашаем к заполнению анкеты") is ChatKind.SCREENING
+
+
+# ── бот-интервью в чужом мессенджере: полумёртвая ветка, фриз ──
+_GIGA = ("Здравствуйте! Пройдите короткое первичное интервью с ГигаРекрутером на вакансию "
+         "\"Инженер по нагруженному тестированию\". Это позволит быстрее рассмотреть вашу "
+         "кандидатуру. Вы можете пройти интервью в Максе: "
+         "https://max.ru/giga_recruiter_bot?start=c472oovjC2Kp в Telegram: "
+         "https://t.me/Giga_recruiter_bot?start=nAIEDYoHe85GqGKd9ExBByqG")
+
+
+@pytest.mark.parametrize("txt", [
+    _GIGA,
+    # у Сбера несколько юрлиц-прокладок с идентичными письмами: имя компании в детекте не
+    # участвует, ловим бот-ссылку с ?start= (deep-link в бота, а не живой @handle)
+    "Добрый день! Для продолжения пройдите интервью: https://t.me/hr_screening_bot?start=Ab12Cd",
+    "Наш AI рекрутер задаст вам пару вопросов, пройдите по ссылке",
+    "Приглашаем на интервью с ботом",
+])
+def test_bot_interview_is_frozen_not_screening(txt):
+    kind = classify(txt)
+    assert kind is ChatKind.BOT_INTERVIEW
+    assert kind in FROZEN_KINDS          # полумёртвое: даже пройденное у бота часто морозится
+    assert kind.needs_reply is True      # бейдж в ленте рисуется только для ждущих
+
+
+@pytest.mark.parametrize("txt", [
+    "Меня зовут Иван, напишите мне в телеграм @ivan_hr, обсудим вакансию",   # живой рекрутёр
+    "Свяжитесь с нами в whatsapp по номеру из профиля",
+])
+def test_human_channel_redirect_is_not_bot_interview(txt):
+    assert classify(txt) is ChatKind.REDIRECT
+
+
+def test_frozen_kinds_is_single_source_for_feed():
+    # лента берёт коды через инжект CHAT_FROZEN_PY; расхождение = 'ack' снова захардкожен в JS
+    assert FROZEN_CODES == ("ack", "bot_interview")
+    assert {k.code for k in FROZEN_KINDS} == set(FROZEN_CODES)
 
 
 def test_ack_boilerplate_is_frozen():

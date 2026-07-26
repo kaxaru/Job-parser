@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from hrwork.application.apply.chat import chat_class
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
@@ -114,10 +115,17 @@ def feed_globals(tmp_path_factory):
 @pytest.mark.parametrize("name", [
     "VACANCIES", "SAL_MAX", "SAVED_MARKS", "FX_RATES", "FX_ALIAS",
     "STATE_LABELS_PY", "RESUME_CORE_PY", "RESUME_EXPS_PY", "MARK_VALUES_PY",
+    "CHAT_FROZEN_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
     # Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
     assert f"const {name} = " in feed_globals["text"]
+
+
+def test_frozen_chat_kinds_injected_from_python(feed_globals):
+    # тупиковые виды чата — единый источник в chat_class.FROZEN_KINDS; хардкод 'ack' в JS
+    # разъезжался бы с Python (в ленте он был в трёх местах)
+    assert _const(feed_globals["text"], "CHAT_FROZEN_PY") == list(chat_class.FROZEN_CODES)
 
 
 @pytest.mark.parametrize("vid, field, expected", [

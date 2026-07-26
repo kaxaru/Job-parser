@@ -7,7 +7,7 @@ import {
   applyVacancy, exportMarks, importMarks, loadInitialMarks,
   pullJson, pullServer, pushServer, saveLocal,
 } from './marks.js';
-import { appliedInRange, convert, fmtK } from './model.js';
+import { appliedInRange, convert, fmtK, isFrozenChat } from './model.js';
 import { createStore } from './store.js';
 import {
   applyCardStatus, bustCard, closeModal, refreshCardStatus, render, setSync, showModal,
@@ -375,7 +375,7 @@ function injectChatFilter(count, personal, contacts) {
   g.innerHTML =
     '<span class="filter-label">💬 Чаты</span>' +
     '<div class="sched-btns">' +
-    `<button class="sched-btn" id="chat-personal" title="Живой человек (без фриз-заглушек «свяжемся»), чат открыт для ответа">👤 Личные (${personal})</button>` +
+    `<button class="sched-btn" id="chat-personal" title="Живой человек (без фризов: заглушек «свяжемся» и бот-интервью), чат открыт для ответа">👤 Личные (${personal})</button>` +
     `<button class="sched-btn" id="chat-wait">Все ждут ответа (${count})</button>` +
     '<button class="sched-btn" id="chat-manual">💰 Решай сам</button>' +
     `<button class="sched-btn" id="chat-contact" title="Рекрутёр оставил телефон/телеграм в переписке">📞 С контактами (${contacts})</button>` +
@@ -503,7 +503,7 @@ async function initOverlay() {
     if (info.contact) contacts++;
     if (info.needs_reply) {
       waiting++;
-      if (info.sender === 'human' && info.can_write !== false && info.kind !== 'ack') personal++;
+      if (info.sender === 'human' && info.can_write !== false && !isFrozenChat(info)) personal++;
     }
     bustCard(id); changed = true;
   }

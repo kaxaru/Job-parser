@@ -14,7 +14,7 @@ from html.parser import HTMLParser
 
 from jinja2 import Environment, FileSystemLoader
 
-from hrwork.application.apply.chat import chat
+from hrwork.application.apply.chat import chat, chat_class
 from hrwork.application.apply.forms.form_status import FormSweepStatus
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import (
@@ -190,6 +190,8 @@ def build_feed():
         f"const RESUME_CORE_PY = {json.dumps(RESUME_CORE)};\n"
         f"const RESUME_EXPS_PY = {json.dumps([EXP_LABELS[e] for e in RESUME_EXP_IDS])};\n"
         f"const MARK_VALUES_PY = {json.dumps(list(MARK_VALUES))};\n"     # словарь пометок (marks.py)
+        # тупиковые виды чата (chat_class.FROZEN_KINDS): бейдж, фильтр «Личные» и счётчик
+        f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
     )
     (DATA_DIR / "feed-data.js").write_text(data_js, encoding="utf-8")
     log.info("feed-data.js сохранён  ({:.1f} МБ)", len(data_js.encode("utf-8")) / 1e6)

@@ -14,6 +14,7 @@ class ChatKind(Enum):
     """Тип последнего сообщения работодателя (для бейджа в ленте)."""
     QUESTION = "question"      # прямой вопрос — нужен ответ
     SCREENING = "screening"    # бот зовёт на внешний скрининг/анкету
+    BOT_INTERVIEW = "bot_interview"   # интервью с БОТОМ в чужом мессенджере — фриз, полумёртвое
     REDIRECT = "redirect"      # перевод в другой канал (telegram и т.п.) — не отвечается
     INVITE = "invite"          # приглашение/интерес
     REJECT = "reject"          # отказ
@@ -34,28 +35,47 @@ class ChatKind(Enum):
         """Ждёт нашей реакции? Отказ и молчание — не ждут. REDIRECT ждёт — но реакция
         «пойти по ссылке», а не «написать в чат» (в чат отвечать бессмысленно)."""
         return self in (ChatKind.QUESTION, ChatKind.SCREENING, ChatKind.REDIRECT,
-                        ChatKind.INVITE, ChatKind.OTHER, ChatKind.ACK)
+                        ChatKind.INVITE, ChatKind.OTHER, ChatKind.ACK,
+                        ChatKind.BOT_INTERVIEW)
 
 
 _LABELS = {
-    ChatKind.QUESTION:  "❓ вопрос",
-    ChatKind.SCREENING: "🤖 анкета",
-    ChatKind.REDIRECT:  "↗ внешний канал",
-    ChatKind.INVITE:    "🎉 приглашение",
-    ChatKind.REJECT:    "✖ отказ",
-    ChatKind.OTHER:     "💬 сообщение",
-    ChatKind.ACK:       "🧊 фриз",
-    ChatKind.NONE:      "",
+    ChatKind.QUESTION:      "❓ вопрос",
+    ChatKind.SCREENING:     "🤖 анкета",
+    ChatKind.BOT_INTERVIEW: "🟡 бот-интервью",
+    ChatKind.REDIRECT:      "↗ внешний канал",
+    ChatKind.INVITE:        "🎉 приглашение",
+    ChatKind.REJECT:        "✖ отказ",
+    ChatKind.OTHER:         "💬 сообщение",
+    ChatKind.ACK:           "🧊 фриз",
+    ChatKind.NONE:          "",
 }
+
+# Фриз — тупиковые ветки: по существу ответа не ждут, но висят в ленте неделями.
+# ЕДИНЫЙ источник для ленты: инжектится в feed-data.js как CHAT_FROZEN_PY, иначе код 'ack'
+# был бы захардкожен в трёх местах JS (бейдж, фильтр «Личные», счётчик).
+FROZEN_KINDS = frozenset({ChatKind.ACK, ChatKind.BOT_INTERVIEW})
+FROZEN_CODES = tuple(sorted(k.code for k in FROZEN_KINDS))
 
 # Порядок проверок важен: бот-скрининг и отказ распознаём ДО вопроса — они тоже
 # бывают с «?», но отвечать в чат бессмысленно (скрининг уводит на внешнюю форму).
 _SCREENING = re.compile(
-    r"первичн\w*\s+интервью|гигарекрутер|пройдите\s+(?:короткое|опрос)|"
+    r"первичн\w*\s+интервью|пройдите\s+(?:короткое|опрос)|"
     r"чтобы работодатель узнал|ответьте на (?:несколько )?вопрос|"
     r"не забудьте пройти|пройти отбор|видеоинтервью|тестовое задание по ссылке|"
     # «заполните анкету» — тот же внешний скрининг, только словами побуждения
     r"заполн\w+\s+(?:небольш\w+\s+|пожалуйста,?\s+)?анкет|заполнени\w+\s+анкет", re.I)
+# Интервью с БОТОМ в чужом мессенджере: «пройдите интервью с ГигаРекрутером» + deep-link
+# в Telegram/Max (`?start=<токен>` — признак бота, а не живого @handle). Отдельно от SCREENING,
+# потому что это ПОЛУМЁРТВАЯ ветка: даже пройденное у бота интервью часто заканчивается
+# заморозкой вакансии, поэтому кладём во фриз (FROZEN_KINDS), а не в «нужна анкета».
+# Детект строго по ТЕКСТУ, не по работодателю: у Сбера несколько юрлиц-прокладок,
+# письма из которых идентичны, а название компании в чате разное.
+_BOT_INTERVIEW = re.compile(
+    r"гигарекрутер|giga[_\s-]?recruiter"
+    r"|интервью\s+с\s+(?:ботом|[\w-]*рекрутером)"
+    r"|(?:виртуальн|цифров|ии|ai)\w*[\s-]+рекрутер"
+    r"|(?:t\.me|max\.ru)/\w*(?:bot|recruiter)\w*\?start=", re.I)
 # Боты часто спрашивают ПОВЕЛИТЕЛЬНЫМ наклонением, без «?»: «Укажите ваши зарплатные
 # ожидания…», «Расскажите про опыт…». Проверка только по «?» такие пропускала.
 _IMPERATIVE_ASK = re.compile(
@@ -109,6 +129,8 @@ def classify(text: str) -> ChatKind:
     t = " ".join((text or "").split())
     if not t:
         return ChatKind.NONE
+    if _BOT_INTERVIEW.search(t):
+        return ChatKind.BOT_INTERVIEW      # раньше SCREENING: бот-интервью тоже «пройдите…»
     if _SCREENING.search(t):
         return ChatKind.SCREENING
     if _REJECT.search(t):

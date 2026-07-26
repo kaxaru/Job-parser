@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import {
   ageColor, appliedInRange, cardColor, chatAgeLabel, convert, esc, filterVacancies, fmtK, fmtSal, hashId,
-  matchColor, resolveCur, statusInfo, tagClr,
+  isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -76,18 +76,37 @@ describe('filterVacancies — призраки (выпавшие из выдач
   });
 });
 
-describe('filterVacancies — «Личные»: живой диалог, без фриз-заглушек (kind=ack)', () => {
+describe('filterVacancies — «Личные»: живой диалог, без фризов (ack / bot_interview)', () => {
   const human  = vac({ id: 'h', chat: { needs_reply: true, sender: 'human', kind: 'question' } });
   const frozen = vac({ id: 'f', chat: { needs_reply: true, sender: 'human', kind: 'ack' } });
+  const botIv  = vac({ id: 'g', chat: { needs_reply: true, sender: 'human', kind: 'bot_interview' } });
   const bot    = vac({ id: 'b', chat: { needs_reply: true, sender: 'bot', kind: 'question' } });
   const closed = vac({ id: 'c', chat: { needs_reply: true, sender: 'human', kind: 'question', can_write: false } });
+  const all = [human, frozen, botIv, bot, closed];
   it('personal: только человек с живым текстом; фриз/бот/закрытый чат скрыты', () => {
-    assert.deepEqual(
-      filterVacancies([human, frozen, bot, closed], flt({ chatFilter: 'personal' })).map(v => v.id),
-      ['h']);
+    assert.deepEqual(filterVacancies(all, flt({ chatFilter: 'personal' })).map(v => v.id), ['h']);
   });
-  it('wait: фриз остаётся виден (это широкий фильтр, не «Личные»)', () => {
-    assert.equal(filterVacancies([human, frozen, bot, closed], flt({ chatFilter: 'wait' })).length, 4);
+  it('personal: бот-интервью (Сбер/ГигаРекрутер) — фриз, в список дел не попадает', () => {
+    /* письмо приходит от имени человека, но диалога нет: интервью проходят у бота
+       в Telegram/Max, а вакансия после этого обычно морозится */
+    assert.equal(isFrozenChat(botIv.chat), true);
+    assert.equal(filterVacancies([botIv], flt({ chatFilter: 'personal' })).length, 0);
+  });
+  it('wait: фризы остаются видны (это широкий фильтр, не «Личные»)', () => {
+    assert.equal(filterVacancies(all, flt({ chatFilter: 'wait' })).length, 5);
+  });
+});
+
+describe('isFrozenChat — тупиковые виды чата', () => {
+  it('фриз: заглушка «свяжемся» и бот-интервью', () => {
+    assert.equal(isFrozenChat({ kind: 'ack' }), true);
+    assert.equal(isFrozenChat({ kind: 'bot_interview' }), true);
+  });
+  it('не фриз: живой вопрос, редирект к человеку, отсутствие чата', () => {
+    assert.equal(isFrozenChat({ kind: 'question' }), false);
+    assert.equal(isFrozenChat({ kind: 'redirect' }), false);
+    assert.equal(isFrozenChat(null), false);
+    assert.equal(isFrozenChat(undefined), false);
   });
 });
 
