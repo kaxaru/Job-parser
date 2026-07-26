@@ -176,12 +176,27 @@ export function cardColor(v) {
 }
 
 /* Тон РАМКИ карточки. Отличается от cardColor тем, что учитывает полумёртвое бот-интервью:
-   отклик формально ушёл (рамка была бы зелёной), но интервью проходят у бота в чужом
-   мессенджере, а вакансия после этого обычно морозится — красим жёлтым, чтобы такие
-   не выглядели живыми откликами. Отказ/приглашение с HH сильнее: это реальный исход.
-   '' = тона нет, вызывающий красит по ручной пометке. */
+   интервью проходят у бота в чужом мессенджере, а вакансия после этого обычно морозится.
+
+   Приоритет: отказ -> бот-интервью -> приглашение -> ручная пометка. Жёлтое стоит ВЫШЕ
+   зелёного не случайно: HH сам переводит такой отклик в INTERVIEW (проверено — у всех 24
+   бот-интервью в ленте статус INTERVIEW), то есть «приглашение» здесь и ЕСТЬ приглашение
+   бота, а не признак движения — зелёная рамка на нём врала. Отказ остаётся сильнее: это
+   реальный терминальный исход. '' = тона нет, вызывающий красит по ручной пометке. */
 export function cardTone(v) {
-  return cardColor(v) || (v?.chat?.kind === 'bot_interview' ? 'botiv' : '');
+  if (isDiscard(v?.status)) return 'rejected';
+  if (v?.chat?.kind === 'bot_interview') return 'botiv';
+  return cardColor(v);
+}
+
+/* Совпадение города. Выбор из списка (`exact`) — строгое равенство; набранный вручную
+   фрагмент — подстрока, поэтому «сан» находит Санкт-Петербург. Разделение нужно потому,
+   что подстрока на точном выборе тянула бы лишнее: «Москва» -> ещё и «Московский». */
+export function cityMatches(city, query, exact = false) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return true;
+  const c = (city || '').toLowerCase();
+  return exact ? c === q : c.includes(q);
 }
 
 /* Фильтрация + сортировка — чистая: (вакансии, состояние фильтров) -> массив. */
@@ -226,7 +241,7 @@ export function filterVacancies(vacancies, f) {
       }
     }
     if (f.source && f.source !== 'all' && v.source !== f.source) return false;  /* портал-источник */
-    if (f.city && v.city !== f.city) return false;
+    if (f.city && !cityMatches(v.city, f.city, f.cityExact)) return false;
     if (f.schedule === 'remote' && v.schedule !== 'remote') return false;
     if (f.schedule === 'office' && v.schedule === 'remote') return false;
     /* Статус отклика (API): all | invited | discard | response | form */

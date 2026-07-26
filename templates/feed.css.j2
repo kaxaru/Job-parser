@@ -73,10 +73,25 @@ header h1 { font-size: 1.3rem; color: #fff; }
 }
 .search-input:focus { outline: none; border-color: {{ accent }}; }
 .search-input::placeholder { color: #777; }
+/* Город: тот же инпут, но узкий как прежний select (input+datalist = список с поиском) */
+.city-input { width: 180px; }
 
-/* Lang pill checkboxes */
-.lang-grid { display: flex; flex-wrap: wrap; gap: 5px; }
-.lang-cb { display: none; }
+/* Пилюли-чекбоксы (языки / роли / опыт).
+   Скрываем и красим ПО МЕСТУ (`.lang-grid input[type=checkbox]`), а не по списку классов:
+   у ролей класс `role-cb`, и когда правило перечисляло только `.lang-cb`, в группе «Роль»
+   торчали нативные чекбоксы, а пилюля не подсвечивалась при выборе. Новая группа получит
+   оформление сама. Классы в разметке остаются — по ним JS различает группы
+   (`.lang-cb:not(.exp-cb)` = языки), поэтому склеивать их в один нельзя. */
+.lang-grid { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+/* Не `display:none`: скрытый так чекбокс теряет фокус, и клавиатурная навигация по пилюлям
+   ломается. Выводим из потока, оставляя фокусируемым. */
+.lang-grid input[type=checkbox] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
 .lang-label {
   display: inline-block;
   padding: 3px 10px;
@@ -86,13 +101,25 @@ header h1 { font-size: 1.3rem; color: #fff; }
   font-size: 0.78rem;
   background: transparent;
   color: {{ text }};
-  transition: background .12s, border-color .12s, color .12s;
+  transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
   user-select: none;
 }
-.lang-cb:checked + .lang-label {
+.lang-label:hover { border-color: {{ accent }}; color: {{ accent }}; }
+.lang-label:active { transform: translateY(1px); }
+.lang-grid input[type=checkbox]:checked + .lang-label {
   background: {{ accent }};
   border-color: {{ accent }};
   color: #fff;
+  box-shadow: 0 0 0 1px {{ accent }}44;
+}
+.lang-grid input[type=checkbox]:checked + .lang-label:hover {
+  color: #fff;                                  /* выбранная пилюля не «выцветает» на ховере */
+  box-shadow: 0 0 0 2px {{ accent }}55;
+}
+/* Клавиатура: пилюля должна показывать фокус, раз сам чекбокс невидим */
+.lang-grid input[type=checkbox]:focus-visible + .lang-label {
+  outline: 2px solid {{ accent }};
+  outline-offset: 1px;
 }
 
 /* Salary range */

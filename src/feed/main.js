@@ -14,6 +14,9 @@ import {
 } from './view.js';
 
 const V_MAP = Object.fromEntries(VACANCIES.map(v => [v.id, v]));
+/* Канон городов из выдачи: отличает выбор из списка (точное совпадение) от набранной вручную
+   подстроки — иначе выбранная «Москва» тянула бы ещё и «Московский». */
+const CITY_SET = new Set(VACANCIES.map(v => v.city).filter(Boolean));
 
 const store = createStore({
   vacancies: VACANCIES,
@@ -27,6 +30,7 @@ const store = createStore({
   maxSal: SAL_MAX,
   salMax: SAL_MAX,
   city: '',
+  cityExact: false,          /* true — значение выбрано из datalist, а не набрано частично */
   schedule: 'all',
   status: 'all',
   source: 'all',
@@ -196,9 +200,20 @@ document.querySelectorAll('[data-cur]').forEach(btn => {
   });
 });
 
-document.getElementById('city-sel').addEventListener('change', e => {
-  store.update({ city: e.target.value });
-});
+/* Город: выбор из datalist даёт ТОЧНОЕ имя (cityExact), свободный ввод — поиск по подстроке
+   («сан» -> Санкт-Петербург). Дебаунс как у поиска: ре-фильтр идёт по всей выдаче. */
+(() => {
+  const inp = document.getElementById('city-inp');
+  if (!inp) return;
+  let t = null;
+  inp.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const city = inp.value.trim();
+      store.update({ city, cityExact: CITY_SET.has(city) });
+    }, 150);
+  });
+})();
 
 document.querySelectorAll('[data-sched]').forEach(btn => {
   btn.addEventListener('click', () => {
@@ -255,7 +270,8 @@ function resetFilters() {
   document.querySelectorAll('[data-cur]').forEach(b => { b.classList.remove('active'); });
   const curDef = document.querySelector('[data-cur="RUB"]');
   if (curDef) curDef.classList.add('active');
-  document.getElementById('city-sel').value = '';
+  const ci = document.getElementById('city-inp');
+  if (ci) ci.value = '';
   document.querySelectorAll('[data-sched]').forEach(b => { b.classList.remove('active'); });
   document.querySelector('[data-sched="all"]').classList.add('active');
   document.querySelectorAll('[data-sort]').forEach(b => { b.classList.remove('active'); });
@@ -271,7 +287,8 @@ function resetFilters() {
   const si = document.getElementById('search-input');
   if (si) si.value = '';
   store.update({
-    minSal: 0, maxSal: SAL_MAX, salMax: SAL_MAX, city: '', schedule: 'all', status: 'all',
+    minSal: 0, maxSal: SAL_MAX, salMax: SAL_MAX, city: '', cityExact: false,
+    schedule: 'all', status: 'all',
     source: 'all', displayCur: 'RUB', dateFrom: '', dateTo: '', sort: 'none',
     matchSort: false, resumeOnly: false, search: [], showNonIt: false,
   });

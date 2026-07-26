@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, convert, esc, filterVacancies, fmtK, fmtSal,
-  hashId, isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
+  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert, esc, filterVacancies,
+  fmtK, fmtSal, hashId, isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -146,12 +146,43 @@ describe('cardTone — тон рамки: жёлтое бот-интервью �
     assert.equal(cardTone(vac({ status: 'DISCARD', chat: botIv })), 'rejected');
     assert.equal(cardTone(vac({ status: 'DISCARD_BY_EMPLOYER', chat: botIv })), 'rejected');
   });
-  it('приглашение после бот-интервью → applied: движение реальное, красим зелёным', () => {
-    assert.equal(cardTone(vac({ status: 'INVITATION', chat: botIv })), 'applied');
+  it('INTERVIEW/INVITATION на бот-интервью → всё равно botiv, зелёная рамка врала', () => {
+    /* ЖИВОЙ КЕЙС 26.07: HH сам переводит отклик в INTERVIEW, когда бот зовёт на интервью —
+       у всех 24 бот-интервью в ленте был статус INTERVIEW, поэтому cardColor давал зелёный
+       и жёлтая рамка не появлялась ни на одной карточке. «Приглашение» здесь = приглашение
+       бота, не движение по вакансии. */
+    assert.equal(cardTone(vac({ status: 'INTERVIEW', chat: botIv })), 'botiv');
+    assert.equal(cardTone(vac({ status: 'INVITATION', chat: botIv })), 'botiv');
+  });
+  it('приглашение без бот-интервью → applied (обычный зелёный путь не тронут)', () => {
+    assert.equal(cardTone(vac({ status: 'INTERVIEW', chat: { kind: 'question' } })), 'applied');
   });
   it('обычный чат → "" (как cardColor: тон по ручной пометке)', () => {
     assert.equal(cardTone(vac({ status: 'RESPONSE', chat: { kind: 'question' } })), '');
     assert.equal(cardTone(vac({ status: 'RESPONSE' })), '');
+  });
+});
+
+describe('cityMatches — выпадающий список городов с поиском внутри', () => {
+  it('точный выбор из списка не тянет однокоренные города', () => {
+    assert.equal(cityMatches('Москва', 'Москва', true), true);
+    assert.equal(cityMatches('Московский', 'Москва', true), false);
+  });
+  it('набранный фрагмент ищет по подстроке, регистр не важен', () => {
+    assert.equal(cityMatches('Санкт-Петербург', 'сан'), true);
+    assert.equal(cityMatches('Санкт-Петербург', 'ПЕТЕР'), true);
+    assert.equal(cityMatches('Казань', 'сан'), false);
+  });
+  it('пустой запрос и пустой город: фильтра нет / не падаем', () => {
+    assert.equal(cityMatches('Москва', ''), true);
+    assert.equal(cityMatches('Москва', '   '), true);
+    assert.equal(cityMatches(null, 'москва'), false);
+  });
+  it('в фильтрации: фрагмент подбирает несколько городов, точный выбор — один', () => {
+    const data = [vac({ id: 'm', city: 'Москва' }), vac({ id: 'mk', city: 'Московский' })];
+    assert.deepEqual(filterVacancies(data, flt({ city: 'моск' })).map(v => v.id), ['m', 'mk']);
+    assert.deepEqual(
+      filterVacancies(data, flt({ city: 'Москва', cityExact: true })).map(v => v.id), ['m']);
   });
 });
 

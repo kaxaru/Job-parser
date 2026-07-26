@@ -70,15 +70,17 @@
     </div>
   </div>
 
-  <!-- City -->
+  <!-- City: input + datalist — тот же выпадающий список, но с поиском внутри.
+       Городов ~1800: листать список глазами было дольше, чем набрать три буквы. -->
   <div class="filter-group">
     <span class="filter-label">Город</span>
-    <select id="city-sel">
-      <option value="">Все города</option>
+    <input id="city-inp" class="search-input city-input" list="city-list"
+           placeholder="🔍 все города" autocomplete="off" spellcheck="false">
+    <datalist id="city-list">
       {% for city in cities %}
-      <option value="{{ city }}">{{ city }}</option>
+      <option value="{{ city }}"></option>
       {% endfor %}
-    </select>
+    </datalist>
   </div>
 
   {% if sources|length > 1 %}
