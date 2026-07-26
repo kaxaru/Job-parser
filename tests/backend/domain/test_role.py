@@ -1,12 +1,20 @@
 """Тесты VO Role: is_it, label, и страж дрейфа с config.ROLE_PATTERNS."""
+import pytest
+
 from hrwork.config import ROLE_PATTERNS
 from hrwork.domain.role import Role
 
 
-def test_is_it_true_except_non_it():
-    assert Role.BACKEND.is_it and Role.QA.is_it and Role.DATA_ML.is_it
-    assert Role.DEVELOPER.is_it
-    assert Role.NON_IT.is_it is False
+@pytest.mark.parametrize("role, expected", [
+    (Role.BACKEND, True),
+    (Role.QA, True),
+    (Role.DATA_ML, True),
+    (Role.DEVELOPER, True),
+    (Role.NON_IT, False),
+], ids=lambda x: x.name if isinstance(x, Role) else str(x))
+def test_is_it_true_except_non_it(role, expected):
+    # цепочка через `and` падала целиком и не называла виновную роль
+    assert role.is_it is expected
 
 
 def test_label_is_display_string():
@@ -15,9 +23,9 @@ def test_label_is_display_string():
     assert Role.DATA_ML.label == "Data/ML"
 
 
-def test_from_label_roundtrips():
-    for r in Role:
-        assert Role.from_label(r.label) is r
+@pytest.mark.parametrize("role", list(Role), ids=lambda r: r.name)
+def test_from_label_roundtrips(role):
+    assert Role.from_label(role.label) is role
 
 
 def test_role_patterns_keys_are_all_roles():

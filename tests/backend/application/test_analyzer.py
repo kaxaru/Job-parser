@@ -161,8 +161,12 @@ def test_companies_by_size_excludes_non_it():
     # тот же фильтр, что и в by_company: ритейл-мусор не раздувает хвост
     vacs = [_vac("1", "Москва", 100_000, employer="Ритейл", role=Role.NON_IT,
                  created_at=_days_ago(5))]
-    assert all(r["companies"] == 0
-               for r in Analyzer(vacs, fx=dict(_FX)).companies_by_size())
+    # Ожидаемое литералом по спеке SIZE_BUCKETS, а не `all(...)`: обобщённый флаг не называл
+    # виновную корзину и проходил даже на ПУСТОМ списке корзин.
+    rows = Analyzer(vacs, fx=dict(_FX)).companies_by_size()
+    assert [r["bucket"] for r in rows] == ["1", "2", "3", "4", "5–10", "11–25", "26–50",
+                                           "51–100", "100+"]
+    assert [r["companies"] for r in rows] == [0, 0, 0, 0, 0, 0, 0, 0, 0]
 
 
 def test_by_company_excludes_non_it():

@@ -155,10 +155,11 @@ _FORBIDDEN = {
 }
 
 
-def test_func_allowlist_has_no_numerals_tech_or_negation():
-    for lang, fw in R._FUNC.items():
-        leak = fw & _FORBIDDEN
-        assert leak == set(), f"{lang}: служебный словарь протёк -> {leak}"
+@pytest.mark.parametrize("lang", list(R._FUNC), ids=str)
+def test_func_allowlist_has_no_numerals_tech_or_negation(lang):
+    # параметризуемся по ВСЕМ языкам словаря: добавят третий — он проверится сам,
+    # а падение назовёт язык в отчёте, вместо «упал первый, про остальные неизвестно»
+    assert R._FUNC[lang] & _FORBIDDEN == set()
 
 
 # ══════════════ live: реальный OpenRouter (opt-in, как test_chat_intent) ══════════════

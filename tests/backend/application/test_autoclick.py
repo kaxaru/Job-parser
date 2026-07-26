@@ -183,13 +183,18 @@ def test_blacklist_does_not_hit_html_xml():
     assert len(pick_candidates([ok], marks={}, limit=10)) == 1
 
 
-def test_skips_other_language_in_title_even_if_python_in_body():
+@pytest.mark.parametrize("title", [
+    "Java разработчик",
+    "C# Backend Developer",
+    "PHP-программист",
+    "Golang разработчик",
+    "1С-программист",
+])
+def test_skips_other_language_in_title_even_if_python_in_body(title):
     # Java-вакансия с Python «как плюс» в требованиях — Python попадёт в techs и пройдёт
     # core-фильтр, но другой язык в ТАЙТЛЕ должен отсеять («ищу только python»).
-    for bad in ("Java разработчик", "C# Backend Developer", "PHP-программист",
-                "Golang разработчик", "1С-программист"):
-        raw = _raw(name=bad, req="Java, Spring, Python как плюс, удалённая работа")
-        assert pick_candidates([raw], marks={}, limit=10) == [], bad
+    raw = _raw(name=title, req="Java, Spring, Python как плюс, удалённая работа")
+    assert pick_candidates([raw], marks={}, limit=10) == []
 
 
 def test_keeps_python_title_with_other_lang_in_body():

@@ -45,6 +45,8 @@ _VOCAB = _FRAGS + _NOISE
 
 def test_prescreen_equivalent_on_generated_corpus():
     # Детерминированный корпус: случайные комбинации фрагментов+шума (seed -> воспроизводимо в CI).
+    # ИСКЛЮЧЕНИЕ из запрета циклов (docs/testing.md): это property-тест, случай генерируется,
+    # а не перечисляется — параметризовать нечего. Виновный текст называет repr в сообщении.
     rnd = random.Random(20260718)
     for _ in range(2000):
         k = rnd.randint(0, 8)
@@ -52,11 +54,14 @@ def test_prescreen_equivalent_on_generated_corpus():
         assert _detect_techs(text) == _naive_detect_techs(text), repr(text)
 
 
-def test_prescreen_equivalent_on_each_fragment_alone():
+@pytest.mark.parametrize("wrap", ["{}", "опыт {} разработки", "{}, python", "[{}]"])
+@pytest.mark.parametrize("frag", _VOCAB)
+def test_prescreen_equivalent_on_each_fragment_alone(frag, wrap):
     # Каждый фрагмент отдельно + в тривиальной обёртке — прямое давление на границы \b/lookaround.
-    for frag in _VOCAB:
-        for text in (frag, f"опыт {frag} разработки", f"{frag}, python", f"[{frag}]"):
-            assert _detect_techs(text) == _naive_detect_techs(text), repr(text)
+    # Перечислимый набор -> параметризация: падение называет фрагмент И обёртку, остальные
+    # 500+ случаев продолжают проверяться (цикл останавливался на первом).
+    text = wrap.format(frag)
+    assert _detect_techs(text) == _naive_detect_techs(text)
 
 
 @pytest.mark.slow
@@ -65,6 +70,8 @@ def test_prescreen_equivalent_on_each_fragment_alone():
 def test_prescreen_equivalent_on_real_data():
     # Сильнейший сигнал: ВСЕ реальные тайтлы+сниппеты. Медленный (наив гоняет все 55 regex),
     # потому opt-in; генеративный+пофрагментный тесты выше — быстрый CI-страж на каждый прогон.
+    # ИСКЛЮЧЕНИЕ из запрета циклов (docs/testing.md): набор случаев — весь корпус на диске
+    # (~90k записей), параметризовать его нельзя; виновную вакансию называет id в сообщении.
     import json
 
     if not RAW_FILE.exists():

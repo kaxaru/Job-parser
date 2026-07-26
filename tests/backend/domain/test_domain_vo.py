@@ -56,7 +56,9 @@ def test_salary_net_and_mid():
 
 def test_salary_net_noop_when_already_net_and_none_when_empty():
     s = Salary.from_raw({"from": 500, "currency": "USD"})
-    assert s.gross is False and s.net() is s and s.mid == 500        # net -> тот же объект
+    assert s.gross is False
+    assert s.net() is s                                              # net -> тот же объект
+    assert s.mid == 500
     assert Salary.from_raw(None) is None
     assert Salary.from_raw({"currency": "USD"}) is None              # нет вилки -> None
 
@@ -74,11 +76,12 @@ def test_freshness_class_single_source():
     assert FreshnessClass.from_code("fresh") is FreshnessClass.FRESH
     assert FreshnessClass.FRESH.label == "Свежие (≤30 дн)"
     assert FreshnessClass.UNKNOWN.color is None                     # у «без даты» цвета нет
-    assert all(fc.color for fc in FreshnessClass.dated())           # у датированных цвет есть
     assert FreshnessClass.dated() == (FreshnessClass.FRESH, FreshnessClass.RECENT,
                                       FreshnessClass.GHOST)
-    order = [fc.order for fc in FreshnessClass]
-    assert order == sorted(order) and order[0] == 0                 # порядок = порядок членов
+    # ожидаемое — литералом, а не `all(...)` и не `order == sorted(order)`: обобщённый флаг
+    # проходил на любом наборе цветов, а самосравнение — на любом уже отсортированном порядке
+    assert [fc.color for fc in FreshnessClass.dated()] == ["#4C9BD1", "#BB8B31", "#D64550"]
+    assert [fc.order for fc in FreshnessClass] == [0, 1, 2, 3]      # порядок = порядок членов
 
 
 # ── Поведение сущности Vacancy (F2a-behaviour): даты/формат -> методы ──

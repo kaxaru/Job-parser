@@ -33,12 +33,13 @@ def test_bargaining_always_human():
 # ── опыт с технологией ──
 def test_has_experience_yes_only_for_known_stack():
     a = suggest("Есть ли у вас опыт работы с FastAPI?", PROF)
-    assert a and "FastAPI" in a["text"] and a["rule"] == "has_exp_yes"
+    assert a["rule"] == "has_exp_yes"
+    assert "FastAPI" in a["text"]
 
 
 def test_has_experience_no_for_unknown_tech():
     a = suggest("Есть ли опыт работы с OHIF Viewer?", PROF)
-    assert a and a["rule"] == "has_exp_no"
+    assert a["rule"] == "has_exp_no"
 
 
 def test_never_claims_unknown_tech():
@@ -61,7 +62,8 @@ def test_past_stack_without_particle_li():
     # БАГ 20.07: «У вас есть опыт с C#?» -> молчали, т.к. regex требовал «есть ЛИ»
     prof = {"answers": {"stack": ["Python"], "stack_past": ["C#", ".NET"]}}
     a = suggest("У вас есть опыт с C#?", prof)
-    assert a and a["rule"] == "has_exp_past" and "C#" in a["text"]
+    assert a["rule"] == "has_exp_past"
+    assert "C#" in a["text"]
 
 
 def test_negative_answers_disabled_by_default():
@@ -83,7 +85,8 @@ def test_no_facts_no_answer(question):
 # ── прочее ──
 def test_stack_enumeration():
     a = suggest("С какими фреймворками вы работали?", PROF)
-    assert a and a["rule"] == "stack_list" and "FastAPI" in a["text"]
+    assert a["rule"] == "stack_list"
+    assert "FastAPI" in a["text"]
 
 
 def test_years_and_format_from_profile():
@@ -121,12 +124,14 @@ def test_lang_detected_by_script():
 
 def test_english_question_gets_english_answer():
     a = suggest("Do you have experience with Docker?", PROF_EN)
-    assert a["rule"] == "has_exp_yes" and a["text"] == "Yes, I have experience with Docker."
+    assert a["rule"] == "has_exp_yes"
+    assert a["text"] == "Yes, I have experience with Docker."
 
 
 def test_english_negative_answer_localized():
     a = suggest("Have you worked with Kubernetes?", PROF_EN)
-    assert a["rule"] == "has_exp_no" and a["text"] == "No, I haven't worked with that."
+    assert a["rule"] == "has_exp_no"
+    assert a["text"] == "No, I haven't worked with that."
 
 
 def test_english_fact_taken_from_en_key():
@@ -165,7 +170,8 @@ def test_ru_money_and_place_holes_closed(question):
 
 def test_english_stack_enumeration():
     a = suggest("What frameworks have you worked with?", PROF_EN)
-    assert a["rule"] == "stack_list" and a["text"].startswith("I've worked with:")
+    assert a["rule"] == "stack_list"
+    assert a["text"].startswith("I've worked with:")
 
 
 def test_english_specific_practice_still_silent():
@@ -180,7 +186,7 @@ def test_english_specific_practice_still_silent():
 SAL = {"answers": {
     "salary_by_grade": {"junior": "90 000 — 100 000", "middle": "150 000 — 170 000",
                         "senior": "200 000 — 220 000"},
-    "office_city": "Тольятти", "office_city_en": "Tolyatti",
+    "office_city": "Приволжск", "office_city_en": "Privolzhsk",
 }}
 
 
@@ -217,16 +223,18 @@ def test_salary_silent_when_grade_unknown():
 
 def test_place_remote_for_other_city():
     # БАГ 20.07: «готовы работать в г. Шатура?» уходил мимо фильтра; теперь — честный
-    # ответ «удалённо, офис только в Тольятти»
+    # ответ «удалённо, офис только в Приволжске»
     a = suggest("Здравствуйте, Вы готовы работать в г. Шатура ?", SAL,
                 VacancyContext(name="Инженер", experience="between1And3", city="Шатура"))
-    assert a["rule"] == "place_remote" and "Тольятти" in a["text"]
+    assert a["rule"] == "place_remote"
+    assert "Приволжск" in a["text"]
 
 
 def test_place_own_city_offers_office():
-    a = suggest("Готовы работать в г. Тольятти?", SAL,
-                VacancyContext(name="Инженер", experience="between1And3", city="Тольятти"))
-    assert a["rule"] == "place_own_city" and "офисе в Тольятти" in a["text"]
+    a = suggest("Готовы работать в г. Приволжск?", SAL,
+                VacancyContext(name="Инженер", experience="between1And3", city="Приволжск"))
+    assert a["rule"] == "place_own_city"
+    assert "офисе в Приволжск" in a["text"]
 
 
 def test_salary_and_place_english():
@@ -234,7 +242,8 @@ def test_salary_and_place_english():
     assert suggest("What is your expected salary?", SAL, q_ctx)["text"]         == "My expectation is 150 000 — 170 000."
     a = suggest("Are you willing to relocate to Berlin?", SAL,
                 VacancyContext(name="Dev", experience="between1And3", city="Berlin"))
-    assert a["rule"] == "place_remote" and "Tolyatti" in a["text"]
+    assert a["rule"] == "place_remote"
+    assert "Privolzhsk" in a["text"]
 
 
 def test_polite_preamble_does_not_block_simple_question():
@@ -243,7 +252,8 @@ def test_polite_preamble_does_not_block_simple_question():
     # Вежливая обвязка добавлена в _BOILERPLATE.
     a = suggest("Здравствуйте, Антон! Спасибо за отклик. Есть ли у вас опыт работы с Docker?",
                 PROF)
-    assert a and a["rule"] == "has_exp_yes" and "Docker" in a["text"]
+    assert a["rule"] == "has_exp_yes"
+    assert "Docker" in a["text"]
 
 
 def test_polite_preamble_does_not_weaken_residual_guard():
@@ -258,7 +268,8 @@ def test_bot_interviewer_preamble_stripped():
     prof = {"answers": {"stack": ["Jira", "Confluence", "Docker"]}}
     a = suggest("Понял, спасибо за подробный ответ. Следующий вопрос: работали ли "
                 "вы с Jira или Confluence в проектах?", prof)
-    assert a and a["rule"] == "has_exp_yes" and "Jira" in a["text"]
+    assert a["rule"] == "has_exp_yes"
+    assert "Jira" in a["text"]
 
 
 def test_bot_preamble_does_not_weaken_residual_guard():
@@ -317,7 +328,8 @@ def test_intent_years_tech_unknown_is_silent():
 
 def test_intent_years_general_answers_general():
     a = suggest("а сколько всего?", PROF_FE, intent=_i("years"))
-    assert a and a["rule"] == "years" and "5 лет" in a["text"]
+    assert a["rule"] == "years"
+    assert "5 лет" in a["text"]
 
 
 def test_intent_years_backstop_silences_tech_in_question():
@@ -337,14 +349,15 @@ def test_intent_depth_no_tech_is_human():
 
 def test_intent_has_exp_yes():
     a = suggest("работали?", PROF_FE, intent=_i("has_exp", "FastAPI"))
-    assert a and a["rule"] == "has_exp_yes" and "FastAPI" in a["text"]
+    assert a["rule"] == "has_exp_yes"
+    assert "FastAPI" in a["text"]
 
 
-def test_intent_never_widens_answered():
+@pytest.mark.parametrize("label", ["has_exp", "years", "years_tech", "depth"])
+def test_intent_never_widens_answered(label):
     # пустой профиль: любой intent-маршрут -> None (intent не создаёт факт из воздуха)
     empty = {"answers": {}}
-    for lbl in ("has_exp", "years", "years_tech", "depth"):
-        assert suggest("вопрос?", empty, intent=_i(lbl, "React")) is None
+    assert suggest("вопрос?", empty, intent=_i(label, "React")) is None
 
 
 def test_intent_non_cluster_falls_through_to_regex():

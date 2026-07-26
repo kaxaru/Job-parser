@@ -164,8 +164,8 @@ def test_vacancy_card_field_survives_roundtrip(vid, field, expected, feed_global
 
 def test_mark_values_bridge_matches_python(feed_globals):
     # словарь пометок в JS = инжект из marks.py (иначе разъезжается: инцидент "discard")
-    from hrwork.infrastructure.storage import MARK_VALUES
-    assert _const(feed_globals["text"], "MARK_VALUES_PY") == list(MARK_VALUES)
+    # литерал, а не list(MARK_VALUES): иначе тест повторяет реализацию и пройдёт при её ошибке
+    assert _const(feed_globals["text"], "MARK_VALUES_PY") == ["applied", "rejected"]
 
 
 @pytest.mark.parametrize("field", ["id", "age", "gap", "fresh"])

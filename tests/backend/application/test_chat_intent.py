@@ -21,7 +21,8 @@ def test_parse_strips_json_fences():
 
 def test_parse_extracts_object_from_noise():
     r = _parse_intent('Вот ответ: {"intent":"salary","tech":[]} — готово')
-    assert r and r.label == "salary" and r.tech == ()
+    assert r.label == "salary"
+    assert r.tech == ()
 
 
 @pytest.mark.parametrize("raw", [

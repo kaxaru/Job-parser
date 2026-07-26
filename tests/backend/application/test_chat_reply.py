@@ -138,7 +138,9 @@ def test_english_question_answered_in_english():
 
 def test_proposal_type():
     out = _one({"1": _chat("Есть ли опыт с Docker?", bot=True)})
-    assert isinstance(out[0], Proposal) and out[0].chat_id == 555 and out[0].vid == "1"
+    assert isinstance(out[0], Proposal)
+    assert out[0].chat_id == 555
+    assert out[0].vid == "1"
 
 
 # ══════════════ poll_replies: точечный опрос после отправки ══════════════

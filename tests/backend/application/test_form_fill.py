@@ -1,6 +1,7 @@
 """LLM-заполнение форм (RFC-003). Свойства: выход санитайзится/DECLINE, select строго из опций,
 зарплата/гражданство не уходят провайдеру, инъекция уходит лишь инертной строкой. chat_json замокан."""
 import ast
+import importlib
 import pathlib
 
 import pytest
@@ -332,22 +333,24 @@ def test_injection_output_is_inert_string(monkeypatch):
     assert out == payload and isinstance(out, str)
 
 
-def test_form_modules_have_no_exec_sink():
+@pytest.mark.parametrize("module_name", ["form_fill", "form_read", "forms"])
+def test_form_modules_have_no_exec_sink(module_name):
     # AST-гвард (не строковый скан — иначе ловил бы токены в docstring): в form_*/forms нет
     # вызовов eval/exec/compile/os.system/os.popen/__import__ и импорта subprocess (RFC-003 L1).
-    from hrwork.application.apply.forms import form_fill, form_read, forms
+    # Модуль — параметр, а не элемент цикла: падение называет модуль, а не «первый из трёх».
+    # Обход дерева циклом остаётся — это один вход, а не набор случаев.
+    mod = importlib.import_module(f"hrwork.application.apply.forms.{module_name}")
     banned_call = {"eval", "exec", "compile", "__import__"}
     banned_attr = {"system", "popen"}
-    for mod in (form_fill, form_read, forms):
-        tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                fn = node.func
-                if isinstance(fn, ast.Name):
-                    assert fn.id not in banned_call, f"{mod.__name__}: {fn.id}()"
-                if isinstance(fn, ast.Attribute):
-                    assert fn.attr not in banned_attr, f"{mod.__name__}: .{fn.attr}()"
-            if isinstance(node, ast.Import):
-                assert all(a.name != "subprocess" for a in node.names), f"{mod.__name__}: subprocess"
-            if isinstance(node, ast.ImportFrom):
-                assert node.module != "subprocess", f"{mod.__name__}: from subprocess"
+    tree = ast.parse(pathlib.Path(mod.__file__).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name):
+                assert fn.id not in banned_call, f"{module_name}: {fn.id}()"
+            if isinstance(fn, ast.Attribute):
+                assert fn.attr not in banned_attr, f"{module_name}: .{fn.attr}()"
+        if isinstance(node, ast.Import):
+            assert all(a.name != "subprocess" for a in node.names), f"{module_name}: subprocess"
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "subprocess", f"{module_name}: from subprocess"
