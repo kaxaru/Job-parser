@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  ageColor, appliedInRange, cardColor, chatAgeLabel, convert, esc, filterVacancies, fmtK, fmtSal, hashId,
-  isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
+  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, convert, esc, filterVacancies, fmtK, fmtSal,
+  hashId, isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -133,6 +133,25 @@ describe('cardColor — цвет тела карточки (CRM-приорите
   it('нет терминального статуса → "" (цвет ставит вызывающий по ручной пометке)', () => {
     assert.equal(cardColor(vac({ status: 'RESPONSE' })), '');
     assert.equal(cardColor(vac({ status: null })), '');
+  });
+});
+
+describe('cardTone — тон рамки: жёлтое бот-интервью против реального исхода с HH', () => {
+  const botIv = { needs_reply: true, kind: 'bot_interview' };
+  it('бот-интервью без исхода → botiv (жёлтая вместо зелёной «откликнулся»)', () => {
+    assert.equal(cardTone(vac({ status: 'RESPONSE', chat: botIv })), 'botiv');
+    assert.equal(cardTone(vac({ status: null, chat: botIv })), 'botiv');
+  });
+  it('отказ на бот-интервью → rejected: рамка красная, жёлтое предупреждение уступает', () => {
+    assert.equal(cardTone(vac({ status: 'DISCARD', chat: botIv })), 'rejected');
+    assert.equal(cardTone(vac({ status: 'DISCARD_BY_EMPLOYER', chat: botIv })), 'rejected');
+  });
+  it('приглашение после бот-интервью → applied: движение реальное, красим зелёным', () => {
+    assert.equal(cardTone(vac({ status: 'INVITATION', chat: botIv })), 'applied');
+  });
+  it('обычный чат → "" (как cardColor: тон по ручной пометке)', () => {
+    assert.equal(cardTone(vac({ status: 'RESPONSE', chat: { kind: 'question' } })), '');
+    assert.equal(cardTone(vac({ status: 'RESPONSE' })), '');
   });
 });
 

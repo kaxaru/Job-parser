@@ -4,7 +4,7 @@
 import { COVER_TEMPLATES, coverLetter } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
-  ageColor, cardColor, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
+  ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
   isFrozenChat, matchColor, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr,
 } from './model.js';
 import { resumeMatch } from './resume.js';
@@ -146,10 +146,11 @@ let _io = null;
 function applyStatuses(root, slice) {
   for (const v of slice) {
     const mark = _marks[v.id];
-    if (!mark) continue;                     /* marks разрежены — трогаем только отмеченные */
-    const st = cardColor(v) || mark;         /* CRM-статус (отказ/приглашение) важнее пометки — цвет И кнопка */
+    const tone = cardTone(v) || mark;        /* рамка: бот-интервью жёлтое, даже если отклик есть */
+    if (!mark && !tone) continue;            /* marks разрежены — трогаем только нужные */
+    const st = cardColor(v) || mark;         /* кнопка ✓/✕: CRM-статус важнее ручной пометки */
     const card = root.querySelector(`.card[data-id="${v.id}"]`);
-    if (card) applyCardStatus(card, st);
+    if (card) applyCardStatus(card, st, tone);
   }
 }
 
@@ -208,10 +209,12 @@ export function render(state) {
 }
 
 /* Точечно подсветить статус карточки без полного ре-рендера: цвет тела + активная кнопка ✓/✕.
-   Вызывающий передаёт эффективный статус (CRM важнее ручной пометки — см. applyStatuses). */
-export function applyCardStatus(card, st) {
-  card.classList.remove('st-applied', 'st-rejected');
-  if (st) card.classList.add(`st-${st}`);
+   Вызывающий передаёт эффективный статус (CRM важнее ручной пометки — см. applyStatuses).
+   `tone` разводит две роли, раньше склеенные в одну: цвет РАМКИ (может быть жёлтым из-за
+   бот-интервью) и активную КНОПКУ (всегда по отклику/отказу). По умолчанию = st. */
+export function applyCardStatus(card, st, tone = st) {
+  card.classList.remove('st-applied', 'st-rejected', 'st-botiv');
+  if (tone) card.classList.add(`st-${tone}`);
   card.querySelectorAll('.status-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.act === st);
   });

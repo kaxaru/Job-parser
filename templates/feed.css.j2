@@ -241,6 +241,12 @@ select option { background: {{ paper }}; }
 .card.st-rejected { border-color: #a33b3b; background: #251618; }
 .card.st-rejected:hover { border-color: #d35a5a; box-shadow: 0 0 0 1px #d35a5a55; }
 
+/* Бот-интервью в чужом мессенджере (полумёртвое): жёлтая рамка вместо зелёной «откликнулся» —
+   отклик формально есть, но вакансия почти всегда морозится. Уступает отказу/приглашению
+   с HH: они — реальный исход, а это лишь предупреждение (model.js::cardTone). */
+.card.st-botiv { border-color: #b8930f; background: #241f10; }
+.card.st-botiv:hover { border-color: #E8C11C; box-shadow: 0 0 0 1px #E8C11C55; }
+
 /* Протухшая форма (form_dead): вакансия, скорее всего, снята — гасим серым, как не актуальную */
 .card.st-dead { opacity: .55; filter: grayscale(.65); }
 .card.st-dead:hover { opacity: .85; }

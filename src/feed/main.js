@@ -7,7 +7,7 @@ import {
   applyVacancy, exportMarks, importMarks, loadInitialMarks,
   pullJson, pullServer, pushServer, saveLocal,
 } from './marks.js';
-import { appliedInRange, convert, fmtK, isFrozenChat } from './model.js';
+import { appliedInRange, cardTone, convert, fmtK, isFrozenChat } from './model.js';
 import { createStore } from './store.js';
 import {
   applyCardStatus, bustCard, closeModal, refreshCardStatus, render, setSync, showModal,
@@ -60,7 +60,8 @@ function setStatus(id, st, card) {
   const marks = { ...store.get().marks };
   if (st) marks[id] = st; else delete marks[id];
   store.update({ marks }, false);     /* без полного ре-рендера — карточку красим точечно */
-  if (card) applyCardStatus(card, st);
+  /* тон рамки переживает ручной тоггл: жёлтое бот-интервью не должно позеленеть от «✓ Отклик» */
+  if (card) applyCardStatus(card, st, cardTone(V_MAP[id]) || st);
   persist();
 }
 
