@@ -9,7 +9,6 @@ import json
 
 import pytest
 
-from hrwork.application.apply.chat import chat_class
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
@@ -124,8 +123,9 @@ def test_feed_data_defines_expected_global(name, feed_globals):
 
 def test_frozen_chat_kinds_injected_from_python(feed_globals):
     # тупиковые виды чата — единый источник в chat_class.FROZEN_KINDS; хардкод 'ack' в JS
-    # разъезжался бы с Python (в ленте он был в трёх местах)
-    assert _const(feed_globals["text"], "CHAT_FROZEN_PY") == list(chat_class.FROZEN_CODES)
+    # разъезжался бы с Python (в ленте он был в трёх местах). Ожидаемое — литерал, а не
+    # list(FROZEN_CODES): иначе тест повторил бы реализацию и прошёл при любой её ошибке.
+    assert _const(feed_globals["text"], "CHAT_FROZEN_PY") == ["ack", "bot_interview"]
 
 
 @pytest.mark.parametrize("vid, field, expected", [

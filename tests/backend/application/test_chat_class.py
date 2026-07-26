@@ -71,7 +71,7 @@ def test_human_channel_redirect_is_not_bot_interview(txt):
 def test_frozen_kinds_is_single_source_for_feed():
     # лента берёт коды через инжект CHAT_FROZEN_PY; расхождение = 'ack' снова захардкожен в JS
     assert FROZEN_CODES == ("ack", "bot_interview")
-    assert {k.code for k in FROZEN_KINDS} == set(FROZEN_CODES)
+    assert {k.code for k in FROZEN_KINDS} == {"ack", "bot_interview"}
 
 
 def test_ack_boilerplate_is_frozen():
