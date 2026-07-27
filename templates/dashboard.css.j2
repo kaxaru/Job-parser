@@ -10,6 +10,21 @@
   --accent: {{ accent }};
   --muted: #868686;
   --muted-strong: #a9a9a9;
+  --title: #fff;
+}
+
+/* Светлая тема — те же имена токенов, что в ленте, и те же выверенные значения.
+   Диаграммы Plotly отрисованы на сервере с тёмными поверхностями, поэтому их перекрашивает
+   `dashboard.js::applyTheme` через relayout: CSS до внутренностей графика не достаёт. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F4F5F7;
+  --paper: #FFFFFF;
+  --grid: #DDE1E7;
+  --text: #1B1F27;
+  --title: #0E1116;
+  --muted: #767676;
+  --muted-strong: #5D6470;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -27,13 +42,74 @@ body {
   *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
 
+/* Смена темы: круговой раскрыв из кнопки (движение задаёт clip-path из dashboard.js,
+   поэтому штатные анимации снимка глушим), фолбэк — переливание цветов. */
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+
+/* Во время View-перехода собственные transition элементов ГЛУШИМ. Иначе они стартуют внутри
+   замороженного снимка и после перехода остаются со старым значением: у вкладки, активной
+   на момент переключения, --title/--bg уже светлые, а вычисленные color/background — ещё
+   тёмные (белым по белому). Проверено A/B: без View Transitions бага нет. Движение перехода
+   даёт clip-path, поэтому терять здесь нечего. */
+:root.theme-swap,
+:root.theme-swap *,
+:root.theme-swap *::before,
+:root.theme-swap *::after { transition: none !important; }
+:root.theme-anim,
+:root.theme-anim *,
+:root.theme-anim *::before,
+:root.theme-anim *::after {
+  transition: background-color .32s ease, color .32s ease, border-color .32s ease !important;
+}
+
 header {
   background: var(--paper);
   padding: 18px 32px;
   border-bottom: 1px solid var(--grid);
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
-header h1 { font-size: 1.4rem; color: #fff; }
+header h1 { font-size: 1.4rem; color: var(--title); }
 header p { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+/* Переключатель темы — общий с лентой: две иконки в одном месте, смена поворотом
+   с растворением. Видна ТЕКУЩАЯ тема (луна = сейчас тёмная). */
+.theme-toggle {
+  position: relative;
+  margin-left: auto;
+  width: 34px;
+  height: 30px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  color: var(--muted-strong);
+  cursor: pointer;
+  overflow: hidden;
+  transition: border-color .12s, color .12s;
+}
+.theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.theme-toggle svg {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  transition: transform .38s cubic-bezier(.34, 1.3, .5, 1), opacity .22s ease;
+}
+.theme-toggle .i-sun  { opacity: 0; transform: rotate(-120deg) scale(.35); }
+.theme-toggle .i-moon { opacity: 1; transform: rotate(0) scale(1); }
+:root[data-theme="light"] .theme-toggle .i-sun  { opacity: 1; transform: rotate(0) scale(1); }
+:root[data-theme="light"] .theme-toggle .i-moon { opacity: 0; transform: rotate(120deg) scale(.35); }
 
 .src-tabs {
   display: flex; gap: 6px; align-items: center;
@@ -82,7 +158,10 @@ header p { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
 }
 .tab-btn:hover { color: var(--text); background: var(--grid); }
 .tab-btn.active {
-  color: #fff;
+  /* НЕ жёсткий #fff: фон активной вкладки — var(--bg), и в светлой теме белый текст
+     на нём сливался. Цвет заголовочный, он меняется вместе с темой. */
+  color: var(--title);
+  font-weight: 600;
   border-bottom-color: var(--accent);
   background: var(--bg);
 }

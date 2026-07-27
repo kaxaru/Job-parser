@@ -10,10 +10,15 @@
   --grid: {{ grid }};
   --text: {{ text }};
   --accent: {{ accent }};
+  --title: #fff;                   /* заголовки: в тёмной теме белые, в светлой почти чёрные */
   --muted: #868686;                /* второстепенный текст на карточке (4.62:1) */
   --muted-strong: #a9a9a9;         /* подписи, которые должны читаться легко */
   --muted-on-bg: #7C7C7C;          /* то же, но на тёмном фоне страницы (4.52:1) */
   --ink: #0b0d12;                  /* тёмный текст поверх светлых плашек */
+  --tint-applied: #15241b;         /* заливка карточки по состоянию отклика */
+  --tint-rejected: #251618;
+  --tint-botiv: #241f10;
+  --card-shadow: none;             /* на тёмном карточки отделяет рамка, тень не нужна */
   --fs-xs: 0.72rem;
   --fs-sm: 0.8rem;
   --fs-md: 0.88rem;
@@ -21,6 +26,28 @@
   --fs-xl: 1.3rem;
   --radius: 8px;
   --radius-pill: 999px;
+}
+
+/* Светлая тема. Не инверсия тёмной, а отдельно подобранный набор: приглушённые тона
+   пересчитаны под белую подложку (#767676 даёт 4.54:1 на карточке, #707070 — на фоне),
+   акцент оставлен тот же — он проходит и как текст (4.61:1), и как заливка под белым.
+   Заливки бейджей НЕ меняются: они самодостаточные плашки, белый текст на них читается
+   в обеих темах. На светлом карточку отделяет не рамка (1.3:1), а мягкая тень. */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #F4F5F7;
+  --paper: #FFFFFF;
+  --grid: #DDE1E7;
+  --text: #1B1F27;
+  --title: #0E1116;
+  --muted: #767676;
+  --muted-strong: #5D6470;
+  --muted-on-bg: #707070;
+  --ink: #0b0d12;
+  --tint-applied: #E9F6EE;
+  --tint-rejected: #FDECEC;
+  --tint-botiv: #FBF3DC;
+  --card-shadow: 0 1px 2px rgba(16, 24, 40, .07), 0 1px 3px rgba(16, 24, 40, .05);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -46,6 +73,36 @@ body {
     transition-duration: .01ms !important;
   }
 }
+
+/* ── Анимация смены темы ──
+   Основной эффект — круговой раскрыв новой темы из кнопки-переключателя (View Transitions).
+   Штатные анимации снимка глушим: движение задаёт clip-path из JS, иначе поверх нашего
+   раскрытия наложится браузерное растворение и получится каша. */
+::view-transition-old(root),
+::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
+::view-transition-old(root) { z-index: 1; }
+::view-transition-new(root) { z-index: 2; }
+
+/* Во время View-перехода собственные transition элементов ГЛУШИМ. Иначе они стартуют внутри
+   замороженного снимка и после перехода остаются со старым значением: у вкладки, активной
+   на момент переключения, --title/--bg уже светлые, а вычисленные color/background — ещё
+   тёмные (белым по белому). Проверено A/B: без View Transitions бага нет. Движение перехода
+   даёт clip-path, поэтому терять здесь нечего. */
+:root.theme-swap,
+:root.theme-swap *,
+:root.theme-swap *::before,
+:root.theme-swap *::after { transition: none !important; }
+
+/* Фолбэк для браузеров без View Transitions: плавно переливаем сами цвета. Класс висит
+   только на время перехода — постоянные transition на всех узлах тормозили бы ленту
+   и мешали собственным анимациям ховеров. */
+:root.theme-anim,
+:root.theme-anim *,
+:root.theme-anim *::before,
+:root.theme-anim *::after {
+  transition: background-color .32s ease, color .32s ease, border-color .32s ease,
+              box-shadow .32s ease, fill .32s ease, stroke .32s ease !important;
+}
 header {
   background: var(--paper);
   padding: 16px 24px;
@@ -55,7 +112,7 @@ header {
   gap: 16px;
   flex-wrap: wrap;
 }
-header h1 { font-size: 1.3rem; color: #fff; }
+header h1 { font-size: var(--fs-xl); color: var(--title); }
 #counter { font-size: 0.85rem; color: var(--muted); }
 
 /* Экспорт/импорт отметок + индикатор синхронизации */
@@ -73,6 +130,32 @@ header h1 { font-size: 1.3rem; color: #fff; }
   transition: border-color .12s, color .12s;
 }
 .hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Переключатель темы: две иконки лежат друг на друге и меняются поворотом с растворением —
+   солнце уезжает вправо-вниз, луна приходит на его место. Показывается ТЕКУЩАЯ тема
+   (луна = сейчас тёмная), поэтому подпись у кнопки говорит, что произойдёт по клику. */
+.theme-toggle {
+  position: relative;
+  width: 34px;
+  height: 28px;
+  padding: 0;
+  justify-content: center;
+  overflow: hidden;
+}
+.theme-toggle svg {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  transition: transform .38s cubic-bezier(.34, 1.3, .5, 1), opacity .22s ease;
+}
+.theme-toggle .i-sun  { opacity: 0; transform: rotate(-120deg) scale(.35); }
+.theme-toggle .i-moon { opacity: 1; transform: rotate(0) scale(1); }
+:root[data-theme="light"] .theme-toggle .i-sun  { opacity: 1; transform: rotate(0) scale(1); }
+:root[data-theme="light"] .theme-toggle .i-moon { opacity: 0; transform: rotate(120deg) scale(.35); }
 .sync-status { font-size: 0.74rem; color: var(--muted); white-space: nowrap; }
 .sync-status.ok    { color: #3fae6b; }
 .sync-status.busy  { color: var(--accent); }
@@ -255,7 +338,6 @@ select option { background: var(--paper); }
   color: var(--text);
   padding: 4px 8px;
   font-size: 0.76rem;
-  color-scheme: dark;
   cursor: pointer;
 }
 .date-dash { color: var(--muted); align-self: center; padding: 0 2px; }
@@ -289,6 +371,7 @@ select option { background: var(--paper); }
   display: flex;
   flex-direction: column;
   gap: 8px;
+  box-shadow: var(--card-shadow);
   transition: border-color .15s, box-shadow .15s;
   cursor: pointer;
 }
@@ -311,7 +394,7 @@ select option { background: var(--paper); }
 }
 .card:hover .tag { opacity: 1; }
 .card-title {
-  color: #fff;
+  color: var(--title);
   text-decoration: none;
   font-size: var(--fs-lg);
   font-weight: 700;
@@ -358,15 +441,15 @@ select option { background: var(--paper); }
 .status-btn.st-rejected-btn.active { background: #a33b3b; border-color: #a33b3b; color: #fff; }
 
 /* Статусы карточки: зелёная (откликнулся) / красная (отказ — будет позже) */
-.card.st-applied  { border-color: #2e7d46; background: #15241b; }
+.card.st-applied  { border-color: #2e7d46; background: var(--tint-applied); }
 .card.st-applied:hover  { border-color: #3fae6b; box-shadow: 0 0 0 1px #3fae6b55; }
-.card.st-rejected { border-color: #a33b3b; background: #251618; }
+.card.st-rejected { border-color: #a33b3b; background: var(--tint-rejected); }
 .card.st-rejected:hover { border-color: #d35a5a; box-shadow: 0 0 0 1px #d35a5a55; }
 
 /* Бот-интервью в чужом мессенджере (полумёртвое): жёлтая рамка вместо зелёной «откликнулся» —
    отклик формально есть, но вакансия почти всегда морозится. Уступает отказу/приглашению
    с HH: они — реальный исход, а это лишь предупреждение (model.js::cardTone). */
-.card.st-botiv { border-color: #b8930f; background: #241f10; }
+.card.st-botiv { border-color: #b8930f; background: var(--tint-botiv); }
 .card.st-botiv:hover { border-color: #E8C11C; box-shadow: 0 0 0 1px #E8C11C55; }
 
 /* Протухшая форма (form_dead): вакансия, скорее всего, снята — гасим серым, как не актуальную */
@@ -487,7 +570,7 @@ select option { background: var(--paper); }
 
 .modal-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; padding-right: 36px; }
 .modal-title {
-  color: #fff;
+  color: var(--title);
   text-decoration: none;
   font-size: 1.15rem;
   font-weight: 700;
@@ -524,7 +607,7 @@ select option { background: var(--paper); }
   flex-wrap: wrap;
   margin-bottom: 8px;
 }
-.cover-title { font-size: 0.85rem; font-weight: 700; color: #fff; }
+.cover-title { font-size: 0.85rem; font-weight: 700; color: var(--title); }
 .cover-actions { display: flex; gap: 6px; }
 .cover-btn {
   background: transparent;
@@ -566,7 +649,7 @@ select option { background: var(--paper); }
 .vacancy-desc ol { padding-left: 20px; margin-bottom: 10px; }
 .vacancy-desc li { margin-bottom: 3px; }
 .vacancy-desc strong,
-.vacancy-desc b  { color: #fff; font-weight: 600; }
+.vacancy-desc b  { color: var(--title); font-weight: 600; }
 .vacancy-desc em,
 .vacancy-desc i  { color: var(--muted-strong); }
 

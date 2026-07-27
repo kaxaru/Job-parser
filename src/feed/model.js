@@ -158,6 +158,22 @@ function _contrast(a, b) {
   return (hi + 0.05) / (lo + 0.05);
 }
 
+/* Подобрать светлоту тона так, чтобы он читался КАК ТЕКСТ на данной подложке (>=4.5:1).
+   Направление зависит от темы: на тёмной карточке цвет осветляем, на светлой — затемняем.
+   Общая для `ageColor` и `tagInk` — обе решают одну задачу «сохранить тон, вернуть контраст». */
+function _fitLightness(hue, sat, paper, start = 0.5) {
+  const paperRgb = _hex2rgb(paper);
+  const dark = _contrast(paperRgb, [0, 0, 0]) < _contrast(paperRgb, [1, 1, 1]);
+  const step = dark ? 0.02 : -0.02;             /* тёмная подложка -> вверх, светлая -> вниз */
+  let l = start;
+  for (let i = 0; i < 45; i++) {
+    if (_contrast(_hsl2rgb(hue, sat, l), paperRgb) >= 4.5) return l;
+    l += step;
+    if (l <= 0.05 || l >= 0.95) break;
+  }
+  return dark ? 0.9 : 0.12;                     /* предел — заведомо читаемый край */
+}
+
 /* Цвет технологии как ТЕКСТ на тёмной карточке. Исходные значения (`tagClr`) — заливочные,
    из палитры языков GitHub, и часть из них тёмная (Ruby #701516, PHP #4F5D95): как текст на
    #1a1d27 они нечитаемы. Поднимаем светлоту, пока контраст не дойдёт до 4.5:1 — тон
@@ -176,23 +192,20 @@ export function tagInk(hex, paper = '#1a1d27') {
     else h = (r - g) / d + 4;
     h = (h * 60 + 360) % 360;
   }
-  const paperRgb = _hex2rgb(paper);
-  for (let l = l0; l <= 0.92; l += 0.02) {
-    const cand = _hsl2rgb(h, s, l);
-    if (_contrast(cand, paperRgb) >= 4.5) {
-      return `#${cand.map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('')}`;
-    }
-  }
-  return '#e8e8e8';                          /* предельно светлый фолбэк — читается всегда */
+  const cand = _hsl2rgb(h, s, _fitLightness(h, s, paper, l0));
+  return `#${cand.map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('')}`;
 }
 
 /* Температура возраста вакансии: свежая (0 дн) → горячий красный,
    старая/гост (90+ дн) → холодный синий. null → серый (нет даты). */
-export function ageColor(age) {
+export function ageColor(age, paper = '#1a1d27') {
   if (age == null) return '#9096a0';
   const t   = Math.max(0, Math.min(age, 90)) / 90;   /* 0..1 */
   const hue = 10 + 200 * t;                            /* 10 красный → 210 синий */
-  return `hsl(${hue.toFixed(0)}, 72%, 50%)`;
+  /* Светлота не фиксированная, а подобранная под подложку: при жёстких 50% жёлто-зелёная
+     часть шкалы давала 3.87:1 на тёмной карточке и всего 1.48:1 на светлой — то есть
+     в светлой теме бейдж возраста просто исчезал бы. Тон при этом не меняется. */
+  return `hsl(${hue.toFixed(0)}, 72%, ${(_fitLightness(hue, 0.72, paper) * 100).toFixed(0)}%)`;
 }
 
 /* ── Статус отклика из API HH (v.status = currentApplicantState) ──

@@ -10,11 +10,50 @@ import {
 import { resumeMatch } from './resume.js';
 
 /* ── Билдеры разметки (чистые) ── */
+/* Плавная смена темы: новая тема раскрывается кругом из кнопки-переключателя
+   (View Transitions). Где API нет или пользователь просил меньше движения — переливаем
+   цвета временным классом `.theme-anim`. Постоянные transition на всех узлах держать
+   нельзя: они мешали бы собственным анимациям ховеров и грузили рендер списка.
+   Компактный дубль этой логики есть в `src/dashboard.js` — тот файл намеренно без
+   импортов и сборки (копируется как есть), поэтому переиспользовать отсюда не может. */
+export function runThemeTransition(swap, origin) {
+  const root = document.documentElement;
+  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  if (reduce || !document.startViewTransition) {
+    root.classList.add('theme-anim');
+    swap();
+    setTimeout(() => root.classList.remove('theme-anim'), 360);
+    return;
+  }
+  const r = origin?.getBoundingClientRect?.();
+  const x = r ? r.left + r.width / 2 : window.innerWidth;
+  const y = r ? r.top + r.height / 2 : 0;
+  const radius = Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y));
+  root.classList.add('theme-swap');            /* см. .theme-swap в feed.css.j2 */
+  const vt = document.startViewTransition(swap);
+  vt.finished.finally(() => { root.classList.remove('theme-swap'); });
+  vt.ready.then(() => {
+    root.animate(
+      { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${radius}px at ${x}px ${y}px)`] },
+      { duration: 480, easing: 'ease-in-out', pseudoElement: '::view-transition-new(root)' },
+    );
+  }).catch(() => { /* переход мог быть прерван вторым кликом — тема уже применена */ });
+}
+
+/* Подложка текущей темы: от неё зависят тона, которые считаются под контраст
+   (`tagInk`, `ageColor`). Меняется из main.js при переключении темы. */
+let _paper = '#1a1d27';
+export function setThemePaper(paper) {
+  if (!paper || paper === _paper) return;
+  _paper = paper;
+  _cardCache.clear();                    /* разметка карточек несёт цвета — пересобрать */
+}
+
 function tagsHTML(techs, limit) {
   /* контурный чип: цвет языка уходит в текст и рамку (см. .tag), заливки нет —
      иначе ряд ярких плашек перекрикивал заголовок вакансии */
   return techs.slice(0, limit ?? techs.length).map(t => {
-    const ink = tagInk(tagClr(t)[0]);
+    const ink = tagInk(tagClr(t)[0], _paper);
     return `<span class="tag" style="color:${ink}">${esc(t)}</span>`;
   }).join('');
 }
@@ -91,7 +130,7 @@ function statusBadge(v) {
    Пусто, если тайминга нет (старый кеш до пере-сбора). */
 function freshBadge(v) {
   if (v.age == null) return '';
-  const color = ageColor(v.age);              /* температура: свежая горячая → старая холодная */
+  const color = ageColor(v.age, _paper);      /* температура: свежая горячая → старая холодная */
   const icon  = v.fresh === 'ghost' ? '👻 ' : (v.fresh === 'fresh' ? '🔥 ' : '');
   const gap   = (v.gap != null && v.gap > 7) ? ` · переопубл. +${v.gap}д` : '';
   const resp  = (v.resp != null) ? ` · ${v.resp} откл.` : '';

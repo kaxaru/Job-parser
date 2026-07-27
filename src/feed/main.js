@@ -12,7 +12,8 @@ import {
 } from './model.js';
 import { createStore } from './store.js';
 import {
-  applyCardStatus, bustCard, closeModal, refreshCardStatus, render, setSync, showModal,
+  applyCardStatus, bustCard, closeModal, refreshCardStatus, render, runThemeTransition,
+  setSync, setThemePaper, showModal,
 } from './view.js';
 
 const V_MAP = Object.fromEntries(VACANCIES.map(v => [v.id, v]));
@@ -330,6 +331,37 @@ window.resetFilters = resetFilters;   /* вызывается из onclick в fe
       const search = inp.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       store.update({ search });
     }, 150);
+  });
+})();
+
+/* ── Тема: тёмная (по умолчанию) / светлая ──
+   Переключатель в шапке: иконка показывает ТЕКУЩУЮ тему (луна = сейчас тёмная), подпись
+   кнопки говорит, что произойдёт по клику. Палитра целиком в CSS-токенах, поэтому здесь
+   меняется один атрибут на <html>. Единственное, что нельзя отдать CSS, — тона, которые
+   считаются под контраст с подложкой (цвет технологии, бейдж возраста): их пересчитывает
+   view.js, поэтому подложку берём из самих токенов, а не дублируем константой в JS. */
+(function initTheme() {
+  const btn = document.getElementById('theme-toggle');
+  const KEY = 'feed.theme';
+  const apply = theme => {
+    const light = theme === 'light';
+    document.documentElement.dataset.theme = light ? 'light' : 'dark';
+    if (btn) {
+      btn.setAttribute('aria-label', light ? 'Включить тёмную тему' : 'Включить светлую тему');
+      btn.setAttribute('aria-pressed', String(light));
+    }
+    const paper = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+    setThemePaper(paper);
+  };
+  apply(localStorage.getItem(KEY) === 'light' ? 'light' : 'dark');
+  btn?.addEventListener('click', e => {
+    const next = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+    const swap = () => {
+      localStorage.setItem(KEY, next);
+      apply(next);
+      store.update({});                  /* перерисовать карточки с пересчитанными тонами */
+    };
+    runThemeTransition(swap, e.currentTarget);
   });
 })();
 

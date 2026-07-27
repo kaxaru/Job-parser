@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Лента вакансий</title>
 <link rel="stylesheet" href="feed.css">
+<!-- Тема применяется ДО отрисовки. Бандл ленты грузится после feed-data.js (~50 МБ), и если
+     ставить атрибут там, светлая тема секунду-другую показывалась бы тёмной. Ключ общий
+     с дашбордом — тема одна на оба экрана. -->
+<script>try{if(localStorage.getItem('feed.theme')==='light'){document.documentElement.dataset.theme='light';}}catch(e){}</script>
 </head>
 <body>
 
@@ -12,6 +16,17 @@
   <h1>Лента вакансий</h1>
   <span class="hdr-actions">
     <span id="sync-status" class="sync-status"></span>
+    <button id="theme-toggle" class="hdr-btn theme-toggle" type="button"
+            title="Переключить тему" aria-label="Включить светлую тему">
+      <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
+      </svg>
+      <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="4.2"/>
+        <path d="M12 2.6v2.2M12 19.2v2.2M4.4 12H2.2M21.8 12h-2.2
+                 M6.3 6.3 4.8 4.8M19.2 19.2l-1.5-1.5M17.7 6.3l1.5-1.5M4.8 19.2l1.5-1.5"/>
+      </svg>
+    </button>
     <button id="marks-export" class="hdr-btn" title="Скачать отметки в marks.json">💾 Экспорт</button>
     <label class="hdr-btn" title="Загрузить marks.json">📂 Импорт<input id="marks-import" type="file" accept="application/json" hidden></label>
   </span>
