@@ -10,7 +10,6 @@
 
 <header>
   <h1>Лента вакансий</h1>
-  <span id="counter">Показано {{ total_records }} из {{ total_records }}</span>
   <span class="hdr-actions">
     <span id="sync-status" class="sync-status"></span>
     <button id="marks-export" class="hdr-btn" title="Скачать отметки в marks.json">💾 Экспорт</button>
@@ -18,7 +17,18 @@
   </span>
 </header>
 
-<div class="filter-bar">
+<!-- Липкой остаётся только эта полоса: поиск (инжектится сюда из main.js), счётчик выдачи
+     и переключатель панели фильтров. Сама панель ниже — нелипкая и сворачиваемая. -->
+<div class="filter-toolbar" id="filter-toolbar">
+  <button class="toolbar-toggle" id="filters-toggle" aria-expanded="true" aria-controls="filter-bar">
+    <span class="chev">⌄</span> Фильтры<span class="filters-count" id="filters-count" hidden></span>
+  </button>
+  <span id="counter">Показано {{ total_records }} из {{ total_records }}</span>
+  <span class="toolbar-spacer"></span>
+  <button class="reset-btn" onclick="resetFilters()">Сбросить</button>
+</div>
+
+<div class="filter-bar" id="filter-bar">
   <!-- Languages -->
   <div class="filter-group">
     <span class="filter-label">Язык</span>
@@ -158,14 +168,13 @@
   </div>
   {% endif %}
 
-  <button class="reset-btn" onclick="resetFilters()">Сбросить</button>
 </div>
 
-<div id="cards" class="cards-grid"></div>
+<main id="cards" class="cards-grid" aria-label="Список вакансий"></main>
 
 <!-- Modal -->
 <div class="modal-overlay" id="modal-overlay">
-  <div class="modal-box" id="modal-box">
+  <div class="modal-box" id="modal-box" role="dialog" aria-modal="true" aria-label="Вакансия">
     <!-- filled by showModal() -->
   </div>
 </div>

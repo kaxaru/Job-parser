@@ -28,12 +28,31 @@ def _num(s: str) -> float | None:
         return None
 
 
+# ── Палитра диаграмм ──────────────────────────────────────────────────────────
+# Дашборд читается на ТЁМНОЙ подложке, и это переворачивает правила выбора шкалы.
+#
+# 1) Последовательная шкала обязана расти к СВЕТЛОМУ: у Plotly-шкал светлый конец идёт
+#    первым, поэтому нужен reversescale. Без него максимум красился почти в чёрный и
+#    терялся, а хвост мелких значений светился ярче всех — на «Городах» Москва (20307)
+#    была самой незаметной строкой, а Пермь (669) самой яркой.
+# 2) Там, где ранг УЖЕ закодирован длиной бара и сортировкой, цвет его не дублирует:
+#    одна заливка на серию. Градиент по тому же числу — избыточное кодирование.
+# 3) Расходящаяся шкала = два тона и НЕЙТРАЛЬНАЯ середина (не радуга): для возраста
+#    берём ту же метафору, что в ленте (`model.js::ageColor`) — свежее тёплое, старое
+#    холодное, между ними серый.
+SEQ_SCALE = "Blues"          # один тон; направление задаёт reversescale=True
+BAR_COLOR = ACCENT           # ровная заливка одиночной серии
+BAR_COLOR_ALT = "#C08A2E"    # парная диаграмма (JS-стек рядом с Python) — различие по тону
+AGE_SCALE = [[0.0, "#D9544D"], [0.5, "#7C838F"], [1.0, "#4C9BD1"]]
+
+
 def _layout(title: str, **kw) -> dict:
     return dict(
         title=dict(text=title, font=dict(size=18, color=TEXT), x=0.5),
         paper_bgcolor=PAPER,
         plot_bgcolor=BG,
-        font=dict(color=TEXT, family="Arial, sans-serif"),
+        # тот же системный стек, что у страницы (templates/feed.css.j2), вместо Arial
+        font=dict(color=TEXT, family='system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif'),
         margin=dict(l=80, r=30, t=60, b=80),
         **kw,
     )
@@ -87,7 +106,7 @@ def chart_cities(base=REPORTS_DIR) -> go.Figure:
 
     fig = go.Figure(go.Bar(
         x=vals_r, y=cities_r, orientation="h",
-        marker=dict(color=vals_r, colorscale="Blues", showscale=False),
+        marker=dict(color=BAR_COLOR),
         text=vals_r, textposition="outside",
     ))
     height = max(520, len(cities) * 34 + 100)
@@ -172,7 +191,7 @@ def chart_stacks(base=REPORTS_DIR) -> go.Figure:
 
     fig = go.Figure(go.Bar(
         x=counts_r, y=stacks_r, orientation="h",
-        marker=dict(color=counts_r, colorscale="Viridis", showscale=False),
+        marker=dict(color=BAR_COLOR),
         text=counts_r, textposition="outside",
     ))
     fig.update_layout(
@@ -207,7 +226,7 @@ def chart_heatmap_city_lang(base=REPORTS_DIR) -> go.Figure:
     fig = go.Figure(go.Heatmap(
         z=z, x=langs_ord, y=[c[:40] for c in cities_ord],
         text=text, texttemplate="%{text}",
-        colorscale="Blues",
+        colorscale=SEQ_SCALE, reversescale=True,
         colorbar=dict(title="RUB", tickfont=dict(color=TEXT)),
         zmin=50_000, zmax=300_000,
     ))
@@ -222,6 +241,7 @@ def chart_heatmap_city_lang(base=REPORTS_DIR) -> go.Figure:
 
 
 def chart_lang_stack(base, lang: str, csv_name: str, color: str) -> go.Figure:
+    """color — ровная заливка серии (тон отличает Python от JS), не шкала величины."""
     rows = _read(base, csv_name)
     techs  = [r["Технология"] for r in rows]
     counts = [int(r["Вакансий"]) for r in rows]
@@ -230,7 +250,7 @@ def chart_lang_stack(base, lang: str, csv_name: str, color: str) -> go.Figure:
 
     fig = go.Figure(go.Bar(
         x=counts_r, y=techs_r, orientation="h",
-        marker=dict(color=counts_r, colorscale=color, showscale=False),
+        marker=dict(color=color),
         text=counts_r, textposition="outside",
     ))
     height = max(520, len(techs) * 30 + 100)
@@ -244,11 +264,11 @@ def chart_lang_stack(base, lang: str, csv_name: str, color: str) -> go.Figure:
 
 
 def chart_python_stack(base=REPORTS_DIR) -> go.Figure:
-    return chart_lang_stack(base, "Python", "07_python_stack.csv", "Blues")
+    return chart_lang_stack(base, "Python", "07_python_stack.csv", BAR_COLOR)
 
 
 def chart_js_stack(base=REPORTS_DIR) -> go.Figure:
-    return chart_lang_stack(base, "JavaScript", "08_js_stack.csv", "YlOrRd")
+    return chart_lang_stack(base, "JavaScript", "08_js_stack.csv", BAR_COLOR_ALT)
 
 
 def chart_remote(base=REPORTS_DIR) -> go.Figure:
@@ -278,7 +298,7 @@ def chart_companies(base=REPORTS_DIR) -> go.Figure:
     fig = go.Figure(go.Bar(
         x=totals, y=comps, orientation="h",
         marker=dict(
-            color=ages, colorscale="RdYlBu",            # low age=красный(горячо), high=синий(холодно)
+            color=ages, colorscale=AGE_SCALE,           # свежее тёплое -> серый -> старое холодное
             cmin=0, cmax=90,
             colorbar=dict(title="Медиана,<br>дней", tickfont=dict(color=TEXT)),
         ),
@@ -414,7 +434,7 @@ def chart_tech_heatmap(base=REPORTS_DIR, top_n: int = 40) -> go.Figure:
     fig = go.Figure(go.Heatmap(
         z=z, x=top, y=[c[:40] for c in cities_ord],
         text=text, texttemplate="%{text}",
-        colorscale="YlOrRd",
+        colorscale=SEQ_SCALE, reversescale=True,
         colorbar=dict(title="Вакансий", tickfont=dict(color=TEXT)),
     ))
     height = max(520, len(cities_ord) * 28 + 120)

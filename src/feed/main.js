@@ -7,7 +7,9 @@ import {
   applyVacancy, exportMarks, importMarks, loadInitialMarks,
   pullJson, pullServer, pushServer, saveLocal,
 } from './marks.js';
-import { appliedInRange, cardTone, convert, fmtK, isFrozenChat } from './model.js';
+import {
+  appliedInRange, cardTone, convert, countActiveFilters, fmtK, isFrozenChat,
+} from './model.js';
 import { createStore } from './store.js';
 import {
   applyCardStatus, bustCard, closeModal, refreshCardStatus, render, setSync, showModal,
@@ -82,6 +84,16 @@ document.getElementById('cards').addEventListener('click', e => {
   }
   const card = e.target.closest('.card');
   if (!card) return;
+  const v = V_MAP[card.dataset.id];
+  if (v) showModal(v);
+});
+/* Карточка — div с обработчиком клика, поэтому с клавиатуры она была недоступна вовсе.
+   Разметка получила tabindex/role, здесь — реакция на Enter и пробел, как у кнопки. */
+document.getElementById('cards').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' && e.key !== ' ') return;
+  const card = e.target.closest?.('.card');
+  if (!card || e.target.closest('.status-btn, .card-title')) return;
+  e.preventDefault();                              /* пробел не должен прокручивать список */
   const v = V_MAP[card.dataset.id];
   if (v) showModal(v);
 });
@@ -295,18 +307,22 @@ function resetFilters() {
 }
 window.resetFilters = resetFilters;   /* вызывается из onclick в feed.html.j2 */
 
-/* ── Поиск по названию/компании — поле инжектируется первым в панель фильтров ── */
+/* ── Поиск по названию/компании — живёт в ЛИПКОЙ полосе, а не в панели фильтров:
+      панель сворачивается, а поиск нужен всегда. Фолбэк на панель — если полосы нет. ── */
 (function initSearch() {
+  const toolbar = document.getElementById('filter-toolbar');
   const bar = document.querySelector('.filter-bar');
-  if (!bar) return;
-  const group = document.createElement('div');
-  group.className = 'filter-group';
-  group.innerHTML =
-    '<span class="filter-label">Поиск: вакансия / компания</span>' +
-    '<div class="search-wrap"><input type="search" id="search-input" class="search-input"' +
-    ' placeholder="🔍 напр. альфа-банк или python backend" autocomplete="off"></div>';
-  bar.insertBefore(group, bar.firstChild);
-  const inp = document.getElementById('search-input');
+  const host = toolbar || bar;
+  if (!host) return;
+  const inp = document.createElement('input');
+  inp.type = 'search';
+  inp.id = 'search-input';
+  inp.className = 'search-input';
+  inp.placeholder = '🔍 напр. альфа-банк или python backend';
+  inp.autocomplete = 'off';
+  inp.setAttribute('aria-label', 'Поиск: вакансия или компания');
+  if (toolbar) toolbar.insertBefore(inp, toolbar.querySelector('.toolbar-spacer'));
+  else bar.insertBefore(inp, bar.firstChild);
   let t = null;
   inp.addEventListener('input', () => {
     clearTimeout(t);
@@ -315,6 +331,35 @@ window.resetFilters = resetFilters;   /* вызывается из onclick в fe
       store.update({ search });
     }, 150);
   });
+})();
+
+/* ── Панель фильтров: сворачивание + счётчик активных ──
+   Панель занимала 40% экрана на 1600px и 77% на 900px, оставаясь липкой при прокрутке.
+   Теперь она обычный блок, который можно свернуть; состояние помнится между сессиями,
+   а счётчик на кнопке не даёт забыть, что выдача урезана свёрнутыми фильтрами. */
+(function initFiltersPanel() {
+  const btn = document.getElementById('filters-toggle');
+  const panel = document.getElementById('filter-bar');
+  const badge = document.getElementById('filters-count');
+  if (!btn || !panel) return;
+  const KEY = 'feed.filtersOpen';
+  const apply = open => {
+    panel.hidden = !open;
+    btn.setAttribute('aria-expanded', String(open));
+  };
+  apply(localStorage.getItem(KEY) !== '0');
+  btn.addEventListener('click', () => {
+    const open = panel.hidden;                    /* было скрыто -> открываем */
+    apply(open);
+    localStorage.setItem(KEY, open ? '1' : '0');
+  });
+  if (badge) {
+    store.subscribe(s => {
+      const n = countActiveFilters(s);
+      badge.textContent = String(n);
+      badge.hidden = n === 0;
+    });
+  }
 })();
 
 /* ── Экспорт/импорт отметок ── */

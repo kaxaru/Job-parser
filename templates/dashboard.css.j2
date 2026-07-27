@@ -1,63 +1,90 @@
+/* Токены — те же имена, что в ленте (templates/feed.css.j2): страницы должны стареть вместе.
+   Значения приходят из Python (config.py), приглушённые тона подобраны по контрасту:
+   #868686 даёт 4.6:1 на подложке карточки, #7C7C7C — 4.5:1 на фоне страницы. */
+:root {
+  color-scheme: dark;              /* нативные скроллбары и контролы Plotly в тёмной теме */
+  --bg: {{ bg }};
+  --paper: {{ paper }};
+  --grid: {{ grid }};
+  --text: {{ text }};
+  --accent: {{ accent }};
+  --muted: #868686;
+  --muted-strong: #a9a9a9;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  background: {{ bg }};
-  color: {{ text }};
-  font-family: Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;
   min-height: 100vh;
 }
+:where(button, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+}
+
 header {
-  background: {{ paper }};
+  background: var(--paper);
   padding: 18px 32px;
-  border-bottom: 1px solid {{ grid }};
+  border-bottom: 1px solid var(--grid);
 }
 header h1 { font-size: 1.4rem; color: #fff; }
-header p { font-size: 0.85rem; color: #888; margin-top: 4px; }
+header p { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
 .src-tabs {
   display: flex; gap: 6px; align-items: center;
   padding: 12px 24px 0;
-  background: {{ paper }};
+  background: var(--paper);
   flex-wrap: wrap;
 }
-.src-label { color: #888; font-size: 0.85rem; margin-right: 6px; }
+.src-label { color: var(--muted); font-size: 0.85rem; margin-right: 6px; }
 .src-btn {
   background: transparent;
-  border: 1px solid {{ grid }};
-  color: #aaa;
+  border: 1px solid var(--grid);
+  color: var(--muted-strong);
   padding: 5px 16px;
   cursor: pointer;
   border-radius: 14px;
   font-size: 0.85rem;
   transition: background .15s, color .15s, border-color .15s;
 }
-.src-btn:hover { color: {{ text }}; border-color: {{ accent }}; }
+.src-btn:hover { color: var(--text); border-color: var(--accent); }
 .src-btn.active {
   color: #fff;
-  background: {{ accent }};
-  border-color: {{ accent }};
+  background: var(--accent);
+  border-color: var(--accent);
 }
+
+/* Полоса вкладок держится тише заголовка самой диаграммы: имя раздела и заголовок фигуры
+   стоят рядом, и если оба кричат — глазу не за что зацепиться. Активная вкладка отмечена
+   подчёркиванием акцентом, остальные — приглушённый текст без фона. */
 .tabs {
-  display: flex; gap: 4px;
-  padding: 14px 24px 0;
-  background: {{ paper }};
-  border-bottom: 1px solid {{ grid }};
+  display: flex; gap: 2px;
+  padding: 10px 24px 0;
+  background: var(--paper);
+  border-bottom: 1px solid var(--grid);
   flex-wrap: wrap;
 }
 .tab-btn {
   background: transparent;
   border: none;
-  color: #888;
-  padding: 8px 18px;
+  color: var(--muted);
+  padding: 7px 14px;
   cursor: pointer;
   border-radius: 4px 4px 0 0;
-  font-size: 0.9rem;
+  font-size: 0.84rem;
   transition: background .15s, color .15s;
-  border-bottom: 3px solid transparent;
+  border-bottom: 2px solid transparent;
 }
-.tab-btn:hover { color: {{ text }}; background: {{ grid }}; }
+.tab-btn:hover { color: var(--text); background: var(--grid); }
 .tab-btn.active {
   color: #fff;
-  border-bottom: 3px solid {{ accent }};
-  background: {{ bg }};
+  border-bottom-color: var(--accent);
+  background: var(--bg);
 }
 .content { padding: 24px; }
 .tab-pane { display: none; }

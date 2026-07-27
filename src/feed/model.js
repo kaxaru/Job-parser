@@ -109,10 +109,81 @@ const MARK_BTN_META = {
 export const STATUS_BTNS = MARK_VALUES.map(
   v => ({ act: v, ...(MARK_BTN_META[v] || { label: v, title: v }) }));
 
-/* Тёплый (полное совпадение) → холодный (нет совпадения). */
+/* Совпадение с резюме — светофор: 0% красный -> 50% янтарь/лайм -> 100% зелёный.
+   Две правки одного бейджа, обе по делу:
+   1) Направление. Раньше шкала была ТЕМПЕРАТУРНОЙ (210 -> 15) и читалась наоборот: 100%
+      выходил тревожно-красным, а посредственные 25% — приятно-зелёными. Рядом с зелёным
+      «✓ Отклик» и красным «✕ Отказ» побеждает светофорная логика, а не температурная.
+   2) Сочность. Первый вариант разворота был узким (210 -> 145) и блёклым: 10% от 46%
+      на глаз не отличались. Вернули полный размах и насыщенность 74% — значение снова
+      читается по цвету, не только по цифре.
+   Контраст держит НЕ подложка, а подбор чернил (`matchInk`): при яркой заливке белый текст
+   проваливался до 2.17:1 в жёлто-зелёной зоне — это и была скрытая беда старой шкалы. */
 export function matchColor(pct) {
-  const hue = 210 - 195 * (pct / 100);       /* 100%→15 тёплый, 0%→210 холодный */
-  return `hsl(${hue.toFixed(0)}, 70%, 42%)`;
+  const t = Math.max(0, Math.min(100, pct)) / 100;
+  return `hsl(${(145 * t).toFixed(0)}, 74%, 44%)`;
+}
+
+/* Цвет ТЕКСТА для бейджа совпадения: тот из двух, что даёт больший контраст с заливкой.
+   По всей шкале худшая точка — 4.51:1 (на 14%, где белый и тёмный почти равны). */
+export function matchInk(pct) {
+  const t = Math.max(0, Math.min(100, pct)) / 100;
+  const rgb = _hsl2rgb(145 * t, 0.74, 0.44);
+  return _contrast(rgb, [1, 1, 1]) >= _contrast(rgb, INK_RGB) ? '#fff' : '#07080b';
+}
+
+/* ── Цветовая арифметика: один набор помощников на весь модуль ──
+   Нужна и тегам (осветлить тон до читаемого), и бейджу совпадения (выбрать чернила). */
+const INK_RGB = [0x07 / 255, 0x08 / 255, 0x0b / 255];
+
+function _hex2rgb(hex) {
+  const s = String(hex || '').replace('#', '');
+  const f = s.length === 3 ? s.split('').map(c => c + c).join('') : s;
+  return [0, 2, 4].map(i => parseInt(f.slice(i, i + 2), 16) / 255);
+}
+
+function _hsl2rgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+    : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return [r + m, g + m, b + m];
+}
+
+function _contrast(a, b) {
+  const lin = c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  const lum = c => 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]);
+  const [hi, lo] = [lum(a), lum(b)].sort((p, q) => q - p);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/* Цвет технологии как ТЕКСТ на тёмной карточке. Исходные значения (`tagClr`) — заливочные,
+   из палитры языков GitHub, и часть из них тёмная (Ruby #701516, PHP #4F5D95): как текст на
+   #1a1d27 они нечитаемы. Поднимаем светлоту, пока контраст не дойдёт до 4.5:1 — тон
+   сохраняется, поэтому язык по-прежнему узнаётся по цвету. */
+export function tagInk(hex, paper = '#1a1d27') {
+  const [r, g, b] = _hex2rgb(hex);
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l0 = (max + min) / 2;
+  const d = max - min;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l0 - 1));
+  let h = 0;
+  if (d !== 0) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h = (h * 60 + 360) % 360;
+  }
+  const paperRgb = _hex2rgb(paper);
+  for (let l = l0; l <= 0.92; l += 0.02) {
+    const cand = _hsl2rgb(h, s, l);
+    if (_contrast(cand, paperRgb) >= 4.5) {
+      return `#${cand.map(c => Math.round(c * 255).toString(16).padStart(2, '0')).join('')}`;
+    }
+  }
+  return '#e8e8e8';                          /* предельно светлый фолбэк — читается всегда */
 }
 
 /* Температура возраста вакансии: свежая (0 дн) → горячий красный,
@@ -161,7 +232,8 @@ export function appliedInRange(v, from, to) {
 export function statusInfo(v) {
   const s = v.status;
   if (!s) return null;
-  const color = isDiscard(s) ? '#E45756' : isInvited(s) ? '#3FA34D' : '#8a8f98';
+  /* подложки затемнены до 4.5:1 с белым текстом бейджа (было 3.2–3.6 при 11px bold) */
+  const color = isDiscard(s) ? '#DE3433' : isInvited(s) ? '#34863F' : '#717781';
   return { code: s, label: STATE_LABELS[s] || s, color };
 }
 
@@ -187,6 +259,29 @@ export function cardTone(v) {
   if (isDiscard(v?.status)) return 'rejected';
   if (v?.chat?.kind === 'bot_interview') return 'botiv';
   return cardColor(v);
+}
+
+/* Сколько ГРУПП фильтров сейчас отклонено от значения по умолчанию. Нужен свёрнутой панели:
+   иначе легко забыть, что выдача урезана невидимыми фильтрами. Считаются именно группы, а не
+   отдельные пилюли — «три языка» это один активный фильтр. Сортировка, валюта показа и
+   сортировка по совпадению не считаются: они не режут набор, а только меняют порядок. */
+export function countActiveFilters(f = {}) {
+  const size = s => (s && typeof s.size === 'number' ? s.size : 0);
+  return [
+    size(f.langs) > 0,
+    size(f.roles) > 0,
+    size(f.exps) > 0,
+    !!(f.city || '').trim(),
+    !!(f.search || []).length,
+    (f.schedule || 'all') !== 'all',
+    (f.status || 'all') !== 'all',
+    (f.source || 'all') !== 'all',
+    !!f.chatFilter,
+    !!f.resumeOnly,
+    !!f.showNonIt,
+    !!(f.dateFrom || f.dateTo),
+    (f.minSal || 0) > 0 || (f.maxSal != null && f.salMax != null && f.maxSal < f.salMax),
+  ].filter(Boolean).length;
 }
 
 /* Совпадение города. Выбор из списка (`exact`) — строгое равенство; набранный вручную

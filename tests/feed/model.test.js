@@ -5,8 +5,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
-  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert, esc, filterVacancies,
-  fmtK, fmtSal, hashId, isFrozenChat, matchColor, resolveCur, statusInfo, tagClr,
+  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
+  countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
+  resolveCur, statusInfo, tagClr, tagInk,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -48,15 +49,17 @@ describe('statusInfo — бейдж статуса отклика (API)', () => 
   it('нет статуса → null', () => {
     assert.equal(statusInfo(vac({ status: null })), null);
   });
+  /* Подложки затемнены 27.07 до 4.5:1 с белым текстом бейджа: прежние #E45756/#3FA34D/#8a8f98
+     давали 3.62/3.20/3.25 при кегле 11px bold, то есть ниже нормы AA. */
   it('отказ → красный', () => {
     assert.equal(statusInfo(vac({ status: 'DISCARD' })).label, 'Отказ');
-    assert.equal(statusInfo(vac({ status: 'DISCARD' })).color, '#E45756');
+    assert.equal(statusInfo(vac({ status: 'DISCARD' })).color, '#DE3433');
   });
   it('приглашение/интервью → зелёный', () => {
-    assert.equal(statusInfo(vac({ status: 'INTERVIEW' })).color, '#3FA34D');
+    assert.equal(statusInfo(vac({ status: 'INTERVIEW' })).color, '#34863F');
   });
   it('отклик без ответа → серый', () => {
-    assert.equal(statusInfo(vac({ status: 'RESPONSE' })).color, '#8a8f98');
+    assert.equal(statusInfo(vac({ status: 'RESPONSE' })).color, '#717781');
   });
   it('незнакомый код → показываем как есть', () => {
     assert.equal(statusInfo(vac({ status: 'WEIRD' })).label, 'WEIRD');
@@ -305,10 +308,60 @@ describe('tagClr — цвета технологий', () => {
   });
 });
 
-describe('matchColor — hsl от % совпадения', () => {
-  it('крайние значения в границах hue', () => {
-    assert.equal(matchColor(100), 'hsl(15, 70%, 42%)');   /* тёплый */
-    assert.equal(matchColor(0), 'hsl(210, 70%, 42%)');    /* холодный */
+describe('tagInk — цвет технологии, читаемый как текст на тёмной карточке', () => {
+  /* Палитра языков GitHub — заливочная: Ruby #701516 и PHP #4F5D95 как ТЕКСТ на #1a1d27
+     нечитаемы. Светлота поднимается до контраста 4.5:1, тон сохраняется — язык узнаётся. */
+  it('тёмный тон осветляется, оттенок остаётся', () => {
+    assert.equal(tagInk('#701516'), '#e05c5e');     /* Ruby: тёмно-бордовый -> читаемый красный */
+    assert.equal(tagInk('#4F5D95'), '#7582b6');     /* PHP */
+    assert.equal(tagInk('#3572A5'), '#498cc4');     /* Python */
+  });
+  it('уже светлый тон не трогаем', () => {
+    assert.equal(tagInk('#f1e05a'), '#f1e05a');     /* JavaScript */
+    assert.equal(tagInk('#00ADD8'), '#00add8');     /* Go */
+  });
+});
+
+describe('countActiveFilters — счётчик на свёрнутой панели', () => {
+  const flt2 = over => flt({ ...over });
+  it('состояние по умолчанию → 0', () => {
+    assert.equal(countActiveFilters(flt2()), 0);
+  });
+  it('считаются группы, а не отдельные пилюли', () => {
+    assert.equal(countActiveFilters(flt2({ langs: new Set(['Python', 'Go', 'Rust']) })), 1);
+    assert.equal(countActiveFilters(flt2({ langs: new Set(['Python']), city: 'Москва' })), 2);
+  });
+  it('сортировка, валюта и сортировка по совпадению фильтрами не считаются', () => {
+    assert.equal(countActiveFilters(flt2({ sort: 'desc', matchSort: true, displayCur: 'USD' })), 0);
+  });
+  it('суженная вилка зарплаты — активный фильтр', () => {
+    assert.equal(countActiveFilters(flt2({ minSal: 50_000 })), 1);
+    assert.equal(countActiveFilters(flt2({ maxSal: 100_000, salMax: 1_000_000 })), 1);
+  });
+});
+
+describe('matchColor / matchInk — светофор, а не термометр', () => {
+  /* До 27.07 шкала была температурной и читалась наоборот: 100% выходил тревожно-красным,
+     а слабые 25% — приятно-зелёными. Рядом с зелёным «✓ Отклик» и красным «✕ Отказ» это
+     вводило в заблуждение. Первый вариант разворота вышел блёклым (узкий диапазон
+     210->145 при низкой насыщенности) — значение переставало читаться по цвету, поэтому
+     размах и сочность вернули, а контраст держат чернила. */
+  it('0% красный, середина янтарная, 100% зелёный', () => {
+    assert.equal(matchColor(0), 'hsl(0, 74%, 44%)');
+    assert.equal(matchColor(50), 'hsl(73, 74%, 44%)');
+    assert.equal(matchColor(100), 'hsl(145, 74%, 44%)');
+  });
+  it('выход за границы шкалы не ломает цвет', () => {
+    assert.equal(matchColor(-10), 'hsl(0, 74%, 44%)');
+    assert.equal(matchColor(140), 'hsl(145, 74%, 44%)');
+  });
+  /* Ровно эта подмена и была скрытой бедой яркой шкалы: белым по жёлто-зелёному выходило
+     2.17:1. Чернила выбираются по контрасту, худшая точка всей шкалы — 4.51:1. */
+  it('чернила по контрасту: на красном белые, на янтаре и зелёном тёмные', () => {
+    assert.equal(matchInk(0), '#fff');
+    assert.equal(matchInk(14), '#fff');
+    assert.equal(matchInk(25), '#07080b');
+    assert.equal(matchInk(100), '#07080b');
   });
 });
 

@@ -1,21 +1,62 @@
+/* Токены темы. Палитра приходит из Python (config.py::BG/PAPER/GRID/TEXT/ACCENT) — здесь она
+   один раз кладётся в переменные, чтобы дальше в файле не было россыпи хардкод-серых
+   (их было девять: #444…#ddd) и чтобы дашборд мог опираться на те же имена.
+   Приглушённые тона подобраны по контрасту, а не на глаз: #868686 даёт 4.62:1 на карточке,
+   #7C7C7C — 4.52:1 на фоне; прежние #666/#444 давали 2.93:1 и 1.94:1 (ниже нормы AA). */
+:root {
+  color-scheme: dark;              /* нативные списки (datalist города), скроллбары, календари */
+  --bg: {{ bg }};
+  --paper: {{ paper }};
+  --grid: {{ grid }};
+  --text: {{ text }};
+  --accent: {{ accent }};
+  --muted: #868686;                /* второстепенный текст на карточке (4.62:1) */
+  --muted-strong: #a9a9a9;         /* подписи, которые должны читаться легко */
+  --muted-on-bg: #7C7C7C;          /* то же, но на тёмном фоне страницы (4.52:1) */
+  --ink: #0b0d12;                  /* тёмный текст поверх светлых плашек */
+  --fs-xs: 0.72rem;
+  --fs-sm: 0.8rem;
+  --fs-md: 0.88rem;
+  --fs-lg: 1rem;
+  --fs-xl: 1.3rem;
+  --radius: 8px;
+  --radius-pill: 999px;
+}
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  background: {{ bg }};
-  color: {{ text }};
-  font-family: Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  /* системный стек вместо Arial: родные метрики Windows/mac, цифры не пляшут по ширине */
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  font-variant-numeric: tabular-nums;   /* зарплаты и проценты выравниваются в колонку */
   min-height: 100vh;
 }
+
+/* Видимый фокус для всего интерактивного: раньше он был только у пилюль-чекбоксов,
+   остальные элементы полагались на браузерный дефолт, невидимый на тёмном фоне. */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
 header {
-  background: {{ paper }};
+  background: var(--paper);
   padding: 16px 24px;
-  border-bottom: 1px solid {{ grid }};
+  border-bottom: 1px solid var(--grid);
   display: flex;
   align-items: baseline;
   gap: 16px;
   flex-wrap: wrap;
 }
 header h1 { font-size: 1.3rem; color: #fff; }
-#counter { font-size: 0.85rem; color: #888; }
+#counter { font-size: 0.85rem; color: var(--muted); }
 
 /* Экспорт/импорт отметок + индикатор синхронизации */
 .hdr-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
@@ -23,38 +64,82 @@ header h1 { font-size: 1.3rem; color: #fff; }
   display: inline-flex;
   align-items: center;
   background: transparent;
-  border: 1px solid {{ grid }};
-  color: #aaa;
+  border: 1px solid var(--grid);
+  color: var(--muted-strong);
   padding: 4px 11px;
   border-radius: 6px;
   font-size: 0.78rem;
   cursor: pointer;
   transition: border-color .12s, color .12s;
 }
-.hdr-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
-.sync-status { font-size: 0.74rem; color: #777; white-space: nowrap; }
+.hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
+.sync-status { font-size: 0.74rem; color: var(--muted); white-space: nowrap; }
 .sync-status.ok    { color: #3fae6b; }
-.sync-status.busy  { color: {{ accent }}; }
+.sync-status.busy  { color: var(--accent); }
 .sync-status.err   { color: #d35a5a; }
 .sync-status.local { color: #c79a3a; }
 
-/* ── Filter bar ───────────────────────────────────── */
-.filter-bar {
+/* ── Панель управления ────────────────────────────────
+   Липкой оставлена только узкая полоса (~48px). Раньше липким был весь бар с фильтрами:
+   замерено 398px при окне 1000px — 40% экрана постоянно, а на ширине 900px 691px из 900,
+   то есть 77%, и до карточек надо было доскроллить. Сами группы фильтров теперь
+   раскрываются под полосой и НЕ липкие. */
+.filter-toolbar {
   position: sticky;
   top: 0;
-  z-index: 100;
-  background: {{ paper }};
-  border-bottom: 2px solid {{ grid }};
+  z-index: 101;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 24px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--grid);
+}
+.toolbar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: transparent;
+  border: 1px solid var(--grid);
+  color: var(--text);
+  padding: 5px 13px;
+  border-radius: 6px;
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color .12s, color .12s;
+}
+.toolbar-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.toolbar-toggle[aria-expanded="true"] { border-color: var(--accent); }
+.toolbar-toggle .chev { transition: transform .15s; }
+.toolbar-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+/* Счётчик активных фильтров: свёрнутая панель не должна скрывать, что выдача урезана */
+.filters-count {
+  background: var(--accent);
+  color: #fff;
+  border-radius: var(--radius-pill);
+  padding: 0 7px;
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.filters-count[hidden] { display: none; }
+.toolbar-spacer { margin-left: auto; }
+
+.filter-bar {
+  background: var(--paper);
+  border-bottom: 2px solid var(--grid);
   padding: 12px 24px;
   display: flex;
   flex-wrap: wrap;
   gap: 20px;
   align-items: flex-start;
 }
+/* [hidden] не сработал бы сам: display:flex выше специфичнее UA-стиля */
+.filter-bar[hidden] { display: none; }
 .filter-group { display: flex; flex-direction: column; gap: 6px; }
 .filter-label {
   font-size: 0.72rem;
-  color: #888;
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
@@ -64,15 +149,15 @@ header h1 { font-size: 1.3rem; color: #fff; }
 .search-input {
   width: 260px;
   max-width: 100%;
-  background: {{ grid }};
-  color: {{ text }};
-  border: 1px solid {{ grid }};
+  background: var(--grid);
+  color: var(--text);
+  border: 1px solid var(--grid);
   border-radius: 6px;
   padding: 6px 11px;
   font-size: 0.85rem;
 }
-.search-input:focus { outline: none; border-color: {{ accent }}; }
-.search-input::placeholder { color: #777; }
+.search-input:focus { outline: none; border-color: var(--accent); }
+.search-input::placeholder { color: var(--muted); }
 /* Город: тот же инпут, но узкий как прежний select (input+datalist = список с поиском) */
 .city-input { width: 180px; }
 
@@ -96,90 +181,90 @@ header h1 { font-size: 1.3rem; color: #fff; }
   display: inline-block;
   padding: 3px 10px;
   border-radius: 12px;
-  border: 1px solid {{ grid }};
+  border: 1px solid var(--grid);
   cursor: pointer;
   font-size: 0.78rem;
   background: transparent;
-  color: {{ text }};
+  color: var(--text);
   transition: background .12s, border-color .12s, color .12s, box-shadow .12s;
   user-select: none;
 }
-.lang-label:hover { border-color: {{ accent }}; color: {{ accent }}; }
+.lang-label:hover { border-color: var(--accent); color: var(--accent); }
 .lang-label:active { transform: translateY(1px); }
 .lang-grid input[type=checkbox]:checked + .lang-label {
-  background: {{ accent }};
-  border-color: {{ accent }};
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
-  box-shadow: 0 0 0 1px {{ accent }}44;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 27%, transparent);
 }
 .lang-grid input[type=checkbox]:checked + .lang-label:hover {
   color: #fff;                                  /* выбранная пилюля не «выцветает» на ховере */
-  box-shadow: 0 0 0 2px {{ accent }}55;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 33%, transparent);
 }
 /* Клавиатура: пилюля должна показывать фокус, раз сам чекбокс невидим */
 .lang-grid input[type=checkbox]:focus-visible + .lang-label {
-  outline: 2px solid {{ accent }};
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
 /* Salary range */
 .salary-wrap { display: flex; flex-direction: column; gap: 5px; min-width: 220px; }
 .salary-row  { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; }
-.salary-row span.lbl { color: #888; width: 18px; }
-input[type=range] { width: 160px; accent-color: {{ accent }}; cursor: pointer; }
-.sal-val { min-width: 56px; color: {{ accent }}; font-size: 0.8rem; }
+.salary-row span.lbl { color: var(--muted); width: 18px; }
+input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; }
+.sal-val { min-width: 56px; color: var(--accent); font-size: 0.8rem; }
 
 /* City dropdown */
 select {
-  background: {{ grid }};
-  color: {{ text }};
-  border: 1px solid {{ grid }};
+  background: var(--grid);
+  color: var(--text);
+  border: 1px solid var(--grid);
   border-radius: 4px;
   padding: 5px 8px;
   font-size: 0.85rem;
   cursor: pointer;
   max-width: 180px;
 }
-select option { background: {{ paper }}; }
+select option { background: var(--paper); }
 
 /* Schedule toggle */
 .sched-btns {
   display: flex;
   border-radius: 4px;
   overflow: hidden;
-  border: 1px solid {{ grid }};
+  border: 1px solid var(--grid);
 }
 .sched-btn {
   background: transparent;
   border: none;
-  color: #888;
+  color: var(--muted);
   padding: 5px 13px;
   cursor: pointer;
   font-size: 0.78rem;
   transition: background .12s, color .12s;
 }
-.sched-btn + .sched-btn { border-left: 1px solid {{ grid }}; }
-.sched-btn:hover { background: {{ grid }}; color: {{ text }}; }
-.sched-btn.active { background: {{ accent }}; color: #fff; }
+.sched-btn + .sched-btn { border-left: 1px solid var(--grid); }
+.sched-btn:hover { background: var(--grid); color: var(--text); }
+.sched-btn.active { background: var(--accent); color: #fff; }
 
 /* Календарь «Мои отклики»: date-инпуты внутри .sched-btns */
 .date-input {
   background: transparent;
   border: none;
-  border-left: 1px solid {{ grid }};
-  color: {{ text }};
+  border-left: 1px solid var(--grid);
+  color: var(--text);
   padding: 4px 8px;
   font-size: 0.76rem;
   color-scheme: dark;
   cursor: pointer;
 }
-.date-dash { color: #888; align-self: center; padding: 0 2px; }
+.date-dash { color: var(--muted); align-self: center; padding: 0 2px; }
 
 /* Reset */
 .reset-btn {
   background: transparent;
-  border: 1px solid #444;
-  color: #777;
+  border: 1px solid var(--grid);
+  color: var(--muted);
   padding: 5px 13px;
   border-radius: 4px;
   cursor: pointer;
@@ -187,7 +272,7 @@ select option { background: {{ paper }}; }
   align-self: flex-end;
   transition: border-color .12s, color .12s;
 }
-.reset-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
+.reset-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Cards ────────────────────────────────────────── */
 .cards-grid {
@@ -197,8 +282,8 @@ select option { background: {{ paper }}; }
   padding: 20px 24px 40px;
 }
 .card {
-  background: {{ paper }};
-  border: 1px solid {{ grid }};
+  background: var(--paper);
+  border: 1px solid var(--grid);
   border-radius: 8px;
   padding: 14px 16px;
   display: flex;
@@ -207,8 +292,12 @@ select option { background: {{ paper }}; }
   transition: border-color .15s, box-shadow .15s;
   cursor: pointer;
 }
-.card:hover { border-color: {{ accent }}; box-shadow: 0 0 0 1px {{ accent }}22; }
+.card:hover { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 13%, transparent); }
+.card:focus-visible { border-color: var(--accent); }
 .tags { display: flex; flex-wrap: wrap; gap: 5px; min-height: 22px; }
+/* Теги — контурные, а не заливные. Заливка делала их самым ярким пятном карточки: цветной
+   ряд технологий перекрикивал заголовок вакансии, то есть самое важное проигрывало
+   второстепенному. Цвет технологии сохранён в рамке и тексте, вес — снижен. */
 .tag {
   display: inline-block;
   padding: 2px 8px;
@@ -216,12 +305,16 @@ select option { background: {{ paper }}; }
   font-size: 0.7rem;
   font-weight: 600;
   white-space: nowrap;
+  background: transparent;
+  border: 1px solid currentColor;       /* цвет тона приходит инлайном (model.js::tagInk) */
+  opacity: .9;
 }
+.card:hover .tag { opacity: 1; }
 .card-title {
   color: #fff;
   text-decoration: none;
-  font-size: 0.92rem;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: 700;
   line-height: 1.35;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -230,26 +323,28 @@ select option { background: {{ paper }}; }
   position: relative;
   z-index: 1;        /* sits above card click area so link still works */
 }
-.card-title:hover { color: {{ accent }}; }
-.card-sub { font-size: 0.78rem; color: #888; }
+.card-title:hover { color: var(--accent); }
+.card-sub { font-size: 0.78rem; color: var(--muted); }
 .card-sal {
   font-size: 0.8rem;
-  color: #aaa;
+  color: var(--muted-strong);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-/* Панель статусов под карточкой */
-.card-foot { display: flex; gap: 8px; margin-top: 2px; }
+/* Панель статусов под карточкой. margin-top:auto прижимает её к низу: содержимое карточек
+   разной длины (0–2 ряда тегов, есть/нет зарплаты) разносило кнопки по вертикали на 35px
+   внутри одного ряда сетки — замерено на живой странице. */
+.card-foot { display: flex; gap: 8px; margin-top: auto; padding-top: 2px; }
 
 /* Тогглы «откликнулся» (зелёный) / «отказ» (красный) */
 .status-btn {
   flex: 1;
   background: transparent;
-  border: 1px solid {{ grid }};
-  color: #888;
+  border: 1px solid var(--grid);
+  color: var(--muted);
   padding: 3px 9px;
   border-radius: 6px;
   font-size: 0.72rem;
@@ -304,10 +399,32 @@ select option { background: {{ paper }}; }
   text-shadow: 0 1px 1px rgba(0,0,0,.35);
   cursor: help;
 }
+/* Первая отрисовка: feed-data.js весит ~50 МБ, и пока браузер его парсит, сетка пуста —
+   раньше это выглядело как зависшая страница. :empty снимает заглушку сам, как только
+   вставлена первая карточка (или .no-results), без единой строки JS. */
+.cards-grid:empty {
+  min-height: 40vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted-on-bg);
+  font-size: var(--fs-md);
+}
+.cards-grid:empty::before {
+  content: '';
+  width: 16px; height: 16px;
+  border: 2px solid var(--grid);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+}
+.cards-grid:empty::after { content: 'Загружаем вакансии…'; }
+
 .no-results {
   grid-column: 1 / -1;
   text-align: center;
-  color: #444;
+  color: var(--muted-on-bg);
   padding: 80px 0;
   font-size: 1.1rem;
 }
@@ -327,8 +444,8 @@ select option { background: {{ paper }}; }
 .modal-overlay.open { display: flex; }
 
 .modal-box {
-  background: {{ paper }};
-  border: 1px solid {{ grid }};
+  background: var(--paper);
+  border: 1px solid var(--grid);
   border-radius: 12px;
   width: 100%;
   max-width: 700px;
@@ -345,7 +462,7 @@ select option { background: {{ paper }}; }
 
 .modal-head {
   padding: 20px 24px 18px;
-  border-bottom: 1px solid {{ grid }};
+  border-bottom: 1px solid var(--grid);
   position: relative;
 }
 .modal-close {
@@ -353,8 +470,8 @@ select option { background: {{ paper }}; }
   top: 14px;
   right: 16px;
   background: transparent;
-  border: 1px solid {{ grid }};
-  color: #888;
+  border: 1px solid var(--grid);
+  color: var(--muted);
   font-size: 1.2rem;
   line-height: 1;
   width: 28px;
@@ -378,11 +495,11 @@ select option { background: {{ paper }}; }
   display: block;
   margin-bottom: 8px;
 }
-.modal-title:hover { color: {{ accent }}; }
-.modal-meta { font-size: 0.82rem; color: #888; margin-bottom: 4px; }
+.modal-title:hover { color: var(--accent); }
+.modal-meta { font-size: 0.82rem; color: var(--muted); margin-bottom: 4px; }
 .modal-sal  {
   font-size: 0.9rem;
-  color: #bbb;
+  color: var(--muted-strong);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -393,8 +510,8 @@ select option { background: {{ paper }}; }
 
 /* ── Сопроводительное письмо ──────────────────────── */
 .cover {
-  background: {{ bg }};
-  border: 1px solid {{ grid }};
+  background: var(--bg);
+  border: 1px solid var(--grid);
   border-radius: 8px;
   padding: 12px 14px;
   margin-bottom: 18px;
@@ -411,37 +528,37 @@ select option { background: {{ paper }}; }
 .cover-actions { display: flex; gap: 6px; }
 .cover-btn {
   background: transparent;
-  border: 1px solid {{ grid }};
-  color: #aaa;
+  border: 1px solid var(--grid);
+  color: var(--muted-strong);
   padding: 4px 10px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.75rem;
   transition: border-color .12s, color .12s, opacity .12s;
 }
-.cover-btn:hover { border-color: {{ accent }}; color: {{ accent }}; }
-.cover-copy { background: {{ accent }}; border-color: {{ accent }}; color: #fff; }
+.cover-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cover-copy { background: var(--accent); border-color: var(--accent); color: #fff; }
 .cover-copy:hover { color: #fff; opacity: .85; }
 .cover-text {
   width: 100%;
   min-height: 200px;
   resize: vertical;
-  background: {{ paper }};
-  color: #ddd;
-  border: 1px solid {{ grid }};
+  background: var(--paper);
+  color: var(--text);
+  border: 1px solid var(--grid);
   border-radius: 6px;
   padding: 10px 12px;
   font-family: inherit;
   font-size: 0.82rem;
   line-height: 1.6;
 }
-.cover-text:focus { outline: none; border-color: {{ accent }}; }
-.cover-hint { font-size: 0.72rem; color: #666; margin-top: 6px; }
+.cover-text:focus { outline: none; border-color: var(--accent); }
+.cover-hint { font-size: 0.72rem; color: var(--muted); margin-top: 6px; }
 
 /* Full description HTML from hh.ru API */
 .vacancy-desc {
   font-size: 0.85rem;
-  color: #ccc;
+  color: var(--text);
   line-height: 1.7;
 }
 .vacancy-desc p  { margin-bottom: 10px; }
@@ -451,39 +568,39 @@ select option { background: {{ paper }}; }
 .vacancy-desc strong,
 .vacancy-desc b  { color: #fff; font-weight: 600; }
 .vacancy-desc em,
-.vacancy-desc i  { color: #bbb; }
+.vacancy-desc i  { color: var(--muted-strong); }
 
 /* Loading / error state */
 .m-loading {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #666;
+  color: var(--muted);
   font-size: 0.82rem;
   padding: 4px 0;
 }
 .m-loading::before {
   content: '';
   width: 14px; height: 14px;
-  border: 2px solid #444;
-  border-top-color: {{ accent }};
+  border: 2px solid var(--grid);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin .7s linear infinite;
   flex-shrink: 0;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.m-error { color: #666; font-size: 0.82rem; }
+.m-error { color: var(--muted); font-size: 0.82rem; }
 
 .modal-foot {
   padding: 16px 24px;
-  border-top: 1px solid {{ grid }};
+  border-top: 1px solid var(--grid);
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-start;
 }
-.apply-label { color: #aaa; font-size: 0.85rem; font-weight: 600; }
+.apply-label { color: var(--muted-strong); font-size: 0.85rem; font-weight: 600; }
 .modal-apply-btn {
   background: #54A24B;
   color: #fff;
@@ -497,9 +614,9 @@ select option { background: {{ paper }}; }
 }
 .modal-apply-btn:hover { opacity: .85; }
 .modal-apply-btn:disabled { opacity: .5; cursor: default; }
-.m-apply-status { font-size: 0.8rem; color: #aaa; }
+.m-apply-status { font-size: 0.8rem; color: var(--muted-strong); }
 .modal-hh-btn {
-  background: {{ accent }};
+  background: var(--accent);
   color: #fff;
   text-decoration: none;
   padding: 8px 20px;

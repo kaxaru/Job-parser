@@ -5,22 +5,25 @@ import { COVER_TEMPLATES, coverLetter } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
   ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
-  isFrozenChat, matchColor, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr,
+  isFrozenChat, matchColor, matchInk, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
 
 /* ── Билдеры разметки (чистые) ── */
 function tagsHTML(techs, limit) {
+  /* контурный чип: цвет языка уходит в текст и рамку (см. .tag), заливки нет —
+     иначе ряд ярких плашек перекрикивал заголовок вакансии */
   return techs.slice(0, limit ?? techs.length).map(t => {
-    const [bg, fg] = tagClr(t);
-    return `<span class="tag" style="background:${bg};color:${fg}">${esc(t)}</span>`;
+    const ink = tagInk(tagClr(t)[0]);
+    return `<span class="tag" style="color:${ink}">${esc(t)}</span>`;
   }).join('');
 }
 
 function matchBadge(v) {
   const m = resumeMatch(v);
   const title = `Совпадение с резюме ${m.pct}% — стек ${m.stack}/60 · опыт ${m.exp}/25 · удалёнка ${m.remote}/15`;
-  return `<span class="match-badge" style="background:${matchColor(m.pct)}" title="${esc(title)}">${m.pct}%</span>`;
+  return `<span class="match-badge" style="background:${matchColor(m.pct)};color:${matchInk(m.pct)}"
+    title="${esc(title)}">${m.pct}%</span>`;
 }
 
 /* Бейджи CRM: реальный статус отклика с HH (приоритет над ручной пометкой) + «форма».
@@ -41,7 +44,7 @@ function statusBadge(v) {
          + `${stAge ? ' · ' + stAge : ''}</span>`;
   }
   if (v.needs_form) {
-    out += '<span class="status-badge" style="background:#B279A2"'
+    out += '<span class="status-badge" style="background:#A35F90"'
          + ' title="Требует заполнения формы-опросника на HH">📝 форма</span>';
   }
   if (v.form_dead) {                          /* свип форм не нашёл полей — вакансия снята/архив */
@@ -57,10 +60,10 @@ function statusBadge(v) {
     const botIv = c.kind === 'bot_interview';        /* интервью у бота в Telegram/Max — полумёртвое */
     const who = frozen ? '' : c.sender === 'human' ? '👤' : c.sender === 'bot' ? '🤖' : '📋';
     const bg = botIv ? '#E8C11C'                     /* жёлтый — уводит во внешний мессенджер */
-             : frozen ? '#5b8fb0'                    /* фриз — ледяной, отличать от живых вопросов */
-             : c.sender === 'human' ? '#D64550'      /* личное — требует внимания */
-             : c.sender === 'bot' ? '#7B8794'        /* бот — серый, фоновый */
-             : '#4C9BD1';                            /* шаблонная рассылка */
+             : frozen ? '#4A7B9A'                    /* фриз — ледяной, отличать от живых вопросов */
+             : c.sender === 'human' ? '#D53F4B'      /* личное — требует внимания */
+             : c.sender === 'bot' ? '#6C7885'        /* бот — серый, фоновый */
+             : '#2E7CB2';                            /* шаблонная рассылка */
     /* белый текст бейджа на жёлтом нечитаем — только для этого вида даём тёмный */
     const fg = botIv ? ';color:#1f2937' : '';
     const tip = (c.preview || '').replace(/"/g, '&quot;');
@@ -72,7 +75,7 @@ function statusBadge(v) {
          + `${c.manual_only ? ' · решай сам' : ''}${locked}</span>`;
   }
   if (v.chat?.contact) {                      /* рекрутёр оставил связь прямо в переписке */
-    out += `<span class="status-badge" style="background:#C7702E"`
+    out += `<span class="status-badge" style="background:#AE6228"`
          + ` title="Контакт из переписки: ${esc(v.chat.contact)}">📞 ${esc(v.chat.contact.split(' · ')[0])}</span>`;
   }
   if (v.applied?.ts) {
@@ -109,7 +112,8 @@ function cardHTML(v) {
   const sal     = fmtSal(v, _displayCur);
   const salLine = sal ? `${sal} · ${esc(v.exp)}` : esc(v.exp);
   const sub     = [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
-  return `<div class="card${v.form_dead ? ' st-dead' : ''}" data-id="${esc(v.id)}">
+  return `<div class="card${v.form_dead ? ' st-dead' : ''}" data-id="${esc(v.id)}"
+     tabindex="0" role="button" aria-label="${esc(v.name)} — открыть карточку">
   <div class="tags">${tagsHTML(v.techs, 8)}</div>
   <a class="card-title" href="${esc(v.url)}" target="_blank" rel="noopener noreferrer"
      onclick="event.stopPropagation()">${esc(v.name)}</a>
@@ -254,6 +258,9 @@ const overlay  = document.getElementById('modal-overlay');
 const modalBox = document.getElementById('modal-box');
 let   activeId = null;   /* guard против устаревших загрузок описаний */
 let   coverIdx = 0;
+/* Ловушка фокуса модалки: список фокусируемых + элемент, куда вернуть фокус. */
+const FOCUSABLE = 'a[href], button:not([disabled]), input, select, textarea, [tabindex]';
+let   _returnFocusTo = null;
 let   _serverMode = false;   /* кнопка «Откликнуться в фоне» — только под hh.py serve */
 
 export function showModal(v) {
@@ -290,14 +297,35 @@ export function showModal(v) {
 
   overlay.classList.add('open');
   document.body.style.overflow = 'hidden';
+  /* Клавиатура: запоминаем, откуда пришли, уводим фокус внутрь и не выпускаем его наружу —
+     иначе Tab уходил в карточки под затемнением, а после закрытия фокус терялся вовсе. */
+  _returnFocusTo = document.activeElement;
+  modalBox.querySelector('.modal-close')?.focus();
   coverIdx = hashId(v.id) % COVER_TEMPLATES.length;   /* стабильный вариант на вакансию */
   renderCover(v);
   renderDesc(v);
 }
 
+overlay.addEventListener('keydown', e => {
+  if (e.key !== 'Tab') return;
+  const items = [...modalBox.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+});
+
 export function closeModal() {
   overlay.classList.remove('open');
   document.body.style.overflow = '';
+  _returnFocusTo?.focus?.();                        /* вернуть фокус на карточку, с которой открыли */
+  _returnFocusTo = null;
 }
 
 function renderCover(v) {
