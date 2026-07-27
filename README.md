@@ -1,5 +1,10 @@
 # HH Job Market Analyzer
 
+[![CI](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Tests](https://img.shields.io/badge/tests-1281%20py%20%2B%20106%20js-success)](docs/testing.md)
+[![Ruff](https://img.shields.io/badge/lint-ruff%20%2B%20biome-informational)](ruff.toml)
+
 Агрегатор IT-вакансий (HH.ru + hirify.me + talanto.work): сбор -> аналитика -> интерактивный
 дашборд и лента-CRM с фильтрами под резюме и автооткликами через Playwright.
 
@@ -9,6 +14,27 @@ PostgreSQL нужен только опциональному полнотекс
 В составе репозитория — портфолио-подпроект [`dwh_demo/`](dwh_demo/README.md):
 ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / MS SQL** -> BI в Metabase
 -> оркестрация Airflow -> observability Grafana + Loki.
+
+## Как выглядит
+
+Лента-CRM: карточки с бейджами совпадения и свежести, статусом отклика с HH, состоянием
+переписки; фильтры сворачиваются в липкую полосу, тема переключается в шапке.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/img/feed-light.png">
+  <img alt="Лента вакансий" src="docs/img/feed-dark.png">
+</picture>
+
+Дашборд: 14 вкладок Plotly со срезами по каждому порталу.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="docs/img/dashboard-light.png">
+  <img alt="Дашборд рынка" src="docs/img/dashboard-dark.png">
+</picture>
+
+> Скриншоты следуют теме GitHub — светлая версия у обоих своя.
+> **CRM-слой на кадрах сгенерирован**: отклики, отказы и переписка синтетические, реальная
+> история откликов в репозиторий не попадает. Вакансии — обычная публичная выдача.
 
 ## Возможности
 

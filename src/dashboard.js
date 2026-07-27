@@ -56,6 +56,8 @@ function _applyPlotlyTheme(light) {
         if (trace.colorscale) patch.reversescale = !light;
         if (trace.colorbar) patch['colorbar.tickfont.color'] = text;
         if (trace.marker?.colorbar) patch['marker.colorbar.tickfont.color'] = text;
+        /* усы IQR: светло-жёлтый рассчитан на тёмный фон, на белом он почти невидим */
+        if (trace.error_y) patch['error_y.color'] = light ? '#A8730F' : '#EECA3B';
         if (Object.keys(patch).length) window.Plotly.restyle(div, patch, [i]);
       });
     } catch { /* одна сломанная фигура не должна ронять переключение темы */ }
