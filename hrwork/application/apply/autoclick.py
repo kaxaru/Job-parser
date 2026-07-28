@@ -28,6 +28,7 @@ import time
 from hrwork.application.apply import cover, session
 from hrwork.application.apply.candidates import Candidate, pick_candidates
 from hrwork.application.apply.chat import chat
+from hrwork.application.apply.forms.form_status import skippable_form_ids
 from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome
 from hrwork.application.apply.runtime import bump_state
 from hrwork.application.apply.runtime.lock import _single_instance, release_if_mine
@@ -132,6 +133,23 @@ def _page(ctx):
 # в профиль. Ждём появления React-корня HH; если это интерстишл — он успеет пройти.
 _HH_ROOT = "#HH-React-Root"
 _DDG_HINT = ("ddos-guard", "проверяем ваш браузер", "checking your browser")
+
+
+_CAPTCHA_PATH = "/account/captcha"
+
+
+def is_captcha(page) -> bool:
+    """HH увёл на СВОЮ капчу: редирект на `/account/captcha?backurl=…`, картинка
+    `[data-qa="account-captcha-picture"]`. Это НЕ DDoS-Guard (тот держит edge и лечится
+    ожиданием) — проверка привязана к аккаунту и снимается только человеком.
+
+    Отличать её от архивной вакансии обязательно: страница капчи проходит `_goto` (корень HH
+    на ней есть), кнопки отклика на ней нет, и прогон принимал её за «архив/внешний» —
+    28.07 так было перемолото 35 карточек за 50 минут и полсотни анкет, причём каждый клик
+    подтверждал HH, что перед ним бот."""
+    with contextlib.suppress(Exception):
+        return _CAPTCHA_PATH in (page.url or "")
+    return False
 
 
 def _goto(page, url: str, tries: int = 3) -> bool:
@@ -402,8 +420,11 @@ def apply_one(page, cand: Candidate) -> ApplyOutcome:
     """Отклик на одну вакансию (БЕЗ письма — письмо шлётся отдельно в чат). Исход:
       APPLIED — отклик отправлен; ALREADY — уже откликались (кнопка заменена на «Чат»);
       FORM — вакансия с вопросами работодателя (в форм-очередь, руками);
+      CAPTCHA — HH увёл на проверку, дальше идти бессмысленно;
       SKIP — архив/внешний сайт/не подтвердилось."""
     _goto(page, cand.url)
+    if is_captcha(page):
+        return ApplyOutcome.CAPTCHA
     btn = page.locator('[data-qa="vacancy-response-link-top"]').first
     try:
         btn.wait_for(timeout=8_000)
@@ -647,9 +668,13 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
     # Берём пул с запасом (×POOL_MULT) и идём по нему, пока не наберём eff.
     # Вакансии-опросники исключаем ПО ФОРМ-ОЧЕРЕДИ (не через marks): бот их не заполняет,
     # а без исключения очередь упиралась в них каждый прогон.
-    forms = set(store.forms())
-    pool = pick_candidates(vacancy_repository().load(), store.marks(), eff * POOL_MULT,
-                           form_ids=forms)
+    # Пропускаем не всю форм-очередь, а только те анкеты, что ещё имеют смысл пропускать:
+    # мёртвая форма означает снятую вакансию, но если её ПЕРЕОТКРЫЛИ после свипа — форма
+    # могла ожить, и вакансия возвращается в оборот сама (form_status.skippable_form_ids).
+    records = vacancy_repository().load()
+    published = {r.id: r.vacancy.published_at for r in records}
+    forms = skippable_form_ids(store.forms(), store.form_cache(), published)
+    pool = pick_candidates(records, store.marks(), eff * POOL_MULT, form_ids=forms)
     log.info("Пул кандидатов: {} (цель {} новых откликов, дневной остаток {}/{}, "
              "опросников пропущено: {}, письмо: {})",
              len(pool), eff, remaining, daily_cap, len(forms), cover_mode)
@@ -681,6 +706,12 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
             log.info("Уже откликались — синхронизирую marks: {}", cand.name)
         elif status is ApplyOutcome.FORM:
             store.add_form(cand.id, cand.name, cand.url)
+        elif status is ApplyOutcome.CAPTCHA:
+            # дальше идти бессмысленно и вредно: каждая следующая карточка — ещё один
+            # бот-сигнал. Проверка снимается только человеком, в профиле автоматики.
+            log.error("HH показал капчу (/account/captcha) — прогон ОСТАНОВЛЕН на {}. "
+                      "Пройди проверку вручную: hh.py autoclick --login", cand.url)
+            break
         else:
             log.info("Пропуск (внешний/архив): {}  {}", cand.name, cand.url)
         time.sleep(random.uniform(*APPLY_PAUSE))

@@ -333,6 +333,56 @@ def test_injection_output_is_inert_string(monkeypatch):
     assert out == payload and isinstance(out, str)
 
 
+@pytest.mark.parametrize("prompt", [
+    "Укажите пожалуйста ваши ожидания по уровню заработной платы?",
+    "Какие у вас зарплатные ожидания (на руки)?",
+    # ЖИВОЙ КЕЙС 27.07: формулировка без слова «зарплата» — поле уходило человеку, хотя
+    # ставка по грейду известна и считается детерминированно (в LLM зарплата не уходит)
+    "От каких сумм рассматриваете предложения о работе для себя?",
+    "От какой суммы готовы рассматривать оффер?",
+])
+def test_salary_question_detected(prompt):
+    assert F.is_salary_q(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "Расскажите о вашем опыте работы с Docker",
+    "Готовы ли вы к командировкам?",
+])
+def test_non_salary_question_not_detected(prompt):
+    assert F.is_salary_q(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    # ЖИВОЙ КЕЙС 27.07: про сумму, но без слова «зарплата» — уходило человеку
+    "Какие Ваши финансовые пожелания?",
+    "Ваши финансовые ожидания?",
+    "Какие денежные ожидания на испытательный срок?",
+])
+def test_money_wish_question_detected(prompt):
+    assert F.is_salary_q(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    # ЖИВОЙ КЕЙС 27.07: «на какой уровень» без денег — это ГРЕЙД. Ветка ловила его как вилку и
+    # вписала бы в вопрос о самооценке ставку по грейду; в radio ответ молча пропадал
+    "На какой уровень ты себя оцениваешь как AI-инженер?",
+    "На какой уровень позиции вы претендуете?",
+    # выплата в валюте — это способ/валюта расчёта, а не сумма: путь словаря, не вилки
+    "Готовы ли вы получать вознаграждение в EUR на https://volet.com?",
+])
+def test_grade_question_is_not_salary_question(prompt):
+    assert F.is_salary_q(prompt) is False
+
+
+@pytest.mark.parametrize("prompt", [
+    "На какой уровень заработной платы вы претендуете?",
+    "На какой уровень оплаты труда вы рассчитываете?",
+])
+def test_salary_level_question_still_detected(prompt):
+    assert F.is_salary_q(prompt) is True
+
+
 @pytest.mark.parametrize("module_name", ["form_fill", "form_read", "forms"])
 def test_form_modules_have_no_exec_sink(module_name):
     # AST-гвард (не строковый скан — иначе ловил бы токены в docstring): в form_*/forms нет
@@ -354,3 +404,46 @@ def test_form_modules_have_no_exec_sink(module_name):
             assert all(a.name != "subprocess" for a in node.names), f"{module_name}: subprocess"
         if isinstance(node, ast.ImportFrom):
             assert node.module != "subprocess", f"{module_name}: from subprocess"
+
+
+# ── «Чем интересна ваша компания»: отвечается по описанию ВАКАНСИИ ──
+@pytest.mark.parametrize("prompt", [
+    "Что привлекло твое внимание к нашей компании?",
+    "Чем вас заинтересовала эта вакансия?",
+    "Опишите, пожалуйста, почему вы считаете, что вы соответствуете нашим требованиям.",
+])
+def test_motivation_question_detected(prompt):
+    assert F.is_motivation_q(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    "Какие у вас зарплатные ожидания?",
+    "Укажите ваш возраст.",
+    "Опыт работы с Docker?",
+])
+def test_plain_question_is_not_motivation(prompt):
+    assert F.is_motivation_q(prompt) is False
+
+
+def test_motivation_uses_vacancy_text(monkeypatch):
+    seen = {}
+    _mock(monkeypatch, "Интересны задачи по нагрузочному тестированию на Python.", seen)
+    out = F.answer_motivation("Чем заинтересовала вакансия?",
+                              "Ищем инженера: нагрузочное тестирование, Python, k6", "стек: Python")
+    assert out == "Интересны задачи по нагрузочному тестированию на Python."
+    assert "k6" in seen["user"]                    # описание вакансии реально ушло в промпт
+    assert "ОПИСАНИЕ ВАКАНСИИ" in seen["user"]
+
+
+def test_motivation_without_vacancy_text_no_network(monkeypatch):
+    # без описания отвечать нечем — в сеть не ходим, поле уходит человеку
+    called = []
+    monkeypatch.setattr(F, "chat_json", lambda *a, **k: called.append(1))
+    assert F.answer_motivation("Чем заинтересовала вакансия?", "", "ctx") is None
+    assert F.answer_motivation("Чем заинтересовала вакансия?", "текст", "  ") is None
+    assert called == []
+
+
+def test_motivation_decline_returns_none(monkeypatch):
+    _mock(monkeypatch, "DECLINE")
+    assert F.answer_motivation("Чем интересна вакансия?", "описание", "ctx") is None

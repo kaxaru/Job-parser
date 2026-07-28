@@ -256,7 +256,7 @@ export function render(state) {
    `tone` разводит две роли, раньше склеенные в одну: цвет РАМКИ (может быть жёлтым из-за
    бот-интервью) и активную КНОПКУ (всегда по отклику/отказу). По умолчанию = st. */
 export function applyCardStatus(card, st, tone = st) {
-  card.classList.remove('st-applied', 'st-rejected', 'st-botiv');
+  card.classList.remove('st-applied', 'st-rejected', 'st-botiv', 'st-frozen');
   if (tone) card.classList.add(`st-${tone}`);
   card.querySelectorAll('.status-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.act === st);

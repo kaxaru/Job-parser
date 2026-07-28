@@ -15,6 +15,8 @@ radio/checkbox строго из опций (membership). origin только hh
 from __future__ import annotations
 
 import contextlib
+import random
+import time
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
@@ -28,6 +30,12 @@ from hrwork.config import FORMS_ENABLED, log
 _SUBMIT = '[data-qa="vacancy-response-submit-popup"]'          # «Откликнуться» (с ответами теста)
 _LETTER = 'textarea[data-qa="vacancy-response-popup-form-letter-input"]'
 _LETTER_TOGGLE = '[data-qa="vacancy-response-letter-toggle"]'  # «Сопроводительное письмо / Добавить»
+
+# Пауза между ОТПРАВЛЕННЫМИ откликами дренажа, сек. Своя, а не `APPLY_PAUSE` (4-9с): цикл по
+# анкете сам занимает ~20с, и добавка в пять секунд ничего не меняла — 28.07 сплошной дренаж
+# упёрся в капчу HH после 21 отклика ночью и после 8 утром. Здесь темп важнее скорости: очередь
+# дренируется фоном, а капча стоит ручного вмешательства и простоя всех прогонов.
+FORM_PAUSE = (25.0, 55.0)
 
 
 def _is_hh(url: str) -> bool:
@@ -68,7 +76,8 @@ def _vacancy_floor(vid: str) -> int | None:
     return v[3] if v else None
 
 
-def _resolve(field, resume_ctx: str, sal_target: int | None = None) -> tuple[str | None, str | None]:
+def _resolve(field, resume_ctx: str, sal_target: int | None = None,
+             vacancy_text: str = "") -> tuple[str | None, str | None]:
     """Ответ на поле. Зарплата -> ТОЛЬКО код (в LLM не уходит, приватность). Иначе: словарь ->
     suggest(text) -> LLM -> (None,None). -> (подпись/текст, own|None)."""
     if form_fill.is_salary_q(field.prompt):        # зарплата — детерминированно, НЕ провайдеру
@@ -81,6 +90,12 @@ def _resolve(field, resume_ctx: str, sal_target: int | None = None) -> tuple[str
     m = form_fill.match_answer(field.prompt, field.options)
     if m:
         return m
+    # «чем интересна ваша компания» — единственный класс, где ответа нет ни в резюме, ни в
+    # словаре: он про КОНКРЕТНУЮ вакансию, поэтому отвечаем по её описанию
+    if form_fill.is_motivation_q(field.prompt) and not field.options:
+        mot = form_fill.answer_motivation(field.prompt, vacancy_text, resume_ctx)
+        if mot:
+            return mot, None
     if field.ftype in (form_read.FieldType.TEXT, form_read.FieldType.TEXTAREA):
         ans = chat_answer.suggest(field.prompt)
         if ans and ans.get("text"):
@@ -88,7 +103,9 @@ def _resolve(field, resume_ctx: str, sal_target: int | None = None) -> tuple[str
     llm = form_fill.answer_field(field.prompt, field.ftype, field.options, resume_ctx)
     if llm:
         return llm, None
-    if field.options:                              # знание-квиз (QA/фреймворки) — экспертный выбор
+    # знание-квиз (QA/фреймворки) — экспертный выбор. Пустой ctx = гейт FORMS_LLM выключен
+    # (см. _dry_preview): answer_quiz контекст не проверяет и пошёл бы в провайдера мимо гейта
+    if field.options and resume_ctx:
         quiz = form_fill.answer_quiz(field.prompt, field.options, resume_ctx)
         if quiz:
             return quiz, None
@@ -156,9 +173,9 @@ def try_autofill(page, cand, cover_mode: str = "template") -> bool:
     if not fields:
         log.info("[{}] анкета без извлечённых полей — в очередь (руками)", cand.id)
         return False
-    _, _, nm = _vacancy_ctx(str(cand.id))
+    _, desc, nm = _vacancy_ctx(str(cand.id))      # описание — контекст для «чем интересна вакансия»
     sal_target = form_fill.salary_target(nm or getattr(cand, "name", ""), _vacancy_floor(cand.id))
-    resolved = [(f, *_resolve(f, resume_ctx, sal_target)) for f in fields]
+    resolved = [(f, *_resolve(f, resume_ctx, sal_target, desc)) for f in fields]
     gaps = [f for f, val, _ in resolved if not val]
     if gaps:
         for f in gaps:
@@ -195,10 +212,11 @@ def _dry_preview(page, vid: str, rec: dict) -> None:
     """Показать поля + резолвинг для одной вакансии, ничего не трогая."""
     resume_ctx = form_fill.build_resume_ctx() if FORMS_ENABLED else ""
     fields = form_read.extract_fields(page)
+    _, desc, _ = _vacancy_ctx(vid)
     sal_target = form_fill.salary_target(rec.get("name", ""), _vacancy_floor(vid))
     gaps = 0
     for f in fields:
-        val, own = _resolve(f, resume_ctx, sal_target)
+        val, own = _resolve(f, resume_ctx, sal_target, desc)
         gaps += not val
         tail = f" (+свой: {own})" if own else ""
         log.info("  [{}] {} -> {}", f.ftype.code, f.prompt[:55],
@@ -228,6 +246,7 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict:
         _logged_in,
         _page,
         _single_instance,
+        is_captcha,
     )
     swept = 0
     with _single_instance(), sync_playwright() as p:
@@ -247,6 +266,13 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict:
             else:
                 try:
                     _goto(page, url)
+                    # ОБЯЗАТЕЛЬНО до извлечения: на странице капчи полей нет, и свип записал бы
+                    # ЖИВУЮ анкету как EMPTY -> `--clean` вычистил бы по этому признаку всю
+                    # очередь. Один неудачный момент стоил бы всего бэклога.
+                    if is_captcha(page):
+                        log.error("HH показал капчу (/account/captcha) — свип ОСТАНОВЛЕН на {}, "
+                                  "кеш не тронут. Пройди проверку вручную и повтори", vid)
+                        break
                     _open_form(page)                           # карточка -> форма (не submit)
                     fields = [{"prompt": f.prompt, "ftype": f.ftype.code, "options": list(f.options)}
                               for f in form_read.extract_fields(page)]
@@ -304,6 +330,7 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
         _logged_in,
         _page,
         _single_instance,
+        is_captcha,
     )
     submitted = 0
     with _single_instance(), sync_playwright() as p:
@@ -328,6 +355,12 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
             if not _goto(page, rec["url"]):
                 log.warning("Пропуск {}: страница не открылась", vid)
                 continue
+            if is_captcha(page):
+                # без этого прогон принимал страницу капчи за анкету без полей и молотил
+                # очередь до конца, укрепляя бот-флаг (28.07: 21 отклик -> стена -> 50 пустых)
+                log.error("HH показал капчу (/account/captcha) — прогон ОСТАНОВЛЕН на {}. "
+                          "Пройди проверку вручную: hh.py forms --headed --dry --only {}", vid, vid)
+                break
             _open_form(page)                               # карточка -> форма с вопросами (не submit)
             if dry:
                 _dry_preview(page, vid, rec)
@@ -338,5 +371,6 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
                 store.remove_form(vid)
                 store.mark_applied(vid)
                 submitted += 1
+                time.sleep(random.uniform(*FORM_PAUSE))    # см. FORM_PAUSE: темп важнее скорости
     log.info("Форм-очередь: {} обработано, {} откликов отправлено", len(queue), submitted)
     return {"forms": len(queue), "submitted": submitted}

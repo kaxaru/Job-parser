@@ -181,8 +181,18 @@ RESUME_EXP_IDS = _rp["exp_ids"]      # допустимый опыт (raw id, с
 APPLY_CORE_WIDE = {"Django", "Flask", "PostgreSQL", "MySQL", "Redis", "Kafka"}
 APPLY_OFFICE_CITIES = {"Москва", "Санкт-Петербург", "Тольятти", "Самара"}
 
-# Токен приложения с dev.hh.ru: анонимный доступ к /vacancies закрыт.
-HH_ACCESS_TOKEN = os.getenv('HH_ACCESS_TOKEN', '').strip()
+# ── Официальный API hh.ru (второй путь рядом с браузерным) ───────────────────────────
+# Проверено 28.07: api.hh.ru НЕ закрыт DDoS-Guard, как считалось при написании
+# `sources/hh.py`. Запрос доходит до самого HH (`Server-Timing: frontik`), и без токена
+# приходит `{"errors":[{"value":"bad_authorization","type":"oauth"}]}` — то есть нужен
+# OAuth-токен, а не обход защиты. Ключи — СВОЕГО приложения с dev.hh.ru.
+HH_CLIENT_ID     = os.getenv('HH_CLIENT_ID', '').strip()
+HH_CLIENT_SECRET = os.getenv('HH_CLIENT_SECRET', '').strip()
+HH_REDIRECT_URI  = os.getenv('HH_REDIRECT_URI', 'http://localhost:8765/callback').strip()
+# Контакт в HH-User-Agent обязателен по правилам API: по нему HH связывается при проблемах.
+HH_API_UA        = os.getenv('HH_API_UA', 'hr-work-applicant/1.0').strip()
+HH_TOKEN_FILE    = DATA_DIR / 'hh_token.json'      # access/refresh, gitignored вместе с data/
+HH_ACCESS_TOKEN  = os.getenv('HH_ACCESS_TOKEN', '').strip()   # ручной override токена
 # Цель — МАКСИМАЛЬНЫЙ охват IT-рынка. Из-за лимита MAX_PAGES*PER_PAGE (2000/город)
 # широкий «разработчик» обрезается за порогом, поэтому держим и зонтичные термины,
 # и точечные (язык/слой) — узкий запрос вытаскивает вакансии, не попавшие в топ-2000.

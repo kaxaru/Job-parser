@@ -18,6 +18,7 @@
   --tint-applied: #15241b;         /* заливка карточки по состоянию отклика */
   --tint-rejected: #251618;
   --tint-botiv: #241f10;
+  --tint-frozen: #16202a;
   --card-shadow: none;             /* на тёмном карточки отделяет рамка, тень не нужна */
   --fs-xs: 0.72rem;
   --fs-sm: 0.8rem;
@@ -47,6 +48,7 @@
   --tint-applied: #E9F6EE;
   --tint-rejected: #FDECEC;
   --tint-botiv: #FBF3DC;
+  --tint-frozen: #EAF2F8;
   --card-shadow: 0 1px 2px rgba(16, 24, 40, .07), 0 1px 3px rgba(16, 24, 40, .05);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -452,9 +454,14 @@ select option { background: var(--paper); }
 .card.st-botiv { border-color: #b8930f; background: var(--tint-botiv); }
 .card.st-botiv:hover { border-color: #E8C11C; box-shadow: 0 0 0 1px #E8C11C55; }
 
-/* Протухшая форма (form_dead): вакансия, скорее всего, снята — гасим серым, как не актуальную */
-.card.st-dead { opacity: .55; filter: grayscale(.65); }
-.card.st-dead:hover { opacity: .85; }
+/* Протухшая форма (form_dead): вакансию сняли с публикации — «фриз». Синяя рамка, а не
+   красная: это не отказ работодателя, а истёкшая вакансия, и она вернётся в оборот сама,
+   если HH её переопубликует (form_status.py::skippable_form_ids).
+   grayscale убран намеренно: фильтр выцветал бы и саму синюю рамку. */
+.card.st-frozen { border-color: #4A7B9A; background: var(--tint-frozen); }
+.card.st-frozen:hover { border-color: #6BA3C4; box-shadow: 0 0 0 1px color-mix(in srgb, #6BA3C4 33%, transparent); }
+.card.st-dead { opacity: .72; }
+.card.st-dead:hover { opacity: 1; }
 
 /* Совпадение с резюме: цвет от тёплого (100%) к холодному (0%) задаётся inline. */
 .match-badge {

@@ -89,6 +89,18 @@ def test_resolve_quiz_fallback_for_options(monkeypatch):
     assert forms._resolve(f, "ctx") == ("Регресс", None)
 
 
+def test_resolve_without_context_skips_quiz(monkeypatch):
+    # выключенный FORMS_LLM доходит сюда пустым resume_ctx (dry-превью): провайдера не трогаем.
+    # answer_quiz контекст не проверяет сам — гейт держит вызывающий
+    called = []
+    monkeypatch.setattr(forms.form_fill, "match_answer", lambda p, o: None)
+    monkeypatch.setattr(forms.chat_answer, "suggest", lambda *a, **k: None)
+    monkeypatch.setattr(forms.form_fill, "answer_field", lambda *a, **k: None)
+    monkeypatch.setattr(forms.form_fill, "answer_quiz", lambda *a, **k: called.append(1))
+    assert forms._resolve(_fld(FieldType.RADIO, ("Да", "Нет")), "") == (None, None)
+    assert called == []
+
+
 def test_resolve_no_quiz_for_open_text(monkeypatch):
     # у открытого поля (без вариантов) квиз-fallback не зовём
     called = []
@@ -190,7 +202,7 @@ def test_try_autofill_complete_submits(monkeypatch):
     monkeypatch.setattr(forms, "_load_vac_ctx", lambda: {})   # без загрузки реального репо (43k)
     monkeypatch.setattr(forms.form_read, "extract_fields",
                         lambda page: [_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))])
-    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None: ("Нет", None))
+    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
     monkeypatch.setattr(forms, "_submitted", lambda page: True)   # HH подтвердил отклик
     page = _RecPage()
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is True
@@ -203,7 +215,7 @@ def test_try_autofill_unconfirmed_is_not_applied(monkeypatch):
     monkeypatch.setattr(forms, "_load_vac_ctx", lambda: {})
     monkeypatch.setattr(forms.form_read, "extract_fields",
                         lambda page: [_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))])
-    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None: ("Нет", None))
+    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
     monkeypatch.setattr(forms, "_submitted", lambda page: False)  # HH НЕ подтвердил
     assert forms.try_autofill(_RecPage(), SimpleNamespace(id="1", name="X")) is False
 
@@ -215,7 +227,7 @@ def test_try_autofill_polls_for_late_confirmation(monkeypatch):
     monkeypatch.setattr(forms, "_load_vac_ctx", lambda: {})
     monkeypatch.setattr(forms.form_read, "extract_fields",
                         lambda page: [_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))])
-    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None: ("Нет", None))
+    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
     polls = iter([False, False, True])
     monkeypatch.setattr(forms, "_submitted", lambda page: next(polls))
     assert forms.try_autofill(_RecPage(), SimpleNamespace(id="1", name="X")) is True
@@ -225,7 +237,7 @@ def test_try_autofill_gap_never_submits(monkeypatch):
     _stub_ctx(monkeypatch)
     monkeypatch.setattr(forms, "_load_vac_ctx", lambda: {})
     monkeypatch.setattr(forms.form_read, "extract_fields", lambda page: [_fld(FieldType.TEXTAREA)])
-    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None: (None, None))
+    monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": (None, None))
     page = _RecPage()
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is False
     assert forms._SUBMIT not in page.clicks                   # пробел -> вакансия в очередь, НЕ шлём

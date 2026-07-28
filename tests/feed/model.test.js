@@ -160,6 +160,16 @@ describe('cardTone — тон рамки: жёлтое бот-интервью �
   it('приглашение без бот-интервью → applied (обычный зелёный путь не тронут)', () => {
     assert.equal(cardTone(vac({ status: 'INTERVIEW', chat: { kind: 'question' } })), 'applied');
   });
+  it('мёртвая анкета → frozen: вакансию сняли, это не отказ работодателя', () => {
+    assert.equal(cardTone(vac({ status: 'RESPONSE', form_dead: true })), 'frozen');
+    assert.equal(cardTone(vac({ status: null, form_dead: true })), 'frozen');
+  });
+  it('отказ HH сильнее мёртвой анкеты: реальный исход важнее протухшей вакансии', () => {
+    assert.equal(cardTone(vac({ status: 'DISCARD', form_dead: true })), 'rejected');
+  });
+  it('мёртвая анкета сильнее бот-интервью и приглашения', () => {
+    assert.equal(cardTone(vac({ status: 'INTERVIEW', form_dead: true, chat: botIv })), 'frozen');
+  });
   it('обычный чат → "" (как cardColor: тон по ручной пометке)', () => {
     assert.equal(cardTone(vac({ status: 'RESPONSE', chat: { kind: 'question' } })), '');
     assert.equal(cardTone(vac({ status: 'RESPONSE' })), '');

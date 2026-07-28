@@ -270,6 +270,11 @@ export function cardColor(v) {
    реальный терминальный исход. '' = тона нет, вызывающий красит по ручной пометке. */
 export function cardTone(v) {
   if (isDiscard(v?.status)) return 'rejected';
+  /* Мёртвая анкета = вакансию сняли с публикации: откликнуться нельзя, дёргать бессмысленно
+     до переоткрытия. Это не отказ работодателя, поэтому не красный, а синий «фриз».
+     Отбор такие вакансии пропускает (form_status.py::skippable_form_ids) и сам вернёт их
+     в оборот, если HH переопубликует. */
+  if (v?.form_dead) return 'frozen';
   if (v?.chat?.kind === 'bot_interview') return 'botiv';
   return cardColor(v);
 }

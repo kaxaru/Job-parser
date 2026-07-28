@@ -17,6 +17,7 @@ class ApplyOutcome(Enum):
     ALREADY = "already"    # уже откликались ранее (кнопки «Откликнуться» нет)
     FORM = "form"          # опросник/вопросы работодателя -> ручная форм-очередь
     SKIP = "skip"          # архив/внешний сайт/не подтвердилось
+    CAPTCHA = "captcha"    # HH увёл на /account/captcha -> прогон ОСТАНАВЛИВАЕТСЯ целиком
 
     @property
     def code(self) -> str:

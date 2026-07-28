@@ -7,7 +7,13 @@ rem рано, тяжёлая /applicant/resumes не грузится вовсе
 rem Окно 10:00-23:30, каждые 90 мин = 10 прогонов x 20 = ровно 200/день (лимит HH),
 rem дневной потолок дополнительно enforced в apply_quota.json.
 rem Логи — logs\cron_apply.log. Отключить: schtasks /Delete /TN hh_apply /F
+rem FORMS_LLM=1 включён ОСОЗНАННО (28.07), вопреки исходному «не в кроне» из RFC-003: без него
+rem КАЖДАЯ вакансия с опросником уходила в форм-очередь нетронутой, и та росла быстрее, чем её
+rem вычерпывали (за ночь 59 -> 60 при 21 снятом). Со словарём form_answers на 141 запись движок
+rem закрывает 177 полей из 179, поэтому анкета заполняется inline в apply_one. Инвариант прежний:
+rem try_autofill шлёт ТОЛЬКО при полноте — хоть один пробел, и вакансия по-прежнему уходит в очередь.
 cd /d "%~dp0.."
 set "REPO=%CD%"
 set "PY=%REPO%\..\.venv3\Scripts\python.exe"
+set "FORMS_LLM=1"
 "%PY%" hh.py autoclick --apply-limit 20 >> logs\cron_apply.log 2>&1

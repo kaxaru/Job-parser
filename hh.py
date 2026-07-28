@@ -162,6 +162,7 @@ class Mode(Enum):
     AUTOCLICK = 'autoclick'
     CHAT = 'chat'
     FORMS = 'forms'
+    HHAPI = 'hhapi'
 
     def __str__(self) -> str:        # argparse печатает значение (all/collect/…), а не «Mode.ALL»
         return self.value
@@ -238,6 +239,15 @@ def _do_forms(args):
               cover_mode=args.cover, limit=args.limit)
 
 
+def _do_hhapi(args):
+    # официальный API как ВТОРОЙ путь (browser остаётся): --login один раз, --probe смотрит права
+    from hrwork.infrastructure.sources import hh_api
+    if args.login:
+        hh_api.login()
+        return
+    hh_api.probe()
+
+
 def _do_all(args):
     asyncio.run(collect(force=args.force))    # collect сохраняет файл
     analyze()                                 # -> repo.load() читает свежесохранённое
@@ -253,6 +263,7 @@ _HANDLERS = {
     Mode.AUTOCLICK: _do_autoclick,
     Mode.CHAT:      _do_chat,
     Mode.FORMS:     _do_forms,
+    Mode.HHAPI:     _do_hhapi,
     Mode.ALL:       _do_all,
 }
 
@@ -267,7 +278,8 @@ def main():
                         help='enrich: добирать только вакансии без описания')
     parser.add_argument('--port', type=int, default=SERVE_PORT, help='serve: порт локального сервера')
     parser.add_argument('--login', action='store_true',
-                        help='autoclick: разовый вход с окном браузера (сессия сохраняется)')
+                        help='autoclick: разовый вход с окном браузера (сессия сохраняется); '
+                             'hhapi: разовая OAuth-авторизация своего приложения (dev.hh.ru)')
     parser.add_argument('--apply-limit', type=int, default=None,
                         help='autoclick: максимум откликов за ЗАПУСК (по умолчанию 10)')
     parser.add_argument('--daily-cap', type=int, default=HH_DAILY_APPLY_CAP,
