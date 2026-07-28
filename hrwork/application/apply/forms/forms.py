@@ -24,6 +24,7 @@ from hrwork.application.apply import cover
 from hrwork.application.apply.chat import chat_answer
 from hrwork.application.apply.forms import form_fill, form_read
 from hrwork.application.apply.forms.form_status import FormSweepStatus
+from hrwork.application.apply.outcome import ApplyChannel
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import FORMS_ENABLED, log
 
@@ -370,6 +371,13 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
                 page.wait_for_timeout(2_500)
                 store.remove_form(vid)
                 store.mark_applied(vid)
+                # Квота и журнал — как в apply-пути. Без этого дренаж был НЕВИДИМ для суточного
+                # потолка: 28.07 счётчик показывал 35 при реально отправленных ~103, поэтому
+                # HH_DAILY_APPLY_CAP не защитил и мы упёрлись в лимит HH. В журнал такие отклики
+                # попадали лишь позже — синком из чатов и с чужим каналом `hh`.
+                store.bump_quota(1)
+                store.log_applied(vid, rec.get("name", ""), rec.get("url", ""),
+                                  via=ApplyChannel.CRON)
                 submitted += 1
                 time.sleep(random.uniform(*FORM_PAUSE))    # см. FORM_PAUSE: темп важнее скорости
     log.info("Форм-очередь: {} обработано, {} откликов отправлено", len(queue), submitted)

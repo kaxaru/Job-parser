@@ -352,3 +352,83 @@ def test_fill_field_own_variant_fills_paired_textarea():
     forms._fill_field(_Page(), f, "Свой вариант", own="Закончил")
     assert "check" in calls and ("fill", "Закончил") in calls
     assert ("loc", 'textarea[name="task_1_text"]') in calls    # свой-вариант в парный textarea
+
+
+# ── учёт отправки: дренаж очереди — такой же реальный отклик, как крон-путь ──
+# ДЕФЕКТ 28.07: run() звал только remove_form+mark_applied. Суточная квота и журнал его не
+# видели: счётчик показывал 35 при реально отправленных ~103, поэтому HH_DAILY_APPLY_CAP не
+# сработал и прогон упёрся в лимит HH. В журнал такие отклики попадали лишь позже — синком
+# из чатов и с чужим каналом `hh`, как будто человек откликался руками.
+def _stub_browser(monkeypatch, autofill_result: bool):
+    import contextlib as _ctx
+
+    from hrwork.application.apply import autoclick
+
+    monkeypatch.setattr(forms, "FORMS_ENABLED", True)
+    monkeypatch.setattr(forms.time, "sleep", lambda *_a: None)      # FORM_PAUSE не ждём
+    monkeypatch.setattr(autoclick, "_single_instance", _ctx.nullcontext)
+    monkeypatch.setattr(autoclick, "_launch", lambda *a, **k: object())
+    monkeypatch.setattr(autoclick, "_page", lambda *a, **k: _RunPage())
+    monkeypatch.setattr(autoclick, "_logged_in", lambda *_a: True)
+    monkeypatch.setattr(autoclick, "_goto", lambda *_a: True)
+    monkeypatch.setattr(autoclick, "is_captcha", lambda *_a: False)
+    monkeypatch.setattr(forms, "_open_form", lambda *_a: None)
+    monkeypatch.setattr(forms, "try_autofill", lambda *a, **k: autofill_result)
+    monkeypatch.setattr(forms, "sync_playwright", _ctx.nullcontext, raising=False)
+
+
+class _RunPage:
+    def set_default_navigation_timeout(self, *_a):
+        pass
+
+    def set_default_timeout(self, *_a):
+        pass
+
+    def wait_for_timeout(self, *_a):
+        pass
+
+
+@pytest.fixture
+def drain_env(monkeypatch):
+    """Очередь из одной вакансии + перехват всех записей учёта."""
+    seen: dict = {"quota": 0, "journal": [], "marked": [], "removed": []}
+    monkeypatch.setattr(forms.store, "forms",
+                        lambda: {"111": {"name": "Backend разработчик",
+                                         "url": "https://hh.ru/vacancy/111"}})
+    monkeypatch.setattr(forms.store, "applied_ids", set)
+    monkeypatch.setattr(forms.store, "marks", dict)
+    monkeypatch.setattr(forms.store, "remove_form", lambda v: seen["removed"].append(v))
+    monkeypatch.setattr(forms.store, "mark_applied", lambda v: seen["marked"].append(v))
+    monkeypatch.setattr(forms.store, "bump_quota",
+                        lambda n: seen.__setitem__("quota", seen["quota"] + n))
+    monkeypatch.setattr(forms.store, "log_applied",
+                        lambda vid, name, url, via, **k: seen["journal"].append((vid, via.code)))
+    return seen
+
+
+def test_sent_form_reply_counts_toward_daily_quota(monkeypatch, drain_env):
+    import sys
+    monkeypatch.setitem(sys.modules, "playwright.sync_api",
+                        type(sys)("playwright.sync_api"))
+    import contextlib as _ctx
+    sys.modules["playwright.sync_api"].sync_playwright = _ctx.nullcontext
+    _stub_browser(monkeypatch, autofill_result=True)
+    assert forms.run() == {"forms": 1, "submitted": 1}
+    assert drain_env["quota"] == 1
+    assert drain_env["journal"] == [("111", "cron")]
+    assert drain_env["marked"] == ["111"]
+    assert drain_env["removed"] == ["111"]
+
+
+def test_unsent_form_leaves_quota_untouched(monkeypatch, drain_env):
+    # пробел/неподтверждённая отправка -> вакансия остаётся в очереди, счётчики не трогаем
+    import sys
+    monkeypatch.setitem(sys.modules, "playwright.sync_api",
+                        type(sys)("playwright.sync_api"))
+    import contextlib as _ctx
+    sys.modules["playwright.sync_api"].sync_playwright = _ctx.nullcontext
+    _stub_browser(monkeypatch, autofill_result=False)
+    assert forms.run() == {"forms": 1, "submitted": 0}
+    assert drain_env["quota"] == 0
+    assert drain_env["journal"] == []
+    assert drain_env["removed"] == []

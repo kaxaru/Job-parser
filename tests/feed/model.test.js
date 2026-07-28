@@ -501,6 +501,22 @@ describe('filterVacancies — сортировка по дате появлен�
   });
 });
 
+describe('filterVacancies — сортировка по ответу HR', () => {
+  /* Ответ HR по СТАРОЙ вакансии тонул в ленте: «Свежие» сортируют по дате публикации,
+     а не переписки. Ключ самостоятельный, дата вакансии на него не влияет. */
+  const data = [
+    vac({ id: 'stale-vac-fresh-reply', age: 120, hr_ts: '2026-07-28T18:40:00+03:00' }),
+    vac({ id: 'fresh-vac-old-reply', age: 1, hr_ts: '2026-07-20T09:00:00+03:00' }),
+    vac({ id: 'mid-reply', age: 30, hr_ts: '2026-07-25T12:00:00+03:00' }),
+    vac({ id: 'no-reply', age: 2, hr_ts: '' }),
+  ];
+  const ids = filterVacancies(data, flt({ sort: 'reply_new' })).map(v => v.id);
+
+  it('свежий ответ первым, даже если вакансия старая', () => {
+    assert.deepEqual(ids, ['stale-vac-fresh-reply', 'mid-reply', 'fresh-vac-old-reply', 'no-reply']);
+  });
+});
+
 describe('filterVacancies — совпадение отсеивает гост-вакансии (>60 дней)', () => {
   const data = [vac({ id: 'fresh', fresh: 'fresh' }), vac({ id: 'ghost', fresh: 'ghost' })];
   it('matchSort — гост отброшен', () => {

@@ -407,6 +407,20 @@ export function filterVacancies(vacancies, f) {
     return filtered;
   }
 
+  /* Сортировка по ответу HR: сверху те, где работодатель написал ЖИВОЙ ответ позже всех.
+     Отдельный ключ от date_new — та смотрит на дату публикации вакансии, поэтому ответ по
+     старой вакансии тонул внизу и его можно было не заметить. Без ответа -> в конец. */
+  if (f.sort === 'reply_new') {
+    filtered.sort((a, b) => {
+      const at = a.hr_ts || '', bt = b.hr_ts || '';
+      if (!at && !bt) return 0;
+      if (!at) return 1;
+      if (!bt) return -1;
+      return bt.localeCompare(at);           /* ISO-8601 -> лексикографика = хронология */
+    });
+    return filtered;
+  }
+
   const wantMatch = f.matchSort || (f.sort === 'none' && f.resumeOnly);
 
   if (wantMatch) {

@@ -358,9 +358,21 @@ def test_non_salary_question_not_detected(prompt):
     "Какие Ваши финансовые пожелания?",
     "Ваши финансовые ожидания?",
     "Какие денежные ожидания на испытательный срок?",
+    # ЖИВОЙ КЕЙС 28.07: третья формулировка вилки без слова «зарплата»
+    "На какую сумму вы сейчас рассматриваете предложения о работе?",
 ])
 def test_money_wish_question_detected(prompt):
     assert F.is_salary_q(prompt) is True
+
+
+@pytest.mark.parametrize("prompt", [
+    # поле без вопроса вообще: работодателю нужен осмысленный ответ про ЭТУ вакансию,
+    # поэтому класс мотивационный — отвечаем по описанию, а не заглушкой словаря
+    "Прошу ответить тут :) Отклики без ответов просматриваться не будут.",
+    "Отклики без ответов не рассматриваются",
+])
+def test_open_call_to_answer_is_motivation(prompt):
+    assert F.is_motivation_q(prompt) is True
 
 
 @pytest.mark.parametrize("prompt", [

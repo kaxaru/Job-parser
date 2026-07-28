@@ -99,6 +99,24 @@ def _salary_fields(sal) -> dict:
             "currency": sal.currency or ""}
 
 
+def _last_hr_replies() -> dict[str, str]:
+    """{vacancyId: ts последнего ответа РАБОТОДАТЕЛЯ, написанного человеком}.
+
+    Сортировка «Свежие» смотрит на дату публикации вакансии, а не переписки, поэтому ответ
+    HR по старой вакансии тонул в ленте и его можно было не заметить. Ботовые автоответы
+    (`bot: true` — «ваш отклик зарегистрирован», ГигаРекрутёр) исключены: они приходят пачками
+    сразу после отклика и вытеснили бы живые ответы наверх."""
+    out: dict[str, str] = {}
+    for vid, rec in store.chat_messages().items():
+        ts = ""
+        for m in (rec or {}).get("messages") or []:
+            if not m.get("mine") and not m.get("bot") and (t := str(m.get("ts") or "")) > ts:
+                ts = t
+        if ts:
+            out[str(vid)] = ts
+    return out
+
+
 def build_feed():
     vacancies = vacancy_repository().load()      # list[VacancyRecord]
     statuses = store.statuses()                  # {vacancyId: employerState} из chat_data
@@ -107,6 +125,7 @@ def build_feed():
     # снята с публикации: карточка гасится серым (st-dead), как «не актуальна»
     dead_forms = {vid for vid, r in store.form_cache().items()
                   if (s := FormSweepStatus.from_code(r.get("status"))) and s.is_dead}
+    hr_replies = _last_hr_replies()               # {vacancyId: ts последнего ЖИВОГО ответа}
 
     records = []          # лёгкие карточные поля (идут в feed-data.js)
     descs = {}            # id -> описание (идёт в feed-desc.js, грузится лениво)
@@ -134,6 +153,8 @@ def build_feed():
             "status":   statuses.get(v.id),
             "needs_form": v.id in forms,
             "form_dead": v.id in dead_forms,
+            # ts последнего живого ответа HR (пусто — ответа не было): сортировка «Ответы»
+            "hr_ts":    hr_replies.get(str(v.id), ""),
             "source":   v.source,          # портал-источник (агрегатор): hh / hirify / …
         })
         # описание (description_html, иначе текст requirement) — только для модалки;
