@@ -24,7 +24,7 @@ from hrwork.application.apply import cover
 from hrwork.application.apply.chat import chat_answer
 from hrwork.application.apply.forms import form_fill, form_read
 from hrwork.application.apply.forms.form_status import FormSweepStatus
-from hrwork.application.apply.outcome import ApplyChannel
+from hrwork.application.apply.outcome import SETTLED_MARKS, ApplyChannel
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import FORMS_ENABLED, log
 
@@ -184,8 +184,17 @@ def try_autofill(page, cand, cover_mode: str = "template") -> bool:
         log.warning("[{}] АВТО-ОТКЛИК ПРОПУЩЕН: {}/{} полей без ответа — пополни form_answers "
                     "в resume_profile.json", cand.id, len(gaps), len(fields))
         return False
-    for f, val, own in resolved:
-        _fill_field(page, f, val, own)
+    # Полнота РЕЗОЛВА (выше) и полнота ЗАПОЛНЕНИЯ — разные вещи. `_fill_field` глушит исключения
+    # Playwright и возвращает False (селектор разъехался, поле скрыто, вариант не совпал), а
+    # раньше результат выбрасывался — и submit жался по форме с дырами. Инвариант «шлём ТОЛЬКО
+    # при полноте» обязан покрывать оба этапа.
+    unfilled = [f for f, val, own in resolved if not _fill_field(page, f, val, own)]
+    if unfilled:
+        for f in unfilled:
+            log.warning("[{}] поле НЕ вписалось (селектор/DOM): {}", cand.id, f.prompt[:90])
+        log.warning("[{}] АВТО-ОТКЛИК ПРОПУЩЕН: {}/{} полей не заполнилось — отклик ушёл бы "
+                    "с дырами", cand.id, len(unfilled), len(fields))
+        return False
     _fill_cover(page, str(cand.id), {"name": getattr(cand, "name", "")}, cover_mode)
     with contextlib.suppress(Exception):
         page.locator(_SUBMIT).first.click(timeout=5_000)
@@ -275,7 +284,10 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict:
                                   "кеш не тронут. Пройди проверку вручную и повтори", vid)
                         break
                     _open_form(page)                           # карточка -> форма (не submit)
-                    fields = [{"prompt": f.prompt, "ftype": f.ftype.code, "options": list(f.options)}
+                    # opt_values нужны и в кеше: без них `--dry` показывает превью не тем, чем
+                    # оно будет (боевой путь берёт поля с ЖИВОЙ страницы, а превью — отсюда)
+                    fields = [{"prompt": f.prompt, "ftype": f.ftype.code, "options": list(f.options),
+                               "opt_values": list(f.opt_values)}
                               for f in form_read.extract_fields(page)]
                     status = FormSweepStatus.OK if fields else FormSweepStatus.EMPTY
                 except Exception as e:
@@ -297,7 +309,7 @@ def clean_queue() -> dict:
     marks = store.marks()
     dead = [v for v in q
             if (s := FormSweepStatus.from_code(cache.get(v, {}).get("status"))) and s.is_dead]
-    done = [v for v in q if v in applied or marks.get(v) in ("applied", "rejected")]
+    done = [v for v in q if v in applied or marks.get(v) in SETTLED_MARKS]
     remove = set(dead) | set(done)
     for v in remove:
         store.remove_form(v)
@@ -347,7 +359,7 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
             if not dry and limit and submitted >= limit:
                 log.info("Лимит отправки достигнут: {} за запуск", limit)
                 break
-            if not dry and (vid in applied or marks.get(vid) in ("applied", "rejected")):
+            if not dry and (vid in applied or marks.get(vid) in SETTLED_MARKS):
                 log.info("Пропуск {}: уже откликались/отказ — не шлём", vid)
                 continue
             if not _is_hh(rec.get("url") or ""):

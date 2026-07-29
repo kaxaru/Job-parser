@@ -25,6 +25,27 @@ class ApplyOutcome(Enum):
         return self.value
 
 
+class VacancyMark(Enum):
+    """Метка вакансии в ленте (`marks.json`) — что с ней уже произошло.
+
+    Значений ровно два (в данных: applied 1636, rejected 349), но литералы `"applied"` были
+    размазаны по autoclick и forms, причём в forms — дважды дословно одним и тем же кортежем.
+    Тот же случай, что описан в шапке модуля: сравнение строк на пути реальных откликов, где
+    опечатка молча ломает логику «уже трогали — не шлём».
+
+    В JS остаются литералы: это wire-формат ленты, как и `ApplyOutcome.code`."""
+    APPLIED = "applied"      # отклик отправлен
+    REJECTED = "rejected"    # работодатель отказал
+
+    @property
+    def code(self) -> str:
+        return self.value
+
+
+# вакансию больше не трогаем: отклик уже ушёл или пришёл отказ
+SETTLED_MARKS = frozenset({VacancyMark.APPLIED.code, VacancyMark.REJECTED.code})
+
+
 class ApplyChannel(Enum):
     """Канал, которым сделан отклик (пишется в журнал applied_log)."""
     CRON = "cron"          # крон-батч

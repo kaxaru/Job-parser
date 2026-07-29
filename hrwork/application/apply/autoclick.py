@@ -29,7 +29,7 @@ from hrwork.application.apply import cover, session
 from hrwork.application.apply.candidates import Candidate, pick_candidates
 from hrwork.application.apply.chat import chat
 from hrwork.application.apply.forms.form_status import skippable_form_ids
-from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome
+from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome, VacancyMark
 from hrwork.application.apply.runtime import bump_state
 from hrwork.application.apply.runtime.lock import _single_instance, release_if_mine
 from hrwork.application.apply.runtime.quota import DAILY_CAP_DEFAULT
@@ -481,7 +481,7 @@ def _sync_applied_from_chats(ctx, page) -> int:
     if not ids:
         return 0
     marks = store.marks()
-    fresh = {vid: "applied" for vid in ids if vid not in marks}
+    fresh = {vid: VacancyMark.APPLIED.code for vid in ids if vid not in marks}
     if fresh:
         store.merge_marks(fresh)
         log.info("Синхронизировано откликов из чатов: +{} (в marks стало {})",
@@ -640,7 +640,7 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
     # снова, а бот тратит ~20с на загрузку страницы, чтобы узнать «уже откликались»
     # (19.07: синк дожурналировал 392 отклика, и прогон буксовал на реконсиляции).
     known = store.marks()
-    fresh = {str(c["vacancyId"]): "applied" for c in chats
+    fresh = {str(c["vacancyId"]): VacancyMark.APPLIED.code for c in chats
              if str(c["vacancyId"]) not in known}
     if fresh:
         store.merge_marks(fresh)
@@ -690,7 +690,7 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
         except Exception as e:
             log.warning("{} ({}): {}", cand.name, cand.id, e)
         if status is ApplyOutcome.APPLIED:
-            applied[cand.id] = "applied"
+            applied[cand.id] = VacancyMark.APPLIED.code
             # marks/квоту пишем СРАЗУ (как feed-путь _apply_one_vacancy), а не в конце батча:
             # зависание/kill посреди прогона раньше ТЕРЯЛ отметки всех успешных откликов
             # (18.07: 21 реальный отклик ушёл, marks/квота — нет; спасал лишь чат-синк).
@@ -702,7 +702,7 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
                               employer=cand.employer)
             _send_cover_via_chat(page, cand, cover.build_cover(cand, cover_mode))
         elif status is ApplyOutcome.ALREADY:
-            reconciled[cand.id] = "applied"
+            reconciled[cand.id] = VacancyMark.APPLIED.code
             log.info("Уже откликались — синхронизирую marks: {}", cand.name)
         elif status is ApplyOutcome.FORM:
             store.add_form(cand.id, cand.name, cand.url)

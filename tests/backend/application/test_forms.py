@@ -432,3 +432,41 @@ def test_unsent_form_leaves_quota_untouched(monkeypatch, drain_env):
     assert drain_env["quota"] == 0
     assert drain_env["journal"] == []
     assert drain_env["removed"] == []
+
+
+# ── полнота ЗАПОЛНЕНИЯ, а не только резолва ──
+# ДЕФЕКТ: результат _fill_field выбрасывался, и submit жался даже когда поле не вписалось
+# (селектор разъехался / вариант не совпал / поле скрыто). Инвариант «шлём ТОЛЬКО при
+# полноте» должен покрывать оба этапа: ответ найден И вписан в форму.
+def _autofill_env(monkeypatch, fill_ok):
+    monkeypatch.setattr(forms.form_read, "extract_fields",
+                        lambda _p: [_fld(FieldType.RADIO, ("Да", "Нет"), ("1", "0"))])
+    monkeypatch.setattr(forms.form_fill, "build_resume_ctx", lambda: "ctx")
+    monkeypatch.setattr(forms, "_vacancy_ctx", lambda _v: ("", "", ""))
+    monkeypatch.setattr(forms, "_vacancy_floor", lambda _v: None)
+    monkeypatch.setattr(forms, "_resolve", lambda *a, **k: ("Да", None))
+    monkeypatch.setattr(forms, "_fill_field", lambda *a, **k: fill_ok)
+    monkeypatch.setattr(forms, "_fill_cover", lambda *a, **k: None)
+    monkeypatch.setattr(forms, "_wait_submitted", lambda *a, **k: True)
+
+
+def test_unfilled_field_blocks_submit(monkeypatch):
+    page = _RecPage()
+    _autofill_env(monkeypatch, fill_ok=False)
+    assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is False
+    assert page.clicks == []                      # submit НЕ нажат
+
+
+def test_filled_field_allows_submit(monkeypatch):
+    page = _RecPage()
+    _autofill_env(monkeypatch, fill_ok=True)
+    assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is True
+    assert page.clicks == [forms._SUBMIT]
+
+
+# ── метки CRM: тип вместо магических строк ──
+def test_settled_marks_are_applied_and_rejected():
+    from hrwork.application.apply.outcome import SETTLED_MARKS, VacancyMark
+    assert VacancyMark.APPLIED.code == "applied"
+    assert VacancyMark.REJECTED.code == "rejected"
+    assert sorted(SETTLED_MARKS) == ["applied", "rejected"]
