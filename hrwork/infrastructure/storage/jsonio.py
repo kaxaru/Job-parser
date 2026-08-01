@@ -6,9 +6,11 @@
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 
-def atomic_write_json(path: Path, data, *, indent=None, ensure_ascii: bool = False) -> None:
+def atomic_write_json(path: Path, data: Any, *, indent: int | None = None,
+                      ensure_ascii: bool = False) -> None:
     """Записать data в path атомарно (tmp + os.replace). indent=0 -> строка на элемент."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -16,7 +18,7 @@ def atomic_write_json(path: Path, data, *, indent=None, ensure_ascii: bool = Fal
     os.replace(tmp, path)
 
 
-def read_json_or(path: Path, default):
+def read_json_or(path: Path, default: Any) -> Any:
     """JSON из path или default (нет файла / битый / тип не совпал с типом default).
     default=None -> тип не проверяем, возвращаем что распарсилось."""
     if not path.exists():

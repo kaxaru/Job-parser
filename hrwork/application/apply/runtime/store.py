@@ -10,6 +10,8 @@ applied_log / response_status / form_vacancies / apply_pending) и трём мо
 функциям. Полноценная сущность Application / доменные события — отдельный шаг (F4), нужный
 лишь при росте apply-логики (второй портал, воронки).
 """
+from typing import Any
+
 from hrwork.application.apply.outcome import ApplyChannel
 from hrwork.application.apply.runtime import bump_state, quota
 from hrwork.infrastructure.storage import followup, load_marks, save_marks
@@ -20,16 +22,16 @@ class ApplicationStore:
 
     # ── Отметки: какие вакансии откликнуты/отклонены (marks.json) ──
     @staticmethod
-    def marks() -> dict:
+    def marks() -> dict[str, Any]:
         return load_marks()
 
     @staticmethod
-    def set_marks(full: dict) -> None:
+    def set_marks(full: dict[str, Any]) -> None:
         """Полностью заменить карту отметок (лента шлёт свой актуальный набор)."""
         save_marks(full)
 
     @staticmethod
-    def merge_marks(updates: dict) -> None:
+    def merge_marks(updates: dict[str, Any]) -> None:
         """Домержить отметки в текущие (не теряя чужих записей)."""
         save_marks({**load_marks(), **updates})
 
@@ -71,7 +73,7 @@ class ApplicationStore:
                                 employer=employer)
 
     @staticmethod
-    def applied_log() -> list[dict]:
+    def applied_log() -> list[dict[str, Any]]:
         return followup.load_applied_log()
 
     @classmethod
@@ -81,25 +83,25 @@ class ApplicationStore:
 
     # ── Статусы работодателя из чатов (response_status.json) ──
     @staticmethod
-    def statuses() -> dict:
+    def statuses() -> dict[str, Any]:
         return followup.load_statuses()
 
     @staticmethod
-    def save_statuses(statuses: dict) -> None:
+    def save_statuses(statuses: dict[str, Any]) -> None:
         followup.save_statuses(statuses)
 
     # ── Вакансии-опросники: нужна ручная форма (form_vacancies.json) ──
     @staticmethod
-    def forms() -> dict:
+    def forms() -> dict[str, Any]:
         return followup.load_form_vacancies()
 
     # ── Переписка в чатах (для подсветки «ждёт ответа» в ленте) ──
     @staticmethod
-    def chat_messages() -> dict:
+    def chat_messages() -> dict[str, Any]:
         return followup.load_chat_messages()
 
     @staticmethod
-    def save_chat_messages(data: dict) -> None:
+    def save_chat_messages(data: dict[str, Any]) -> None:
         followup.save_chat_messages(data)
 
     @staticmethod
@@ -112,11 +114,11 @@ class ApplicationStore:
 
     # ── Кеш снятой структуры анкет (forms_cache.json): свип не гонит форму повторно ──
     @staticmethod
-    def form_cache() -> dict:
+    def form_cache() -> dict[str, Any]:
         return followup.load_form_cache()
 
     @staticmethod
-    def cache_form(vid: str, name: str, url: str, fields: list,
+    def cache_form(vid: str, name: str, url: str, fields: list[Any],
                    status: str, ts: str = "") -> None:
         followup.cache_form(vid, name, url, fields, status, ts=ts)
 
@@ -130,11 +132,11 @@ class ApplicationStore:
         return followup.enqueue_pending(vid, url, name, cover)
 
     @staticmethod
-    def pop_pending() -> dict | None:
+    def pop_pending() -> dict[str, Any] | None:
         return followup.pop_pending_one()
 
     @staticmethod
-    def pending() -> list[dict]:
+    def pending() -> list[dict[str, Any]]:
         return followup.load_pending()
 
 

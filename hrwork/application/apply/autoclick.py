@@ -24,6 +24,8 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
+from typing import Any
 
 from hrwork.application.apply import cover, session
 from hrwork.application.apply.candidates import Candidate, pick_candidates
@@ -31,7 +33,10 @@ from hrwork.application.apply.chat import chat
 from hrwork.application.apply.forms.form_status import skippable_form_ids
 from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome, VacancyMark
 from hrwork.application.apply.runtime import bump_state
-from hrwork.application.apply.runtime.lock import _single_instance, release_if_mine
+from hrwork.application.apply.runtime.lock import (
+    _single_instance as _single_instance,  # реэкспорт: forms.py берёт его как autoclick._single_instance
+)
+from hrwork.application.apply.runtime.lock import release_if_mine
 from hrwork.application.apply.runtime.quota import DAILY_CAP_DEFAULT
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import DATA_DIR, FORMS_ENABLED, log
@@ -98,7 +103,8 @@ def _kill_own_tree() -> None:
 
 
 @contextlib.contextmanager
-def _hang_watchdog(dump_s: int = WATCHDOG_DUMP_S, kill_s: int = WATCHDOG_KILL_S):
+def _hang_watchdog(dump_s: int = WATCHDOG_DUMP_S,
+                   kill_s: int = WATCHDOG_KILL_S) -> Iterator[None]:
     faulthandler.dump_traceback_later(dump_s, exit=False)
     killer = threading.Timer(kill_s, _kill_own_tree)
     killer.daemon = True
@@ -112,7 +118,7 @@ def _hang_watchdog(dump_s: int = WATCHDOG_DUMP_S, kill_s: int = WATCHDOG_KILL_S)
 
 # ─────────────────────────── браузер (Playwright) ───────────────────────────
 
-def _launch(p, headless: bool):
+def _launch(p: Any, headless: bool) -> Any:
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
     return p.chromium.launch_persistent_context(
         str(PROFILE_DIR),
@@ -124,7 +130,7 @@ def _launch(p, headless: bool):
     )
 
 
-def _page(ctx):
+def _page(ctx: Any) -> Any:
     return ctx.pages[0] if ctx.pages else ctx.new_page()
 
 
@@ -138,7 +144,7 @@ _DDG_HINT = ("ddos-guard", "проверяем ваш браузер", "checking
 _CAPTCHA_PATH = "/account/captcha"
 
 
-def is_captcha(page) -> bool:
+def is_captcha(page: Any) -> bool:
     """HH увёл на СВОЮ капчу: редирект на `/account/captcha?backurl=…`, картинка
     `[data-qa="account-captcha-picture"]`. Это НЕ DDoS-Guard (тот держит edge и лечится
     ожиданием) — проверка привязана к аккаунту и снимается только человеком.
@@ -152,7 +158,7 @@ def is_captcha(page) -> bool:
     return False
 
 
-def _goto(page, url: str, tries: int = 3) -> bool:
+def _goto(page: Any, url: str, tries: int = 3) -> bool:
     """Навигация с ожиданием прохождения DDoS-Guard. True — доехали до HH-приложения."""
     for attempt in range(tries):
         with contextlib.suppress(Exception):
@@ -177,7 +183,7 @@ def _goto(page, url: str, tries: int = 3) -> bool:
     return False
 
 
-def _logged_in(page) -> bool:
+def _logged_in(page: Any) -> bool:
     """Логин-статус по ЛЁГКОЙ главной (не тяжёлый /applicant/resumes — тот грузит весь
     список резюме и висит). Детект по маркерам анонима в шапке: кнопка «Войти»
     (data-qa=login) / форма логина (account-login-form)."""
@@ -200,15 +206,15 @@ def _logged_in(page) -> bool:
     return ok
 
 
-def _shown(page, selector) -> bool:
+def _shown(page: Any, selector: str) -> bool:
     """Виден ли (в DOM и visible) хоть один элемент по селектору."""
     with contextlib.suppress(Exception):
         loc = page.locator(selector).first
-        return loc.count() > 0 and loc.is_visible()
+        return bool(loc.count() > 0 and loc.is_visible())
     return False
 
 
-def _try_click(page, selector, *, force=False) -> bool:
+def _try_click(page: Any, selector: str, *, force: bool = False) -> bool:
     with contextlib.suppress(Exception):
         loc = page.locator(selector).first
         loc.wait_for(state="visible", timeout=6_000)
@@ -217,7 +223,7 @@ def _try_click(page, selector, *, force=False) -> bool:
     return False
 
 
-def _try_fill(page, selector, value) -> bool:
+def _try_fill(page: Any, selector: str, value: str) -> bool:
     with contextlib.suppress(Exception):
         loc = page.locator(selector).first
         loc.wait_for(state="visible", timeout=6_000)
@@ -226,16 +232,16 @@ def _try_fill(page, selector, value) -> bool:
     return False
 
 
-def _on_login_form(page) -> bool:
+def _on_login_form(page: Any) -> bool:
     """Ещё на форме входа (не залогинились)."""
     with contextlib.suppress(Exception):
         if "/account/login" in page.url:
             return True
-        return page.locator('[data-qa="account-login-form"]').count() > 0
+        return bool(page.locator('[data-qa="account-login-form"]').count() > 0)
     return True
 
 
-def _auto_login(page) -> bool:
+def _auto_login(page: Any) -> bool:
     """Автовход по HH_EMAIL(+HH_PASSWORD) — АДАПТИВНЫЙ автомат: на каждой итерации
     смотрит, какой элемент формы сейчас на экране, и делает один шаг. Устойчив к
     перерисовкам DDoS-Guard и к порядку появления полей (в отличие от жёсткой
@@ -304,13 +310,13 @@ def _auto_login(page) -> bool:
 _CAPTCHA = '[data-qa="account-captcha-input"], [data-qa*="captcha"]'
 
 
-def _captcha_shown(page) -> bool:
+def _captcha_shown(page: Any) -> bool:
     with contextlib.suppress(Exception):
-        return page.locator(_CAPTCHA).count() > 0
+        return bool(page.locator(_CAPTCHA).count() > 0)
     return False
 
 
-def login():
+def login() -> None:
     """Разовый вход с окном: автовход по e-mail+паролю заполняет ВСЮ форму; если HH
     показал капчу — её проходишь руками (её и только её), сессия остаётся в PROFILE_DIR
     и дальше run() работает headless по крону без логина, пока сессия не истечёт."""
@@ -349,7 +355,7 @@ def login():
                 ctx.close()
 
 
-def bump_resumes(page) -> int:
+def bump_resumes(page: Any) -> int:
     """Клик БЕСПЛАТНОГО «Поднять в поиске» по всем резюме. HH разрешает раз в 4 часа —
     после поднятия кнопка ПРОПАДАЕТ (не disabled!) и заменяется текстом «Поднять
     вручную можно сегодня в HH:MM». Это норма, не ошибка.
@@ -416,7 +422,7 @@ _RESPONSE_SUBMIT = ('[data-qa="vacancy-response-letter-submit"], '
                     '[data-qa="vacancy-response-submit-popup"]')
 
 
-def apply_one(page, cand: Candidate) -> ApplyOutcome:
+def apply_one(page: Any, cand: Candidate) -> ApplyOutcome:
     """Отклик на одну вакансию (БЕЗ письма — письмо шлётся отдельно в чат). Исход:
       APPLIED — отклик отправлен; ALREADY — уже откликались (кнопка заменена на «Чат»);
       FORM — вакансия с вопросами работодателя (в форм-очередь, руками);
@@ -470,7 +476,7 @@ def apply_one(page, cand: Candidate) -> ApplyOutcome:
         return ApplyOutcome.SKIP
 
 
-def _sync_applied_from_chats(ctx, page) -> int:
+def _sync_applied_from_chats(ctx: Any, page: Any) -> int:
     """Вакансии с чатом на HH = уже откликнутые -> отметить в marks.json. Cookie-only
     (chatik.hh.ru без fingerprint), чинит дрейф marks<->HH навсегда. Возвращает число
     новых отметок."""
@@ -489,7 +495,7 @@ def _sync_applied_from_chats(ctx, page) -> int:
     return len(fresh)
 
 
-def _send_cover_via_chat(page, cand: Candidate, text: str) -> bool:
+def _send_cover_via_chat(page: Any, cand: Candidate, text: str) -> bool:
     """Записать письмо в СЛОТ СОПРОВОДИТЕЛЬНОГО (chatik /save правит сообщение-отклик, а не
     шлёт новое сообщение — иначе у работодателя это не сопроводительное, а реплика в чат).
     Cookie-only, без fingerprint. Чат/сообщение-отклик создаются не мгновенно — пара попыток."""
@@ -513,20 +519,21 @@ def _send_cover_via_chat(page, cand: Candidate, text: str) -> bool:
     return False
 
 
-def _journal_name(data: dict, vid: str, name_map: dict) -> str:
+def _journal_name(data: dict[str, Any], vid: str, name_map: dict[str, Any]) -> str:
     """Имя вакансии для журнала: из локального сбора, иначе из resources чата, иначе id."""
-    nm = name_map.get(vid)
+    nm: str | None = name_map.get(vid)
     if nm:
         return nm
     vac = ((data.get("resources") or {}).get("vacancies") or {}).get(vid) or {}
-    return vac.get("name") or ""
+    nm_res: str = vac.get("name") or ""
+    return nm_res
 
 
 SYNC_FRESH_DAYS = 7          # сообщения старше -> чат считается устоявшимся
 
 
-def _sync_from_cache(c: dict, cached_msgs: dict, cached_statuses: dict,
-                     journaled: set, now) -> bool:
+def _sync_from_cache(c: dict[str, Any], cached_msgs: dict[str, Any], cached_statuses: dict[str, Any],
+                     journaled: set[str], now: Any) -> bool:
     """True -> чат можно НЕ качать: он в кеше С ПЕРЕПИСКОЙ, статус ТЕРМИНАЛЬНЫЙ и сообщений
     не было SYNC_FRESH_DAYS. Решение по lastMessageTime из СПИСКА чатов (не по кешу): новое
     сообщение в старом чате обновляет метку, и чат синкается снова. Нетерминальные
@@ -541,12 +548,12 @@ def _sync_from_cache(c: dict, cached_msgs: dict, cached_statuses: dict,
         return False
     try:
         last = datetime.datetime.fromisoformat(c.get("lastMessageTime") or "")
-        return (now - last) >= datetime.timedelta(days=SYNC_FRESH_DAYS)
+        return bool((now - last) >= datetime.timedelta(days=SYNC_FRESH_DAYS))
     except (ValueError, TypeError):      # TypeError: naive vs aware — недоверие -> синк
         return False
 
 
-def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = False) -> dict:
+def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = False) -> dict[str, Any]:
     """Синхронизация из чатов — БЕЗ БРАУЗЕРА (cookie-only HTTP, без fingerprint).
     Один chat_data на чат даёт СРАЗУ:
       1) статус отклика (currentApplicantState) -> response_status.json;
@@ -591,7 +598,7 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
         log.info("Синк из чатов (HTTP, без браузера): {} — статусы + журнал + переписка…",
                  len(chats))
         # merge-база = кеш: прогон обновляет поверх, пропуски/сбои не стирают известное
-        msgs_out: dict[str, dict] = dict(cached_msgs)
+        msgs_out: dict[str, dict[str, Any]] = dict(cached_msgs)
         statuses: dict[str, str] = dict(cached_statuses)
         for i, c in enumerate(chats, 1):
             vid = str(c["vacancyId"])
@@ -652,7 +659,8 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
     return statuses
 
 
-def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "template") -> int:
+def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
+                 cover_mode: str = "template") -> int:
     """Разослать отклики с сопроводительным письмом, с учётом ДНЕВНОГО лимита HH
     (~200/сутки). Эффективный лимит запуска = min(apply_limit, дневной_остаток) — так
     N мелких запусков за день суммарно не превышают cap (идемпотентно: счётчик в
@@ -731,7 +739,7 @@ def _apply_batch(page, apply_limit: int, daily_cap: int, cover_mode: str = "temp
 def run(apply_limit: int | None = None, daily_cap: int = DAILY_CAP_DEFAULT,
         headless: bool = True, do_bump: bool = True, do_apply: bool = True,
         cover_mode: str = "template", lock_retries: int = 6, lock_wait: float = 60,
-        force_bump: bool = False):
+        force_bump: bool = False) -> None:
     """Поднятие резюме И отклики в ОДНОМ браузерном прогоне (bump+apply слиты в одну крон-
     задачу: им нужен один браузер и один профиль, поэтому раздельные задачи только дрались
     за общий lock и лишний раз проходили DDoS-Guard).
@@ -772,7 +780,8 @@ def run(apply_limit: int | None = None, daily_cap: int = DAILY_CAP_DEFAULT,
                 ctx.close()
 
 
-def _apply_one_vacancy(page, vid: str, url: str, cover_text: str, name: str = "") -> dict:
+def _apply_one_vacancy(page: Any, vid: str, url: str, cover_text: str,
+                       name: str = "") -> dict[str, Any]:
     """Отклик + письмо для ОДНОЙ вакансии на уже открытой странице (переиспользуемо
     воркером и разовым apply_vacancy). Пишет marks/quota/форм-очередь."""
     cand = Candidate(id=vid, name=name or vid, url=url or f"https://hh.ru/vacancy/{vid}")
@@ -794,7 +803,7 @@ def _apply_one_vacancy(page, vid: str, url: str, cover_text: str, name: str = ""
     return result
 
 
-def _drain_pending(page, daily_cap: int, cover_mode: str = "template") -> int:
+def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> int:
     """Дренаж очереди ожидания (apply_pending.json): вакансии, что лента добавила, пока
     браузер был занят. Владелец браузера (крон после батча / воркер) дожимает их —
     так клик «в фоне» при занятом кроне становится 26-й вакансией. Уважает дневной лимит."""
@@ -815,8 +824,8 @@ def _drain_pending(page, daily_cap: int, cover_mode: str = "template") -> int:
     return n
 
 
-def apply_vacancy(vacancy_id, url: str = "", cover_text: str = "", headless: bool = True,
-                  name: str = "") -> dict:
+def apply_vacancy(vacancy_id: Any, url: str = "", cover_text: str = "", headless: bool = True,
+                  name: str = "") -> dict[str, Any]:
     """Разовый отклик: поднимает свой Playwright на один вызов и закрывает. Для CLI/тестов;
     сервер использует тёплый ApplyWorker (переиспользует браузер между кликами)."""
     from playwright.sync_api import sync_playwright
@@ -844,7 +853,7 @@ def apply_vacancy(vacancy_id, url: str = "", cover_text: str = "", headless: boo
 # его между кликами, а по простою IDLE_TIMEOUT закрывает и отпускает lock (чтобы не
 # блокировать крон). Запросы шлют задания в очередь и ждут результат.
 
-def _start_playwright():
+def _start_playwright() -> Any:
     """Запуск Playwright, вынесен для тестируемости (мокается в тестах воркера)."""
     from playwright.sync_api import sync_playwright
     return sync_playwright().start()
@@ -855,15 +864,15 @@ class ApplyWorker:
     RESULT_TIMEOUT = 600  # предохранитель: submit не виснет вечно, даже если поток умер молча
 
     def __init__(self, headless: bool = True):
-        self._q: queue.Queue = queue.Queue()
+        self._q: queue.Queue[Any] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._start_lock = threading.Lock()
         self._headless = headless
 
-    def submit(self, vid: str, url: str, cover: str, name: str = "") -> dict:
+    def submit(self, vid: str, url: str, cover: str, name: str = "") -> dict[str, Any]:
         """Поставить отклик в очередь и дождаться результата (блокирует поток запроса)."""
         done = threading.Event()
-        box: dict = {}
+        box: dict[str, Any] = {}
         # Кладём в очередь ДО старта потока: иначе поток мог бы упасть и слить пустую очередь
         # раньше, чем задание попадёт в неё (гонка -> вечное ожидание). finally потока сольёт
         # это задание статусом 'error', SystemExit-ветка — 'busy'.
@@ -872,15 +881,16 @@ class ApplyWorker:
         if not done.wait(timeout=self.RESULT_TIMEOUT):
             log.error("ApplyWorker: результат не пришёл за {}с — таймаут", self.RESULT_TIMEOUT)
             return {"status": "error", "letter": False, "error": "timeout"}
-        return box.get("result", {"status": "error", "letter": False})
+        res: dict[str, Any] = box.get("result", {"status": "error", "letter": False})
+        return res
 
-    def _ensure_thread(self):
+    def _ensure_thread(self) -> None:
         with self._start_lock:
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, daemon=True)
                 self._thread.start()
 
-    def _run(self):
+    def _run(self) -> None:
         try:
             # короткий ретрай: транзиентный lock (быстрая задача) успеет освободиться;
             # длинный крон-батч (~30 мин) не переждать в HTTP-запросе -> честный busy.
@@ -930,7 +940,7 @@ class ApplyWorker:
             # с невыставленным done -> HTTP-поток завис бы навсегда. Сливаем остаток ошибкой.
             self._drain("error")
 
-    def _drain(self, status: str):
+    def _drain(self, status: str) -> None:
         """Слить очередь заданным статусом (напр. busy, когда lock занят кроном)."""
         while True:
             try:

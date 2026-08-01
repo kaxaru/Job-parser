@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 from html.parser import HTMLParser
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -48,13 +49,13 @@ _DROP_CONTENT = {"script", "style"}
 
 
 class _DescSanitizer(HTMLParser):
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._out: list[str] = []
         self._open: list[str] = []   # стек открытых allowed-тегов (для авто-закрытия)
         self._skip = 0               # глубина внутри script/style
 
-    def handle_starttag(self, tag, attrs):
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in _DROP_CONTENT:
             self._skip += 1
         elif tag in _ALLOWED_TAGS:
@@ -62,7 +63,7 @@ class _DescSanitizer(HTMLParser):
             if tag != "br":
                 self._open.append(tag)
 
-    def handle_endtag(self, tag):
+    def handle_endtag(self, tag: str) -> None:
         if tag in _DROP_CONTENT:
             self._skip = max(0, self._skip - 1)
         elif tag in self._open:
@@ -72,7 +73,7 @@ class _DescSanitizer(HTMLParser):
                 if t == tag:
                     break
 
-    def handle_data(self, data):
+    def handle_data(self, data: str) -> None:
         if not self._skip:
             self._out.append(html.escape(data, quote=False))
 
@@ -90,7 +91,7 @@ def sanitize_desc(src: str) -> str:
     return s.result()
 
 
-def _salary_fields(sal) -> dict:
+def _salary_fields(sal: Any) -> dict[str, Any]:
     """Зарплатные поля карточки (JS-имена sal_from/to/mid — забота презентации, не домена).
     None-вилка -> пустые значения; убирает 4× повтор `v.salary.X if v.salary else …` (Demeter)."""
     if not sal:
@@ -117,7 +118,7 @@ def _last_hr_replies() -> dict[str, str]:
     return out
 
 
-def build_feed():
+def build_feed() -> None:
     vacancies = vacancy_repository().load()      # list[VacancyRecord]
     statuses = store.statuses()                  # {vacancyId: employerState} из chat_data
     forms = store.forms()                        # вакансии-опросники (нужна форма)

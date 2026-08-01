@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime
 from enum import Enum
+from typing import Any
 
 # Метки в кеше свипа пишутся локальным временем машины; наивную читаем в её же зоне,
 # а не в UTC — иначе сравнение с датой публикации уезжает на несколько часов.
@@ -27,7 +28,7 @@ class FormSweepStatus(Enum):
         return self is not FormSweepStatus.OK
 
     @classmethod
-    def from_code(cls, code) -> FormSweepStatus | None:
+    def from_code(cls, code: Any) -> FormSweepStatus | None:
         """Мягкий контракт (кеш — внешние данные): неизвестное/отсутствующее -> None."""
         try:
             return cls(code)
@@ -35,7 +36,7 @@ class FormSweepStatus(Enum):
             return None
 
 
-def _parse(ts) -> datetime.datetime | None:
+def _parse(ts: Any) -> datetime.datetime | None:
     """ISO-строка -> aware datetime (или None). Наивную метку читаем в локальной зоне."""
     if not ts:
         return None
@@ -46,7 +47,7 @@ def _parse(ts) -> datetime.datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=_LOCAL_TZ)
 
 
-def is_revived(cache_rec: dict | None, published_at) -> bool:
+def is_revived(cache_rec: dict[str, Any] | None, published_at: Any) -> bool:
     """Вакансия ПЕРЕОПУБЛИКОВАНА после того, как свип признал её форму мёртвой.
 
     Мёртвая форма = вакансия снята с публикации, дёргать её бессмысленно. Но HH позволяет
@@ -59,7 +60,8 @@ def is_revived(cache_rec: dict | None, published_at) -> bool:
     return pub > swept
 
 
-def skippable_form_ids(queue, cache: dict, published_by_id: dict) -> set[str]:
+def skippable_form_ids(queue: Any, cache: dict[str, Any],
+                       published_by_id: dict[str, Any]) -> set[str]:
     """Какие вакансии-опросники ПРОПУСКАТЬ при отборе кандидатов.
 
     Пропускаем: живые анкеты (бот их не заполняет — вопросы работодателя специфичны) и

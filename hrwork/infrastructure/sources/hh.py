@@ -13,6 +13,7 @@ import html as _html
 import json
 import re
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import urlencode
 
 from hrwork.config import (
@@ -55,12 +56,13 @@ _STATE_RE = re.compile(
 _TAG_RE = re.compile(r"<[^>]+>")
 
 
-def _extract_state(html: str) -> dict | None:
+def _extract_state(html: str) -> dict[str, Any] | None:
     m = _STATE_RE.search(html)
     if not m:
         return None
     try:
-        return json.loads(_html.unescape(m.group(1)))
+        state: dict[str, Any] = json.loads(_html.unescape(m.group(1)))
+        return state
     except json.JSONDecodeError:
         return None
 
@@ -69,14 +71,14 @@ def _strip_html(s: str) -> str:
     return re.sub(r"\s+", " ", _TAG_RE.sub(" ", s)).strip()
 
 
-def _work_formats(item: dict) -> list[str]:
+def _work_formats(item: dict[str, Any]) -> list[str]:
     out: list[str] = []
     for wf in item.get("workFormats") or []:
         out.extend(wf.get("workFormatsElement") or [])
     return out
 
 
-def _record_from_search_item(item: dict, *, city: str, city_id: str) -> VacancyRecord:
+def _record_from_search_item(item: dict[str, Any], *, city: str, city_id: str) -> VacancyRecord:
     """Элемент поиска HH -> VacancyRecord (ACL: внешний JSON СРАЗУ в домен, без raw-dict).
     Город берём из ПОИСКА (city/area_id), а не из area вакансии — так вакансия числится за
     городом, под которым найдена. techs/role посчитаются лишь по тайтлу (requirement пуст) —
@@ -132,7 +134,7 @@ class HHHtmlClient:
     запросах отдаёт 200. Поэтому каждый GET — отдельный процесс curl.
     """
 
-    def __init__(self, proxies: list[str] | None = None):
+    def __init__(self, proxies: list[str] | None = None) -> None:
         # Ресурсов, требующих закрытия, нет (curl — процесс на запрос; httpx-пул живёт в
         # net.http): клиент создаётся обычным конструктором, без context manager.
         self.sem = asyncio.Semaphore(CONCURRENCY)
@@ -151,7 +153,7 @@ class HHHtmlClient:
         out = await fetch_bytes(url, headers=headers, proxy=self._next_proxy())
         return out.decode("utf-8", "replace") if out else None
 
-    async def _get_state(self, url: str, retries: int = CFG.retry_attempts) -> dict | None:
+    async def _get_state(self, url: str, retries: int = CFG.retry_attempts) -> dict[str, Any] | None:
         """200 + встроенный JSON или None после ретраев с бэкоффом. Ретрай не только по сбою
         curl, но и по «пусто/нет state» — так ловим soft-блок DDoS-Guard (HTML без данных)."""
         delay = CFG.backoff_start
@@ -167,7 +169,7 @@ class HHHtmlClient:
             delay = min(delay * 2, CFG.backoff_max)
         return None
 
-    async def _search_page(self, area_id: str, page: int, query: str) -> list[dict]:
+    async def _search_page(self, area_id: str, page: int, query: str) -> list[dict[str, Any]]:
         url = SEARCH_URL + "?" + urlencode({
             "text": query, "area": area_id,
             "page": page, "items_on_page": PER_PAGE,
@@ -195,7 +197,7 @@ class HHHtmlClient:
         techs_text = " ".join(skills) + " " + _strip_html(desc_html)
         return techs_text, desc_html
 
-    async def _enrich(self, rec: VacancyRecord):
+    async def _enrich(self, rec: VacancyRecord) -> None:
         text, desc_html = await self._fetch_detail(rec.vacancy.id)
         if not (text.strip() or desc_html):
             return   # сбой сети/блок — не затираем ранее добытые описания
@@ -205,7 +207,8 @@ class HHHtmlClient:
         rec.enriched_at = storage.now_iso()              # реальная дозагрузка -> метка времени
         _rebuild_techs(rec)                              # техи/роль из полного текста карточки
 
-    async def run_enrich(self, records: list[VacancyRecord], skip_filled: bool = False):
+    async def run_enrich(self, records: list[VacancyRecord],
+                         skip_filled: bool = False) -> None:
         """Дозагрузка карточек пачками (публичный: зовёт и collect_all, и CLI-режим enrich).
         Инкрементально: неизменные (по sig) берём из кеша прошлого сбора без сети;
         /vacancy/<id> тянем только для новых/переоткрытых.

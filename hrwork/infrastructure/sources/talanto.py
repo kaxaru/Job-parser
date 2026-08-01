@@ -10,6 +10,7 @@ import asyncio
 import html
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from hrwork.config import (
     TALANTO_ENRICH_CONCURRENCY,
@@ -62,12 +63,12 @@ _LEVEL = {"intern": Experience.NONE, "junior": Experience.NONE,
           "principal": Experience.MORE_6, "head": Experience.MORE_6}
 
 
-def _sig(it: dict) -> str:
+def _sig(it: dict[str, Any]) -> str:
     """Маркер изменения для инкрементального enrich (last_verified_at, иначе published_at)."""
     return it.get("last_verified_at") or it.get("published_at") or ""
 
 
-def _meta_header(it: dict, full: dict | None) -> str:
+def _meta_header(it: dict[str, Any], full: dict[str, Any] | None) -> str:
     """Мета-шапка модалки: уровень · источник вакансии · портал. Тот же осознанный компромисс
     слоёв, что hirify._meta_header (описание собирается на этапе collect и уходит на диск)."""
     parts = []
@@ -80,7 +81,7 @@ def _meta_header(it: dict, full: dict | None) -> str:
     return "<p>" + html.escape(" · ".join(parts)) + "</p>"
 
 
-def _normalize(it: dict, full: dict | None = None, *,
+def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None, *,
                cached_desc: str | None = None, enriched_at: str | None = None) -> VacancyRecord:
     """Элемент talanto-API -> VacancyRecord (ACL). full — ответ /api/jobs/{id} с description;
     cached_desc — описание из кеша прошлого сбора (сеть не трогаем)."""
@@ -96,7 +97,7 @@ def _normalize(it: dict, full: dict | None = None, *,
     snippet = " ".join(skills)
     if cached_desc is not None:
         desc_html, enriched = cached_desc, True
-        at = enriched_at or storage.now_iso()
+        at: str | None = enriched_at or storage.now_iso()
     else:
         full_desc = (full or {}).get("description")
         desc_html = _meta_header(it, full) + (full_desc or "")
@@ -129,27 +130,28 @@ class TalantoSource(Source):
 
     name = "talanto"
 
-    def __init__(self, **_):
+    def __init__(self, **_: Any) -> None:
         pass                                    # публичный API — прокси/сессия не нужны
 
-    async def _curl_json(self, url: str) -> dict | None:
+    async def _curl_json(self, url: str) -> dict[str, Any] | None:
         headers = {"User-Agent": BROWSER_UA, "Accept": "*/*", "Accept-Language": "ru"}
         delay = CFG.backoff_start
         for _attempt in range(CFG.retry_attempts):
             out = await fetch_bytes(url, headers=headers)
             if out:
                 try:
-                    return json.loads(out.decode("utf-8", "replace"))
+                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
+                    return payload
                 except json.JSONDecodeError as e:
                     log.debug("talanto {}: {}", url, e)
             await asyncio.sleep(delay)
             delay = min(delay * 2, CFG.backoff_max)
         return None
 
-    async def _get_page(self, offset: int) -> dict | None:
+    async def _get_page(self, offset: int) -> dict[str, Any] | None:
         return await self._curl_json(f"{CFG.api_url}?{TALANTO_PARAMS}&offset={offset}")
 
-    async def _get_one(self, vid: str) -> dict | None:
+    async def _get_one(self, vid: str) -> dict[str, Any] | None:
         """Карточка /api/jobs/{id} — полное HTML-описание + url первоисточника."""
         return await self._curl_json(f"{CFG.api_url}{vid}") if vid else None
 
@@ -159,14 +161,14 @@ class TalantoSource(Source):
         if not first:
             log.warning("talanto: страница 0 пуста — источник недоступен")
             return []
-        items: list[dict] = list(first.get("items") or [])
+        items: list[dict[str, Any]] = list(first.get("items") or [])
         total = int(first.get("total") or len(items))
         pages = min((total + CFG.page_size - 1) // CFG.page_size, CFG.max_pages)
         log.info("talanto: total={} страниц={} — тяну список…", total, pages)
 
         sem = asyncio.Semaphore(CFG.page_conc)
 
-        async def _page(offset: int) -> list[dict]:
+        async def _page(offset: int) -> list[dict[str, Any]]:
             async with sem:
                 d = await self._get_page(offset)
             return (d or {}).get("items") or []
@@ -181,8 +183,8 @@ class TalantoSource(Source):
         # /jobs/{id} только для новых/изменившихся, не-IT тайтлы не обогащаем вовсе
         # (is_hard_non_it ДО enrich — как у HH: не качаем карточки заведомо чужих).
         cache = storage.load_desc_cache()
-        reuse: list[tuple[dict, dict]] = []
-        todo: list[dict] = []
+        reuse: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        todo: list[dict[str, Any]] = []
         for it in items:
             hit = cache.get(f"talanto_{it.get('id')}")
             if storage.cache_hit_usable(hit, _sig(it)):
@@ -194,7 +196,7 @@ class TalantoSource(Source):
 
         esem = asyncio.Semaphore(CFG.enrich_conc)
 
-        async def _enrich(it: dict) -> VacancyRecord:
+        async def _enrich(it: dict[str, Any]) -> VacancyRecord:
             async with esem:
                 full = await self._get_one(it.get("id", ""))
             return _normalize(it, full)

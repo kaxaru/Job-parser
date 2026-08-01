@@ -3,6 +3,7 @@
 Счётчик в apply_quota.json ({"date","count"}); запись за прошлый день = 0. Вынесено из
 autoclick — чистая логика над файлом, без браузера, тестируется напрямую."""
 import datetime
+from typing import Any
 
 from hrwork.config import DATA_DIR, HH_DAILY_APPLY_CAP
 from hrwork.infrastructure.storage import atomic_write_json, read_json_or
@@ -15,11 +16,12 @@ def _today() -> str:
     return datetime.date.today().isoformat()
 
 
-def _load_quota() -> dict:
-    return read_json_or(QUOTA_FILE, {})
+def _load_quota() -> dict[str, Any]:
+    data: dict[str, Any] = read_json_or(QUOTA_FILE, {})
+    return data
 
 
-def applied_today(quota: dict | None = None) -> int:
+def applied_today(quota: dict[str, Any] | None = None) -> int:
     """Сколько откликов уже сделано СЕГОДНЯ (0, если запись за прошлый день)."""
     q = quota if quota is not None else _load_quota()
     return int(q.get("count", 0)) if q.get("date") == _today() else 0

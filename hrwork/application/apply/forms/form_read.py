@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 _MAX_FIELDS = 40         # разумный потолок анкеты
 _MAX_PROMPT = 1000       # усечение текста вопроса — сужение поверхности инъекции
@@ -41,19 +42,19 @@ def _clip(text: str) -> str:
     return " ".join((text or "").split())[:_MAX_PROMPT]
 
 
-def _attr(loc, name: str) -> str:
+def _attr(loc: Any, name: str) -> str:
     with contextlib.suppress(Exception):
         return loc.get_attribute(name) or ""
     return ""
 
 
-def _text(loc) -> str:
+def _text(loc: Any) -> str:
     with contextlib.suppress(Exception):
         return loc.inner_text() or ""
     return ""
 
 
-def extract_fields(page) -> list[FormField]:
+def extract_fields(page: Any) -> list[FormField]:
     """Все заполняемые поля анкеты -> [FormField]. Дедуп по selector, лимит кол-ва."""
     out: list[FormField] = []
     seen: set[str] = set()
@@ -67,7 +68,7 @@ def extract_fields(page) -> list[FormField]:
     return out
 
 
-def _tasks(page) -> list[FormField]:
+def _tasks(page: Any) -> list[FormField]:
     """HH task-форма: [data-qa=task-body] -> вопрос + группа radio/checkbox с подписями-cell.
     Подписи (Да/Нет/1/Свой вариант) в options, value каждой — в opt_values (для отметки)."""
     out: list[FormField] = []
@@ -95,7 +96,7 @@ def _tasks(page) -> list[FormField]:
     return out
 
 
-def _selects(page) -> list[FormField]:
+def _selects(page: Any) -> list[FormField]:
     """Обычные <select> — на случай анкет не в HH-task-формате."""
     out: list[FormField] = []
     with contextlib.suppress(Exception):
@@ -109,7 +110,7 @@ def _selects(page) -> list[FormField]:
     return out
 
 
-def _field_prompt(page, loc, name: str) -> str:
+def _field_prompt(page: Any, loc: Any, name: str) -> str:
     """Промпт поля: <label for=id> / aria-label / placeholder. Пусто -> имя поля."""
     with contextlib.suppress(Exception):
         fid = _attr(loc, "id")

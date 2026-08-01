@@ -1,5 +1,7 @@
 """Plotly-графики дашборда (строятся из CSV-отчётов)."""
 import csv
+from pathlib import Path
+from typing import Any
 
 import plotly.graph_objects as go
 
@@ -11,7 +13,7 @@ from hrwork.domain.freshness import FreshnessClass
 # в dashboard и гонка при конкурентной сборке; параметр убирает скрытое состояние.
 
 
-def _read(base, name: str) -> list[dict]:
+def _read(base: Path, name: str) -> list[dict[str, Any]]:
     path = base / name
     with open(path, encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -46,7 +48,7 @@ BAR_COLOR_ALT = "#C08A2E"    # парная диаграмма (JS-стек ря
 AGE_SCALE = [[0.0, "#D9544D"], [0.5, "#7C838F"], [1.0, "#4C9BD1"]]
 
 
-def _layout(title: str, **kw) -> dict:
+def _layout(title: str, **kw: Any) -> dict[str, Any]:
     return dict(
         title=dict(text=title, font=dict(size=18, color=TEXT), x=0.5),
         paper_bgcolor=PAPER,
@@ -58,7 +60,8 @@ def _layout(title: str, **kw) -> dict:
     )
 
 
-def _stacked_pct_bars(title: str, ylabels: list[str], series, *,
+def _stacked_pct_bars(title: str, ylabels: list[str],
+                      series: list[tuple[str, list[int], str | None]], *,
                       noun: str, xaxis_title: str, yaxis_title: str = "") -> go.Figure:
     """Горизонтальный стек, нормированный к 100% (barnorm) — единый вид «состав по долям»
     для companies_sizes / freshness / remote (раньше блок дублировался 3×: _pcts, kwargs
@@ -94,7 +97,7 @@ def _stacked_pct_bars(title: str, ylabels: list[str], series, *,
     return fig
 
 
-def chart_cities(base=REPORTS_DIR) -> go.Figure:
+def chart_cities(base: Path = REPORTS_DIR) -> go.Figure:
     # Топ-30 по числу вакансий (как chart_remote/companies). Без кэпа рисовались ВСЕ ~3000
     # городов (полотно ~100k px), а мегастроки-«города» talanto (списки стран до 2400 симв.)
     # разносили левое поле. Ярлык дополнительно усечён — на случай длинного имени в топе.
@@ -117,7 +120,7 @@ def chart_cities(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_salary_lang(base=REPORTS_DIR) -> go.Figure:
+def chart_salary_lang(base: Path = REPORTS_DIR) -> go.Figure:
     rows = _read(base, "03_salary_by_lang.csv")
     langs = [r["Язык"] for r in rows]
     medians = [_num(r["Медиана"]) for r in rows]
@@ -147,7 +150,7 @@ def chart_salary_lang(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_salary_exp(base=REPORTS_DIR) -> go.Figure:
+def chart_salary_exp(base: Path = REPORTS_DIR) -> go.Figure:
     rows = _read(base, "06_salary_by_exp.csv")
     labels = [r["Опыт"] for r in rows]
     medians = [_num(r["Медиана"]) for r in rows]
@@ -182,7 +185,7 @@ def chart_salary_exp(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_stacks(base=REPORTS_DIR) -> go.Figure:
+def chart_stacks(base: Path = REPORTS_DIR) -> go.Figure:
     rows = _read(base, "05_top_stacks.csv")
     stacks = [r["Стек"] for r in rows]
     counts = [int(r["Упоминаний"]) for r in rows]
@@ -203,7 +206,7 @@ def chart_stacks(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_heatmap_city_lang(base=REPORTS_DIR) -> go.Figure:
+def chart_heatmap_city_lang(base: Path = REPORTS_DIR) -> go.Figure:
     rows = _read(base, "04_salary_city_lang.csv")
     # Топ-30 городов по числу язык-ячеек (без кэпа все ~сотни городов растягивали карту).
     cnt: dict[str, int] = {}
@@ -240,7 +243,7 @@ def chart_heatmap_city_lang(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_lang_stack(base, lang: str, csv_name: str, color: str) -> go.Figure:
+def chart_lang_stack(base: Path, lang: str, csv_name: str, color: str) -> go.Figure:
     """color — ровная заливка серии (тон отличает Python от JS), не шкала величины."""
     rows = _read(base, csv_name)
     techs  = [r["Технология"] for r in rows]
@@ -263,15 +266,15 @@ def chart_lang_stack(base, lang: str, csv_name: str, color: str) -> go.Figure:
     return fig
 
 
-def chart_python_stack(base=REPORTS_DIR) -> go.Figure:
+def chart_python_stack(base: Path = REPORTS_DIR) -> go.Figure:
     return chart_lang_stack(base, "Python", "07_python_stack.csv", BAR_COLOR)
 
 
-def chart_js_stack(base=REPORTS_DIR) -> go.Figure:
+def chart_js_stack(base: Path = REPORTS_DIR) -> go.Figure:
     return chart_lang_stack(base, "JavaScript", "08_js_stack.csv", BAR_COLOR_ALT)
 
 
-def chart_remote(base=REPORTS_DIR) -> go.Figure:
+def chart_remote(base: Path = REPORTS_DIR) -> go.Figure:
     """Удалёнка по городам: 100%-стек удалёнка/офис. Топ-25 по числу вакансий (Москва сверху)."""
     rows = _read(base, "09_remote_by_city.csv")
     # asc -> в plotly последний сверху, т.е. крупнейший город первым
@@ -285,7 +288,7 @@ def chart_remote(base=REPORTS_DIR) -> go.Figure:
     )
 
 
-def chart_companies(base=REPORTS_DIR) -> go.Figure:
+def chart_companies(base: Path = REPORTS_DIR) -> go.Figure:
     """Топ работодателей: длина бара = число вакансий, цвет = медиана «сколько висят»
     (температура: свежие — горячие/красные, старые — холодные/синие)."""
     rows = _read(base, "11_companies.csv")[:25]
@@ -314,7 +317,7 @@ def chart_companies(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_companies_sizes(base=REPORTS_DIR) -> go.Figure:
+def chart_companies_sizes(base: Path = REPORTS_DIR) -> go.Figure:
     """ВСЕ работодатели по числу вакансий: бары нормированы к 100%, стек = доля
     компаний в каждом классе свежести (по медиане возраста вакансий компании).
 
@@ -338,7 +341,7 @@ def chart_companies_sizes(base=REPORTS_DIR) -> go.Figure:
     )
 
 
-def chart_by_source(base=REPORTS_DIR) -> go.Figure:
+def chart_by_source(base: Path = REPORTS_DIR) -> go.Figure:
     """Разрез по порталам-источникам агрегатора: число вакансий (бар) + доля удалёнки."""
     rows   = _read(base, "12_sources.csv")
     srcs   = [r["Портал"] for r in rows]
@@ -358,7 +361,7 @@ def chart_by_source(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_companies_remote(base=REPORTS_DIR) -> go.Figure:
+def chart_companies_remote(base: Path = REPORTS_DIR) -> go.Figure:
     """Топ работодателей: удалёнка vs офис (стек). Кто реально берёт на удалёнку."""
     rows = _read(base, "11_companies.csv")[:25]
     rows_s = sorted(rows, key=lambda r: int(r["Вакансий"]))   # больше вакансий — выше
@@ -389,7 +392,7 @@ def chart_companies_remote(base=REPORTS_DIR) -> go.Figure:
     return fig
 
 
-def chart_freshness(base=REPORTS_DIR) -> go.Figure:
+def chart_freshness(base: Path = REPORTS_DIR) -> go.Figure:
     """Свежесть по городам: 100%-стек по классам свежести. Топ-25 по числу вакансий."""
     rows = _read(base, "10_freshness_by_city.csv")
     # asc -> в plotly последний сверху, т.е. крупнейший город (Москва) первым
@@ -405,7 +408,7 @@ def chart_freshness(base=REPORTS_DIR) -> go.Figure:
     )
 
 
-def chart_tech_heatmap(base=REPORTS_DIR, top_n: int = 40) -> go.Figure:
+def chart_tech_heatmap(base: Path = REPORTS_DIR, top_n: int = 40) -> go.Figure:
     """Топ-N технологий по всем городам — тепловая карта количеств."""
     rows = _read(base, "02_tech_by_city.csv")
 
@@ -457,7 +460,7 @@ _FUNNEL_BUCKETS = [
 ]
 
 
-def chart_company_funnel(base=REPORTS_DIR, top_n: int = 18) -> go.Figure:
+def chart_company_funnel(base: Path = REPORTS_DIR, top_n: int = 18) -> go.Figure:
     """Латентность автоотказа по компаниям: горизонтальный стек по бакетам времени
     «отклик -> отказ». Быстрые (горячие) сегменты = вероятный ATS-автобан, где резюме
     не читали. Работодатель неизвестен («вне выдачи») в бары не идёт — не actionable.
@@ -475,7 +478,7 @@ def chart_company_funnel(base=REPORTS_DIR, top_n: int = 18) -> go.Figure:
     known = list(reversed(known[:top_n]))
 
     comps = [r["Компания"][:34] for r in known]
-    seg = {name: [] for name, _c in _FUNNEL_BUCKETS}
+    seg: dict[str, list[int]] = {name: [] for name, _c in _FUNNEL_BUCKETS}
     for r in known:
         rej, meas = int(r["Отказов"]), int(r["Измерено"])
         le10, le1h, le1d = int(r["<=10м"]), int(r["<=1ч"]), int(r["<=1д"])

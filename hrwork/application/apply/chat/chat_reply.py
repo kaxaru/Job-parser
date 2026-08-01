@@ -14,8 +14,10 @@
 import json
 import time
 import uuid
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from random import uniform
+from typing import Any
 
 from hrwork.application.apply.chat import chat, chat_answer, chat_class
 from hrwork.application.apply.chat.chat_answer import VacancyContext
@@ -83,8 +85,9 @@ def _ctx_map() -> dict[str, VacancyContext]:
     return out
 
 
-def propose(chats: dict, ctx_map: dict[str, VacancyContext],
-            answered: frozenset | set = frozenset(), classify=None) -> list[Proposal]:
+def propose(chats: dict[str, Any], ctx_map: dict[str, VacancyContext],
+            answered: frozenset[str] | set[str] = frozenset(),
+            classify: Callable[[str], Any] | None = None) -> list[Proposal]:
     """Чистая сборка предложений (тестируется без диска и сети).
 
     answered — ключи «vid|норм-вопрос», на которые уже отвечали (см. _answered):
@@ -122,9 +125,10 @@ def propose(chats: dict, ctx_map: dict[str, VacancyContext],
     return out
 
 
-def poll_replies(req, xsrf, vids, *, window_s: int = POLL_WINDOW_S,
+def poll_replies(req: Any, xsrf: str, vids: Sequence[str], *, window_s: int = POLL_WINDOW_S,
                  interval_s: int = POLL_INTERVAL_S,
-                 sleep=time.sleep, clock=time.monotonic) -> dict:
+                 sleep: Callable[[float], Any] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """Точечный опрос ТОЛЬКО указанных чатов после отправки — дёшево (O(len(vids)),
     не 600 чатов полного синка).
 
@@ -134,7 +138,7 @@ def poll_replies(req, xsrf, vids, *, window_s: int = POLL_WINDOW_S,
 
     sleep/clock инъектируются -> тестируется без реального ожидания.
     """
-    pending: dict[str, tuple] = {}
+    pending: dict[str, tuple[Any, Any]] = {}
     for vid in vids:
         cid, aid = chat.find_chat(req, xsrf, vid)
         if cid:
@@ -144,7 +148,7 @@ def poll_replies(req, xsrf, vids, *, window_s: int = POLL_WINDOW_S,
     if not pending:
         return {"answered": 0, "timeout": 0, "updated": 0}
 
-    updates: dict[str, dict] = {}
+    updates: dict[str, dict[str, Any]] = {}
     answered: set[str] = set()
     start = clock()
     while pending and (clock() - start) < window_s:
@@ -181,7 +185,9 @@ def _console_consent(p: "Proposal") -> bool:
     return input("  Отправить этот ответ? [y/N] ").strip().lower() in ("y", "yes", "д", "да")
 
 
-def select_targets(sendable, manual, *, include_manual: bool, consent) -> list:
+def select_targets(sendable: list["Proposal"], manual: list["Proposal"], *,
+                   include_manual: bool,
+                   consent: Callable[["Proposal"], bool]) -> list["Proposal"]:
     """Кто реально уйдёт: авто — все; manual — только при include_manual И согласии.
     Чистая (consent инъектируется) -> тестируется без ввода. Порядок сохранён."""
     out = list(sendable)
@@ -190,16 +196,16 @@ def select_targets(sendable, manual, *, include_manual: bool, consent) -> list:
     return out
 
 
-def _make_classifier():
+def _make_classifier() -> Callable[[str], Any] | None:
     """LLM-классификатор намерения с кэшем на прогон (один вопрос — один вызов сети),
     либо None если LLM выключена. Кэш по norm_text: переформулировки бота, сводимые к
     одному ключу, не дёргают сеть повторно."""
     from hrwork.application.apply.chat import chat_intent
     if not chat_intent.INTENT_ENABLED:
         return None
-    cache: dict = {}
+    cache: dict[str, Any] = {}
 
-    def classify(question: str):
+    def classify(question: str) -> Any:
         k = chat_class.norm_text(question)
         if k not in cache:
             cache[k] = chat_intent.classify_intent(question)
@@ -207,13 +213,13 @@ def _make_classifier():
     return classify
 
 
-def _make_rephraser():
+def _make_rephraser() -> Callable[[str, str, str, str], str] | None:
     """LLM-переформулировщик одобренного факта под вопрос, либо None если выключено (etap-2).
     Кэш на прогон по (rule, норм-вопрос): один вопрос -> один вызов сети."""
     from hrwork.application.apply.chat import chat_rephrase
     if not chat_rephrase.REPHRASE_ENABLED:
         return None
-    cache: dict = {}
+    cache: dict[tuple[str, str], str] = {}
 
     def rephrase(question: str, source: str, rule: str, lang: str) -> str:
         k = (rule, chat_class.norm_text(question))
@@ -223,7 +229,7 @@ def _make_rephraser():
     return rephrase
 
 
-def _rephrased(p: "Proposal", rephrase) -> str:
+def _rephrased(p: "Proposal", rephrase: Callable[[str, str, str, str], str] | None) -> str:
     """Текст предложения после переформулировки (или исходный, если rephrase off / rule не eligible)."""
     from hrwork.application.apply.chat.chat_rephrase import eligible
     if not (rephrase and eligible(p.rule)):
@@ -243,10 +249,12 @@ def _rephrase_consent(p: "Proposal", cand: str) -> bool:
     return input("  Отправить переформулировку? [y/N] ").strip().lower() in ("y", "yes", "д", "да")
 
 
-def _apply_rephrase(props: list, rephrase, consent=_rephrase_consent) -> list:
+def _apply_rephrase(props: list["Proposal"],
+                    rephrase: Callable[[str, str, str, str], str] | None,
+                    consent: Callable[..., bool] = _rephrase_consent) -> list["Proposal"]:
     """Переформулировать предложения перед отправкой: не eligible/без изменений -> как есть
     (авто); ИЗМЕНЁН -> под consent (без tty -> источник). Proposal заморожен -> replace."""
-    out: list = []
+    out: list[Proposal] = []
     for p in props:
         cand = _rephrased(p, rephrase)
         if cand == p.text:
@@ -258,7 +266,8 @@ def _apply_rephrase(props: list, rephrase, consent=_rephrase_consent) -> list:
     return out
 
 
-def _plan(only: str, limit: int, classify=None) -> tuple[list, list]:
+def _plan(only: str, limit: int,
+          classify: Callable[[str], Any] | None = None) -> tuple[list["Proposal"], list["Proposal"]]:
     """Свежий снимок с диска -> (sendable, manual). Читается КАЖДЫЙ раунд: poll обновил
     chat_messages новыми вопросами, журнал дописан -> дедуп и вопросы актуальны."""
     props = propose(store.chat_messages(), _ctx_map(), _answered(), classify=classify)
@@ -269,7 +278,7 @@ def _plan(only: str, limit: int, classify=None) -> tuple[list, list]:
     return sendable, manual
 
 
-def _send_batch(req, xsrf, targets) -> list[str]:
+def _send_batch(req: Any, xsrf: str, targets: list["Proposal"]) -> list[str]:
     """Отправить пачку; вернуть vid успешно отправленных. Журналирует каждый (дедуп по q)."""
     sent: list[str] = []
     for p in targets:
@@ -292,8 +301,8 @@ def _send_batch(req, xsrf, targets) -> list[str]:
 
 
 def run(send: bool = False, limit: int = 10, only: str = "", wait: bool = True,
-        include_manual: bool = False, consent=_console_consent,
-        max_rounds: int = 1, use_intent: bool = False, use_rephrase: bool = False) -> dict:
+        include_manual: bool = False, consent: Callable[..., bool] = _console_consent,
+        max_rounds: int = 1, use_intent: bool = False, use_rephrase: bool = False) -> dict[str, Any]:
     """Точка входа CLI. dry-run (по умолчанию) печатает предложения; --send отправляет
     не-manual через cookie-сессию (браузер не нужен).
 

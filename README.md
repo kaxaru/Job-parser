@@ -59,7 +59,7 @@ ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / 
 
 ```bash
 pip install -r requirements.txt           # рантайм
-pip install -r requirements-dev.txt       # + pytest, ruff
+pip install -r requirements-dev.txt       # + pytest, ruff, mypy
 python -m playwright install chromium     # для автокликов
 ```
 
@@ -280,7 +280,7 @@ hr_work/
 ├─ dwh_demo/             портфолио-подпроект (свой README, ruff, тесты)
 ├─ resume_profile.json   профиль: ядро стека, опыт, факты для ответов в чатах
 ├─ proxie.txt            ШАБЛОН прокси (реальные — proxie.bak.txt, в .gitignore)
-├─ ruff.toml · biome.json · package.json · pytest.ini · conftest.py
+├─ ruff.toml · biome.json · package.json · pytest.ini · mypy.ini · conftest.py
 └─ requirements.txt · requirements-dev.txt
 ```
 
@@ -290,6 +290,7 @@ hr_work/
 pytest -q                    # Python
 npm test                     # JS: node --test tests/feed/**/*.test.js
 python -m ruff check .       # линтер Python (dwh_demo линтится отдельно)
+python -m mypy               # строгая проверка типов (hrwork + hh.py)
 npm run lint                 # biome, src/**
 npm run build                # esbuild -> data/feed.js (или просто python hh.py feed)
 ```

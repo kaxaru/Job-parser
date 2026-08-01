@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import httpx
 
@@ -48,7 +48,7 @@ _TIMEOUT = 20.0
 class HhApiError(Exception):
     """Ошибка API с сохранённым телом: по нему видно, отказал HH или заслон перед ним."""
 
-    def __init__(self, status: int, payload: dict | str):
+    def __init__(self, status: int, payload: dict[str, Any] | str) -> None:
         super().__init__(f"HTTP {status}: {str(payload)[:300]}")
         self.status = status
         self.payload = payload
@@ -63,7 +63,7 @@ class TokenSet:
     expires_at: float
 
     @classmethod
-    def from_response(cls, data: dict) -> TokenSet:
+    def from_response(cls, data: dict[str, Any]) -> TokenSet:
         return cls(access=str(data.get("access_token") or ""),
                    refresh=str(data.get("refresh_token") or ""),
                    expires_at=time.time() + float(data.get("expires_in") or 0))
@@ -72,7 +72,7 @@ class TokenSet:
     def is_expired(self) -> bool:
         return time.time() >= self.expires_at - _EXPIRY_MARGIN
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {"access_token": self.access, "refresh_token": self.refresh,
                 "expires_at": self.expires_at}
 
@@ -93,7 +93,7 @@ def save_token(t: TokenSet) -> None:
     atomic_write_json(HH_TOKEN_FILE, t.to_dict())
 
 
-def _headers(access: str = "") -> dict:
+def _headers(access: str = "") -> dict[str, Any]:
     # HH-User-Agent обязателен по правилам API: по нему HH связывается при проблемах.
     h = {"HH-User-Agent": HH_API_UA, "User-Agent": HH_API_UA}
     if access:
@@ -111,7 +111,7 @@ def authorize_url(state: str) -> str:
     return f"{AUTHORIZE_URL}?{q}"
 
 
-def _token_request(payload: dict) -> TokenSet:
+def _token_request(payload: dict[str, Any]) -> TokenSet:
     r = httpx.post(TOKEN_URL, data=payload, headers=_headers(), timeout=_TIMEOUT)
     try:
         data = r.json()
@@ -145,7 +145,7 @@ class ApiClient:
     Повторяем ровно однажды: если и после обновления `bad_authorization`, дело не в сроке —
     значит нет прав, и молотить запросами бессмысленно (тот же принцип, что у капча-гарда)."""
 
-    def __init__(self, token: TokenSet | None = None):
+    def __init__(self, token: TokenSet | None = None) -> None:
         self.token = token or load_token()
 
     def _ensure(self) -> TokenSet:
@@ -155,8 +155,8 @@ class ApiClient:
             self.token = refresh(self.token)
         return self.token
 
-    def request(self, method: str, path: str, *, params: dict | None = None,
-                json_body: dict | None = None, _retried: bool = False) -> dict:
+    def request(self, method: str, path: str, *, params: dict[str, Any] | None = None,
+                json_body: dict[str, Any] | None = None, _retried: bool = False) -> dict[str, Any]:
         t = self._ensure()
         r = httpx.request(method, f"{API_BASE}{path}", params=params, json=json_body,
                           headers=_headers(t.access), timeout=_TIMEOUT)
@@ -172,14 +172,15 @@ class ApiClient:
             except ValueError:
                 raise HhApiError(r.status_code, r.text) from None
         try:
-            return r.json()
+            payload: dict[str, Any] = r.json()
+            return payload
         except ValueError:
             return {}
 
-    def get(self, path: str, **params) -> dict:
+    def get(self, path: str, **params: Any) -> dict[str, Any]:
         return self.request("GET", path, params=params or None)
 
-    def post(self, path: str, **body) -> dict:
+    def post(self, path: str, **body: Any) -> dict[str, Any]:
         return self.request("POST", path, json_body=body or None)
 
 
@@ -188,7 +189,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
 
     Классовый атрибут, а не поле экземпляра: экземпляр создаёт сам HTTPServer на каждый
     запрос, и достучаться до него снаружи нельзя — результат забирает вызывающий."""
-    result: ClassVar[dict] = {}
+    result: ClassVar[dict[str, Any]] = {}
 
     def do_GET(self) -> None:                                  # имя задано BaseHTTPRequestHandler
         q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
@@ -200,7 +201,7 @@ class _CallbackHandler(http.server.BaseHTTPRequestHandler):
         msg = "Авторизация принята, можно закрыть вкладку." if ok else "Код не получен."
         self.wfile.write(f"<html><body><h3>{msg}</h3></body></html>".encode())
 
-    def log_message(self, *_args) -> None:                     # тишина: свой лог ведём сами
+    def log_message(self, *_args: Any) -> None:                     # тишина: свой лог ведём сами
         return
 
 
@@ -240,7 +241,7 @@ def login(timeout: float = 180.0) -> TokenSet:
 
 
 # ── Проба: что именно разрешено нашему приложению ────────────────────────────────────
-_PROBES = (
+_PROBES: tuple[tuple[str, str, dict[str, Any], str], ...] = (
     ("GET", "/me", {}, "профиль соискателя"),
     ("GET", "/resumes/mine", {}, "список резюме (нужен для отклика)"),
     ("GET", "/vacancies", {"per_page": 1, "text": "python"}, "поиск вакансий (замена HTML-сбора)"),
@@ -248,14 +249,14 @@ _PROBES = (
 )
 
 
-def probe() -> dict:
+def probe() -> dict[str, Any]:
     """Проверка прав БЕЗ побочных эффектов: ни одного отклика не отправляется.
 
     Отвечает на единственный настоящий вопрос переезда — что доступно нашему приложению.
     Право на отклик (`POST /negotiations`) здесь НЕ дёргается: это необратимое действие,
     его проверяем отдельной осознанной командой на одной вакансии."""
     client = ApiClient()
-    out: dict[str, dict] = {}
+    out: dict[str, dict[str, Any]] = {}
     for method, path, params, what in _PROBES:
         try:
             data = client.request(method, path, params=params or None)

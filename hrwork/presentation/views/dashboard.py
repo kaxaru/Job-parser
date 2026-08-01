@@ -62,7 +62,7 @@ _CHARTS = {
 SOURCE_LABELS = {"all": "Все"}      # hh/hirify берут своё имя как есть
 
 
-def build_dashboard():
+def build_dashboard() -> None:
     # Грузим вакансии для по-портальных срезов отчётов (фильтр источника в дашборде).
     vacs = [r.vacancy for r in vacancy_repository().load()]
     present = sorted({v.source for v in vacs})             # напр. ['hh', 'hirify']

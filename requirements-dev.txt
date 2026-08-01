@@ -2,3 +2,4 @@
 -r requirements.txt
 pytest>=8
 ruff>=0.6
+mypy>=2.3          ; строгая проверка типов, настройки — mypy.ini

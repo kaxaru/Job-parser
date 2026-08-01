@@ -7,6 +7,7 @@
 """
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from typing import Any
 
 from hrwork.infrastructure.storage import VacancyRecord
 
@@ -28,15 +29,15 @@ class Source(ABC):
 _REGISTRY: dict[str, Callable[..., Source]] = {}
 
 
-def register_source(name: str):
+def register_source(name: str) -> Callable[[Callable[..., Source]], Callable[..., Source]]:
     """Декоратор: зарегистрировать фабрику источника (обычно сам класс) по имени."""
-    def deco(factory: Callable[..., Source]):
+    def deco(factory: Callable[..., Source]) -> Callable[..., Source]:
         _REGISTRY[name] = factory
         return factory
     return deco
 
 
-def get_source(name: str, **kw) -> "Source | None":
+def get_source(name: str, **kw: Any) -> "Source | None":
     """Экземпляр источника по имени (или None, если не зарегистрирован)."""
     factory = _REGISTRY.get(name)
     return factory(**kw) if factory else None
@@ -49,7 +50,7 @@ class HHSource(Source):
 
     name = "hh"
 
-    def __init__(self, proxies: list[str] | None = None, **_):
+    def __init__(self, proxies: list[str] | None = None, **_: Any):
         self._proxies = proxies or []
 
     async def collect(self) -> list[VacancyRecord]:

@@ -1,6 +1,8 @@
 """Агрегация статистики по вакансиям (ViewModel-слой)."""
 import statistics
 from collections import Counter, defaultdict
+from collections.abc import Callable
+from typing import Any
 
 from hrwork.config import LANG_KEYS, MIN_SAMPLE_CITY_LANG, MIN_SAMPLE_SALARY
 from hrwork.domain import freshness
@@ -13,7 +15,7 @@ _REMOTE = (Schedule.REMOTE, Schedule.HYBRID)   # «удалённо» для с�
 
 class Analyzer:
 
-    def __init__(self, vacancies: list[Vacancy], fx: dict):
+    def __init__(self, vacancies: list[Vacancy], fx: dict[str, Any]) -> None:
         """Зарплатные срезы нормализуем в RUB по FX-курсам (агрегатор: HH=RUR, hirify=USD/EUR/…;
         раньше брали только RUR -> hirify выпадал). fx инжектится ЯВНО View-слоем (reporter) —
         конструктор в сеть НЕ ходит (тестируемость, нет скрытого I/O). Для standalone/CLI —
@@ -34,17 +36,17 @@ class Analyzer:
         Сеть только здесь, явно — конструктор остаётся чистым."""
         return cls(vacancies, fx=rates.get_rates())
 
-    def count_by_city(self) -> Counter:
+    def count_by_city(self) -> Counter[str]:
         return Counter(v.city for v in self.vacs)
 
-    def tech_by_city(self) -> dict[str, Counter]:
-        res: dict[str, Counter] = defaultdict(Counter)
+    def tech_by_city(self) -> dict[str, Counter[str]]:
+        res: dict[str, Counter[str]] = defaultdict(Counter)
         for v in self.vacs:
             for tech in v.techs:
                 res[v.city][tech] += 1
         return dict(res)
 
-    def salary_by_lang(self) -> dict[str, dict]:
+    def salary_by_lang(self) -> dict[str, dict[str, Any]]:
         buckets: dict[str, list[int]] = defaultdict(list)
         for v, rub in self.paid:
             for tech in v.techs:
@@ -66,13 +68,13 @@ class Analyzer:
             }
         return out
 
-    def salary_city_lang(self) -> dict[str, dict[str, dict]]:
-        buckets: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
+    def salary_city_lang(self) -> dict[str, dict[str, dict[str, Any]]]:
+        buckets: dict[str, dict[str, list[int]]] = defaultdict(lambda: defaultdict(list))
         for v, rub in self.paid:
             for tech in v.techs:
                 if tech in LANG_KEYS:
                     buckets[v.city][tech].append(rub)
-        out: dict[str, dict[str, dict]] = {}
+        out: dict[str, dict[str, dict[str, Any]]] = {}
         for city, langs in buckets.items():
             out[city] = {}
             for lang, sals in langs.items():
@@ -87,8 +89,8 @@ class Analyzer:
                 }
         return out
 
-    def top_stacks(self, n: int = 20) -> list[tuple]:
-        pairs: Counter = Counter()
+    def top_stacks(self, n: int = 20) -> list[tuple[Any, int]]:
+        pairs: Counter[Any] = Counter()
         for v in self.vacs:
             langs = [t for t in v.techs if t in LANG_KEYS]
             for i in range(len(langs)):
@@ -98,7 +100,7 @@ class Analyzer:
 
     def tech_stack_for_lang(self, lang: str) -> list[tuple[str, int]]:
         """Топ сопутствующих технологий в вакансиях, где упомянут `lang`."""
-        counter: Counter = Counter()
+        counter: Counter[str] = Counter()
         for v in self.vacs:
             if lang in v.techs:
                 for tech in v.techs:
@@ -106,7 +108,7 @@ class Analyzer:
                         counter[tech] += 1
         return counter.most_common(25)
 
-    def remote_by_city(self) -> list[dict]:
+    def remote_by_city(self) -> list[dict[str, Any]]:
         city_total: dict[str, int] = {}
         city_remote: dict[str, int] = {}
         for v in self.vacs:
@@ -125,7 +127,7 @@ class Analyzer:
             })
         return sorted(rows, key=lambda x: -x['remote'])
 
-    def freshness_summary(self) -> dict:
+    def freshness_summary(self) -> dict[str, Any]:
         """Распределение вакансий по свежести (fresh/recent/ghost/unknown) + доля гостов.
         Свежесть — по creationTime (реальный возраст), гост = висит >60 дней."""
         FC = freshness.FreshnessClass
@@ -141,7 +143,8 @@ class Analyzer:
             "median_age":  int(statistics.median(ages)) if ages else None,
         }
 
-    def _group_stats(self, key_field: str, keep=None) -> dict[str, dict]:
+    def _group_stats(self, key_field: str,
+                     keep: Callable[[Vacancy], bool] | None = None) -> dict[str, dict[str, Any]]:
         """Группировка по атрибуту key_field -> {группа: {total, median_age, ghosts, remote,
         office}}. keep(v) -> False исключает вакансию. Общий костяк by_company/by_source."""
         groups: dict[str, list[Vacancy]] = defaultdict(list)
@@ -149,7 +152,7 @@ class Analyzer:
             if keep and not keep(v):
                 continue
             groups[getattr(v, key_field)].append(v)
-        out: dict[str, dict] = {}
+        out: dict[str, dict[str, Any]] = {}
         for g, vacs in groups.items():
             ages = [a for v in vacs if (a := v.age_days()) is not None]
             remote = sum(1 for v in vacs if v.schedule in _REMOTE)
@@ -162,7 +165,7 @@ class Analyzer:
             }
         return out
 
-    def by_company(self, n: int = 30) -> list[dict]:
+    def by_company(self, n: int = 30) -> list[dict[str, Any]]:
         """Топ-N работодателей: сколько вакансий и медиана «сколько висят» (по возрасту
         с creationTime). Много вакансий + высокая медиана возраста = масс-хайринг/гостинг.
         Только IT-роли: ритейл/склад (роль «Не-IT») просачивается из нечёткого поиска HH
@@ -186,14 +189,16 @@ class Analyzer:
                 return label
         return Analyzer.SIZE_BUCKETS[-1][0]
 
-    def companies_by_size(self) -> list[dict]:
+    def companies_by_size(self) -> list[dict[str, Any]]:
         """Работодатели по числу вакансий -> сколько их и в каком они состоянии.
 
         Бар = СКОЛЬКО КОМПАНИЙ в корзине, стек = класс свежести компании по МЕДИАНЕ
         возраста её вакансий (у одиночек медиана = возраст единственной вакансии).
         Отвечает на вопрос, который топ-30 не видит: рынок — это длинный хвост
         мелких работодателей, и надо знать, какая его доля протухла."""
-        rows = []
+        # dict[str, Any]: значения разнородны (str + int + float), а класс свежести
+        # набирается по вычисляемому ключу `r[...classify_age(...).code] += 1`.
+        rows: list[dict[str, Any]] = []
         for label, _lo, _hi in self.SIZE_BUCKETS:
             rows.append({"bucket": label, "companies": 0, "vacancies": 0,
                          "fresh": 0, "recent": 0, "ghost": 0, "unknown": 0})
@@ -209,13 +214,13 @@ class Analyzer:
             r["ghost_pct"] = round(r["ghost"] * 100 / dated, 1) if dated else 0.0
         return rows
 
-    def by_source(self) -> list[dict]:
+    def by_source(self) -> list[dict[str, Any]]:
         """Разрез по порталам-источникам (агрегатор): сколько вакансий, медиана возраста,
         удалёнка, гост. Сравнить охват/качество HH vs hirify vs …"""
         rows = [{"source": src, **s} for src, s in self._group_stats("source").items()]
         return sorted(rows, key=lambda r: -r["total"])
 
-    def freshness_by_city(self) -> list[dict]:
+    def freshness_by_city(self) -> list[dict[str, Any]]:
         """По городам: свежие / гост / медианный возраст — для дашборда качества выдачи."""
         by_city: dict[str, list[Vacancy]] = defaultdict(list)
         for v in self.vacs:
@@ -239,7 +244,7 @@ class Analyzer:
             })
         return sorted(rows, key=lambda r: -r["ghost_pct"])
 
-    def salary_by_experience(self) -> dict[str, dict]:
+    def salary_by_experience(self) -> dict[str, dict[str, Any]]:
         buckets: dict[str, list[int]] = defaultdict(list)
         for v, rub in self.paid:
             label = v.experience.label if v.experience else "Не указан"

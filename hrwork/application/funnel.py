@@ -19,6 +19,7 @@ import csv
 import datetime as dt
 import statistics
 from pathlib import Path
+from typing import Any
 
 from hrwork.application.apply.chat.chat import DISCARD_STATES, INVITED_STATES
 from hrwork.application.apply.chat.chat_class import ChatKind, classify
@@ -42,7 +43,7 @@ def _parse_ts(s: str) -> dt.datetime | None:
     return d.replace(tzinfo=_LOCAL_TZ) if d.tzinfo is None else d
 
 
-def _reject_event(messages: list[dict]) -> dt.datetime | None:
+def _reject_event(messages: list[dict[str, Any]]) -> dt.datetime | None:
     """ts первого сообщения РАБОТОДАТЕЛЯ, классифицированного как отказ; нет -> None."""
     for m in messages or []:
         if m.get("mine"):
@@ -52,10 +53,10 @@ def _reject_event(messages: list[dict]) -> dt.datetime | None:
     return None
 
 
-def _earliest_applied() -> dict[str, dict]:
+def _earliest_applied() -> dict[str, dict[str, Any]]:
     """Журнал -> {id: запись с САМЫМ РАННИМ ts}. Дубли id в append-only журнале бывают;
     ранний ts = реальный момент отклика (как в marks.js::applyJournal — fix.md №7)."""
-    out: dict[str, dict] = {}
+    out: dict[str, dict[str, Any]] = {}
     for r in store.applied_log():
         vid, ts = r["id"], r.get("ts") or ""
         cur = out.get(vid)
@@ -64,7 +65,7 @@ def _earliest_applied() -> dict[str, dict]:
     return out
 
 
-def compute_funnel() -> dict:
+def compute_funnel() -> dict[str, Any]:
     """Воронка: на вакансию -> исход + латентность отказа; агрегация по компаниям + общая."""
     applied = _earliest_applied()
     statuses = store.statuses()                  # id -> employerState
@@ -72,10 +73,15 @@ def compute_funnel() -> dict:
     employer_of = {r.id: (r.vacancy.employer or "") for r in vacancy_repository().load()}
 
     # ── на вакансию: исход + латентность отказа (минуты) ──
-    per_company: dict[str, dict] = {}
-    overall = {"applied": len(applied), "with_chat": 0, "rejected": 0,
-               "le_10m": 0, "le_1h": 0, "le_1d": 0, "slow_reject": 0,
-               "invited": 0, "no_outcome": 0, "chat_reject_only": 0, "latencies": []}
+    # dict[str, Any], а не TypedDict: счётчики набираются по ВЫЧИСЛЯЕМОМУ ключу
+    # (`for key, lim in (("le_10m", 10), ...): c[key] += 1`), а TypedDict требует
+    # ключ-литерал. Значения разнородны (int + list[float]) — без аннотации mypy
+    # выводит dict[str, object] и роняет `+= 1` на каждом счётчике.
+    per_company: dict[str, dict[str, Any]] = {}
+    overall: dict[str, Any] = {"applied": len(applied), "with_chat": 0, "rejected": 0,
+                               "le_10m": 0, "le_1h": 0, "le_1d": 0, "slow_reject": 0,
+                               "invited": 0, "no_outcome": 0, "chat_reject_only": 0,
+                               "latencies": []}
 
     for vid, rec in applied.items():
         # работодатель: из выдачи, иначе из журнала (пишется в момент отклика — fix.md №9);
@@ -144,7 +150,7 @@ _CSV_HEADERS = ["Компания", "Откликов", "Отказов", "Из�
                 "<=1д", "Приглашений", "Медиана мин", "Автобан %"]
 
 
-def write_funnel_csv(path: Path) -> dict:
+def write_funnel_csv(path: Path) -> dict[str, Any]:
     """Считает воронку -> CSV по компаниям (только с >=1 отказом) в `path`.
     Возвращает overall (для подписи графика/лога). Кодировка utf-8-sig — как у прочих
     отчётов. Порядок строк = ранжирование compute_funnel — график читает его как есть."""
@@ -160,4 +166,5 @@ def write_funnel_csv(path: Path) -> dict:
                          c["le_10m"], c["le_1h"], c["le_1d"], c["invited"],
                          c["median_min"] if c["median_min"] is not None else "",
                          c["auto_reject_rate"]])
-    return data["overall"]
+    overall: dict[str, Any] = data["overall"]
+    return overall

@@ -16,11 +16,12 @@
 import gzip
 import json
 import mimetypes
+import os
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
-from typing import NamedTuple
+from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlparse
 
 from hrwork.application.apply.chat import chat_class
@@ -50,19 +51,19 @@ class Resp(NamedTuple):
     status: int
     body: bytes = b""
     ctype: str | None = None
-    headers: dict | None = None
+    headers: dict[str, Any] | None = None
 
 
-def _json(code: int, obj) -> Resp:
+def _json(code: int, obj: Any) -> Resp:
     return Resp(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
                 "application/json; charset=utf-8", {"Cache-Control": "no-store"})
 
 
-def _etag(st) -> str:
+def _etag(st: os.stat_result) -> str:
     return f'"{int(st.st_mtime)}-{st.st_size}"'
 
 
-def _gzipped(fpath: Path, st) -> bytes:
+def _gzipped(fpath: Path, st: os.stat_result) -> bytes:
     """gz-байты файла из кэша; читаем и сжимаем лишь при промахе (сменился mtime/size)."""
     key = str(fpath)
     hit = _GZIP_CACHE.get(key)
@@ -76,13 +77,13 @@ def _gzipped(fpath: Path, st) -> bytes:
 
 class _Handler(SimpleHTTPRequestHandler):
     # ───────────────────────── маршрутизация ─────────────────────────
-    def do_GET(self):
+    def do_GET(self) -> None:
         route = _GET_ROUTES.get(self._path())
         if route:
             return self._write(route(self))          # точный маршрут -> Resp
         return self._serve_static()                  # всё прочее -> статика из data/
 
-    def do_POST(self):
+    def do_POST(self) -> None:
         path = self._path()
         if path == _API:
             return self._write(self._marks_post())
@@ -183,7 +184,7 @@ class _Handler(SimpleHTTPRequestHandler):
         БД недоступна -> 503 (лента продолжает работать)."""
         qs = parse_qs(urlparse(self.path).query)
 
-        def one(k, d=None):
+        def one(k: str, d: Any = None) -> Any:
             return (qs.get(k) or [d])[0]
 
         from hrwork.infrastructure import search as search_mod
@@ -207,7 +208,7 @@ class _Handler(SimpleHTTPRequestHandler):
         return Resp(200, fpath.read_bytes(), "text/html; charset=utf-8")
 
     # ──────────── статика data/: gzip+ETag, иначе стрим через super() ────────────
-    def _serve_static(self):
+    def _serve_static(self) -> None:
         if self.path in ("/", ""):
             self.path = "/feed.html"
         gz = self._gzip_resp()
@@ -230,7 +231,7 @@ class _Handler(SimpleHTTPRequestHandler):
                     {"Content-Encoding": "gzip", "ETag": etag, "Cache-Control": "no-cache"})
 
     # ─────────────────── единственный писатель в сокет ───────────────────
-    def _write(self, r: Resp):
+    def _write(self, r: Resp) -> None:
         self.send_response(r.status)
         if r.ctype:
             self.send_header("Content-Type", r.ctype)
@@ -241,13 +242,13 @@ class _Handler(SimpleHTTPRequestHandler):
         if r.body and self.command != "HEAD":
             self.wfile.write(r.body)
 
-    def log_request(self, code="-", size="-"):
+    def log_request(self, code: Any = "-", size: Any = "-") -> None:
         # Шумный per-request access-лог глушим; через loguru логируем ТОЛЬКО проблемы
         # (4xx/5xx), нормальные 2xx молчат. Сюда проходит каждый send_response.
         if isinstance(code, int) and code >= 400:
             log.warning("{} {} -> {}", self.command, self.path, code)
 
-    def log_message(self, *_):  # дубль из log_error/send_error -> глушим (логируем в log_request)
+    def log_message(self, *_: Any) -> None:  # дубль log_error/send_error -> глушим (см. log_request)
         pass
 
 
@@ -265,7 +266,7 @@ _GET_ROUTES = {
 }
 
 
-def run_server(port: int = SERVE_PORT):
+def run_server(port: int = SERVE_PORT) -> None:
     handler = partial(_Handler, directory=str(DATA_DIR))
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler)
     log.success("Лента: http://127.0.0.1:{}/   (Ctrl+C — стоп)", port)

@@ -5,7 +5,12 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from loguru import logger as log
+from loguru import logger
+
+# Логгер пакета: весь hrwork берёт его как `from hrwork.config import log`. Присваивание, а не
+# `import logger as log`, — чтобы это был настоящий атрибут модуля, а не неявный реэкспорт
+# (mypy --strict, no_implicit_reexport: иначе 24 ошибки во всех импортирующих модулях).
+log = logger
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 

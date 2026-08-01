@@ -15,6 +15,7 @@ import contextlib
 import datetime
 import re
 from enum import Enum
+from typing import Any
 
 from hrwork.application.apply.chat.chat_answer import load_profile
 from hrwork.application.apply.forms.form_read import FieldType
@@ -198,7 +199,7 @@ def _age(birth: str) -> int | None:
     return today.year - b.year - ((today.month, today.day) < (b.month, b.day))
 
 
-def form_answers() -> list[dict]:
+def form_answers() -> list[dict[str, Any]]:
     """Словарь ответов на типовые вопросы форм (resume_profile.json::form_answers).
 
     Плейсхолдер `{age}` в ответе подставляется числом полных лет от `answers.birth_date`.
@@ -320,8 +321,11 @@ def _salary_low(option: str) -> int | None:
 def salary_option(options: tuple[str, ...], target: int) -> str | None:
     """Из опций-диапазонов выбрать наибольший, чей вход <= target (претендую на макс. вилку по
     своей ставке); если target ниже всех — самый низкий. None — ни одну опцию не распарсили."""
-    bands = [(o, _salary_low(o)) for o in options]
-    bands = [(o, low) for o, low in bands if low is not None]
+    # Отдельная переменная под отфильтрованный список, а не переприсваивание: после `if low
+    # is not None` тип элемента сужается до (str, int), и сравнение/ключ сортировки ниже
+    # работают с int, а не с int | None.
+    parsed = [(o, _salary_low(o)) for o in options]
+    bands: list[tuple[str, int]] = [(o, low) for o, low in parsed if low is not None]
     if not bands:
         return None
     qualified = [(o, low) for o, low in bands if low <= target]

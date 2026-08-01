@@ -8,6 +8,7 @@
 """
 import re
 from enum import Enum
+from typing import Any
 
 
 class ChatKind(Enum):
@@ -178,7 +179,7 @@ def norm_text(text: str) -> str:
     return _NAME_PREFIX.sub("", t)[:100].lower()
 
 
-def build_template_index(chats: dict) -> set[str]:
+def build_template_index(chats: dict[str, Any]) -> set[str]:
     """Нормализованные тексты работодателей, встречающиеся в корпусе БОЛЬШЕ одного раза."""
     seen: dict[str, int] = {}
     for d in (chats or {}).values():
@@ -197,7 +198,7 @@ _PHONE_RX = re.compile(r'(?:\+7|\b8)[\s(-]{0,2}\d{3}[\s)-]{0,2}\d{3}[\s-]?\d{2}[
 _TG_RX = re.compile(r'\bt\.me/[\w+]{4,}|(?<![\w.@])@[A-Za-z]\w{3,}', re.I)
 
 
-def find_contacts(messages: list[dict]) -> str:
+def find_contacts(messages: list[dict[str, Any]]) -> str:
     """Телефон/telegram из сообщений РАБОТОДАТЕЛЯ по ВСЕЙ переписке (контакт ценен и после
     нашего ответа) -> «+7 … · @ник» для бейджа/тултипа; пусто — контактов нет."""
     found: list[str] = []
@@ -222,8 +223,9 @@ def find_contacts(messages: list[dict]) -> str:
     return " · ".join(found[:3])
 
 
-def analyze(messages: list[dict], templates: set[str] | frozenset = frozenset(),
-            write_possibility: dict | None = None) -> dict:
+def analyze(messages: list[dict[str, Any]],
+            templates: set[str] | frozenset[str] = frozenset(),
+            write_possibility: dict[str, Any] | None = None) -> dict[str, Any]:
     """Свёртка переписки -> состояние для ленты.
 
     messages: [{"text", "mine", "ts", "bot"}] в порядке отдачи API.

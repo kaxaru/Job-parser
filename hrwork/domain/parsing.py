@@ -1,5 +1,6 @@
 """Разбор сырого JSON HH API в доменную модель Vacancy."""
 import re
+from typing import Any
 
 from hrwork.config import LANG_KEYS, ROLE_PATTERNS, TECH_PATTERNS
 from hrwork.domain.experience import Experience
@@ -25,7 +26,7 @@ def has_remote(text: str) -> bool:
     return any(m in t for m in REMOTE_MARKERS)
 
 
-def _salary_mid(sal: dict | None) -> tuple[int | None, int | None, int | None]:
+def _salary_mid(sal: dict[str, Any] | None) -> tuple[int | None, int | None, int | None]:
     """(from, to, mid) — уже net (gross→net внутри Salary VO)."""
     s = Salary.from_raw(sal)
     return s.net_triple() if s else (None, None, None)
@@ -58,7 +59,7 @@ def _prescreen_literal(alt: str) -> str:
     return "".join(lit)
 
 
-def _build_screened() -> list[tuple[str, "re.Pattern", tuple[str, ...] | None]]:
+def _build_screened() -> list[tuple[str, "re.Pattern[str]", tuple[str, ...] | None]]:
     """(тег, compiled regex, литералы-пресина | None) — считается ОДИН раз при импорте.
     Пресин включаем, только если каждая альтернатива даёт ядро >=2 симв.; иначе None
     -> regex зовётся всегда (корректность важнее микро-оптимизации одного паттерна)."""
@@ -224,8 +225,9 @@ def _detect_role(name: str, techs: list[str]) -> Role:
     return Role.DEVELOPER if any(t in LANG_KEYS for t in techs) else Role.NON_IT
 
 
-def build_vacancy(*, vid, name, city, city_id, salary, experience, schedule,
-                  detect_text, employer, created_at, published_at, responses, source) -> Vacancy:
+def build_vacancy(*, vid: Any, name: Any, city: Any, city_id: Any, salary: Any,
+                  experience: Any, schedule: Any, detect_text: Any, employer: Any,
+                  created_at: Any, published_at: Any, responses: Any, source: Any) -> Vacancy:
     """Доменная фабрика: собрать Vacancy, посчитав техи (по detect_text) и роль (по тайтлу).
     Единая точка детекции стека/роли для ВСЕХ ACL — и persisted-dict (parse_vacancy),
     и адаптеров источников (hh/hirify). detect_text = тайтл + текст сниппета/карточки."""
@@ -248,7 +250,7 @@ def build_vacancy(*, vid, name, city, city_id, salary, experience, schedule,
     )
 
 
-def parse_vacancy(raw: dict) -> Vacancy:
+def parse_vacancy(raw: dict[str, Any]) -> Vacancy:
     # ACL: persisted raw-dict (схема на диске) -> доменная модель с Value Objects.
     salary = s.net() if (s := Salary.from_raw(raw.get('salary'))) else None   # net внутри VO
     snippet = raw.get('snippet') or {}

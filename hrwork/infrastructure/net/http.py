@@ -10,6 +10,7 @@
 """
 import asyncio
 import shutil
+from typing import Any
 
 from hrwork.config import CURL_MAX_TIME, HTTP_BACKEND, log
 
@@ -33,7 +34,7 @@ _client = None          # ленивый пулированный httpx.AsyncCli
 _client_loop = None     # event loop, к которому привязан клиент
 
 
-def _get_client():
+def _get_client() -> Any:
     global _client, _client_loop
     loop = asyncio.get_running_loop()
     # Клиент привязан к loop; при новом asyncio.run() (другой loop) пересоздаём, иначе
@@ -48,7 +49,7 @@ def _get_client():
     return _client
 
 
-async def fetch_bytes(url: str, *, headers: dict | None = None, proxy: str | None = None,
+async def fetch_bytes(url: str, *, headers: dict[str, Any] | None = None, proxy: str | None = None,
                       max_time: int = CURL_MAX_TIME) -> bytes | None:
     """GET url -> сырые bytes (или None при сбое / не-200 / пустом ответе). headers/proxy —
     структурно (бэкенд сам переведёт). Проксированный запрос под httpx-флагом идёт через curl."""
@@ -57,7 +58,8 @@ async def fetch_bytes(url: str, *, headers: dict | None = None, proxy: str | Non
     return await _curl_fetch(url, headers, proxy, max_time)
 
 
-async def _curl_fetch(url, headers, proxy, max_time) -> bytes | None:
+async def _curl_fetch(url: str, headers: dict[str, Any] | None, proxy: str | None,
+                      max_time: int) -> bytes | None:
     args = [CURL, "-s", "--compressed", "--max-time", str(max_time)]
     for k, v in (headers or {}).items():
         args += (["-A", v] if k.lower() == "user-agent" else ["-H", f"{k}: {v}"])
@@ -75,11 +77,13 @@ async def _curl_fetch(url, headers, proxy, max_time) -> bytes | None:
     return out
 
 
-async def _httpx_fetch(url, headers, max_time) -> bytes | None:
+async def _httpx_fetch(url: str, headers: dict[str, Any] | None,
+                       max_time: int) -> bytes | None:
     try:
         r = await _get_client().get(url, headers=headers or {}, timeout=max_time)
     except Exception:
         return None
     if r.status_code != 200 or not r.content:
         return None
-    return r.content
+    body: bytes = r.content
+    return body

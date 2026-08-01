@@ -54,7 +54,14 @@ pytest tests/backend/domain                 # один слой
 npm test                                    # 84 теста фронта (node:test)
 npm run lint                                # biome
 ruff check .
+mypy                                        # строгая проверка типов (mypy.ini)
 ```
+
+**mypy — strict, ноль ошибок.** Область: пакет `hrwork` + `hh.py` (`dwh_demo` исключён —
+у него свой стек и свои конфиги). Внешние библиотеки без стабов (playwright, plotly,
+httpx) идут как `Any` через `ignore_missing_imports` — это про ЧУЖОЙ код, свой типизирован
+полностью. Значения, пришедшие из JSON/HTTP/Playwright, аннотируются `Any` осознанно:
+это честный тип внешней границы, а не заглушка.
 
 `conftest.py` в корне добавляет корень в `sys.path`. У `dwh_demo` свой `pytest.ini`,
 гоняется отдельно.
@@ -255,7 +262,7 @@ def test_specific_practice_over_known_tech_is_silent():
 Задача считается выполненной, когда:
 
 1. **Тесты зелёные** — `pytest` + `npm test`, ноль упавших
-2. **Линтеры чистые** — `ruff check .` + `npm run lint`
+2. **Линтеры чистые** — `ruff check .` + `npm run lint` + `mypy` (strict, ноль ошибок)
 3. **Новое поведение покрыто тестом**, имя которого называет свойство
 4. **Регрессия оформлена тестом с датой и сутью инцидента**
 5. **Ручная верификация из спеки выполнена** — команды выполнены, вывод совпал с ожидаемым
@@ -271,7 +278,7 @@ def test_specific_practice_over_known_tech_is_silent():
 ## Что проверять руками перед выкладкой
 
 ```
-pytest -q && npm test && ruff check . && npm run lint
+pytest -q && npm test && ruff check . && npm run lint && mypy
 python hh.py feed                                  # лента собирается
 python hh.py autoclick --sync-status                # сессия жива
 python hh.py autoclick --apply-limit 1 --headed     # только при правках в apply/

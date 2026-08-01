@@ -12,7 +12,7 @@ search() — нормализация входов + оркестрация + ф
 из окружения (не из запроса), поэтому его подстановка в текст SQL безопасна.
 """
 import os
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 # DSN живёт в одном месте — hrwork/config.PG_DSN (там же грузится .env). Здесь только
 # имя таблицы (специфично поиску). Спайк (load.py/bench.py) тоже берёт PG_DSN из config.
@@ -82,7 +82,7 @@ _PLAIN = _Mode(
 )
 
 
-def _mode_for(q) -> _Mode:
+def _mode_for(q: str | None) -> _Mode:
     """Фабрика режима выдачи: FTS при наличии q, иначе фильтр-режим."""
     return _FTS if q else _PLAIN
 
@@ -91,7 +91,7 @@ class SearchUnavailable(RuntimeError):
     """БД недоступна — сервер отдаёт 503, лента продолжает работать."""
 
 
-def _connect():
+def _connect() -> Any:
     # psycopg2 — лениво (он в requirements.txt, т.е. жёсткая зависимость; это НЕ про
     # graceful degradation). Причина: чистые _build_sql/_mode_for остаются импортируемыми
     # и тестируемыми БЕЗ драйвера (так инспектируем сборку SQL в dbg_search.py без БД).
@@ -103,7 +103,9 @@ def _connect():
         raise SearchUnavailable(f"PostgreSQL недоступен ({PG_DSN['host']}:{PG_DSN['port']}): {e}") from e
 
 
-def _build_sql(q, city, sal_min, fresh=None, source=None):
+def _build_sql(q: str | None, city: str | None, sal_min: int,
+               fresh: str | None = None,
+               source: str | None = None) -> tuple[str, dict[str, Any]]:
     """(sql, params) из входов. Фильтры — таблицей; режим выбирает фабрика _mode_for,
        а сборку SELECT делает сам режим (mode.select). Новый фильтр = строка в кортеже."""
     where, params = [], {}
@@ -123,7 +125,7 @@ def _build_sql(q, city, sal_min, fresh=None, source=None):
     return _mode_for(q).select(where_sql), params
 
 
-def _fetch(sql, params):
+def _fetch(sql: str, params: dict[str, Any]) -> list[dict[str, Any]]:
     """Выполнить запрос и вернуть строки как список dict (изоляция I/O)."""
     conn = _connect()
     try:
@@ -135,7 +137,9 @@ def _fetch(sql, params):
         conn.close()
 
 
-def search(q=None, city=None, sal_min=0, limit=20, offset=0, fresh=None, source=None) -> dict:
+def search(q: str | None = None, city: str | None = None, sal_min: int = 0,
+           limit: int = 20, offset: int = 0, fresh: str | None = None,
+           source: str | None = None) -> dict[str, Any]:
     """Полнотекстовый поиск с ранжированием и подсветкой. Возвращает dict с total
     (для пагинации) и results. `fresh` (fresh|recent|ghost) фильтрует по классу свежести,
     `source` (hh|hirify|talanto) — по порталу. Детали SQL — в _build_sql()."""

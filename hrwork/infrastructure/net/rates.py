@@ -24,13 +24,14 @@ _FALLBACK = {"USD": 1.0, "EUR": 0.92, "RUB": 90.0, "BYN": 3.3, "GBP": 0.79,
              "CAD": 1.37, "PLN": 4.0, "AUD": 1.5}
 
 
-def resolve_currency(code: str) -> str:
-    """Код валюты -> канонический (RUR->RUB, USDT->USD, BYR->BYN). Пусто -> ''."""
+def resolve_currency(code: str | None) -> str:
+    """Код валюты -> канонический (RUR->RUB, USDT->USD, BYR->BYN). Пусто/None -> ''."""
     c = (code or "").upper()
     return CURRENCY_ALIAS.get(c, c)
 
 
-def to_rub(amount, currency: str | None, rates: dict[str, float] | None = None):
+def to_rub(amount: float | None, currency: str | None,
+           rates: dict[str, float] | None = None) -> int | None:
     """Сумму в валюте -> RUB по курсам per-USD. Неизвестная валюта/нет курса -> None.
     Пустая валюта трактуется как RUB (HH по умолчанию рублёвый)."""
     if amount is None:
@@ -43,7 +44,7 @@ def to_rub(amount, currency: str | None, rates: dict[str, float] | None = None):
     return round(amount / rate_from * rate_rub)
 
 
-def _fetch() -> dict | None:
+def _fetch() -> dict[str, float] | None:
     """Свежие курсы per-USD из API (dict) или None при сбое/невалидном ответе."""
     try:
         out = subprocess.run([CURL, "-s", "--max-time", "15", FX_API],
@@ -64,7 +65,8 @@ def get_rates() -> dict[str, float]:
             cached = json.loads(FX_CACHE_FILE.read_text(encoding="utf-8"))
             age_h = (time.time() - cached.get("fetched_at", 0)) / 3600
             if age_h < FX_TTL_HOURS and cached.get("rates"):
-                return cached["rates"]
+                fresh: dict[str, float] = cached["rates"]
+                return fresh
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -81,7 +83,8 @@ def get_rates() -> dict[str, float]:
 
     if FX_CACHE_FILE.exists():                       # фетч не удался -> старый кеш (даже протухший)
         try:
-            old = json.loads(FX_CACHE_FILE.read_text(encoding="utf-8")).get("rates")
+            old: dict[str, float] | None = json.loads(
+                FX_CACHE_FILE.read_text(encoding="utf-8")).get("rates")
             if old:
                 log.warning("FX: API недоступен — использую старый кеш")
                 return old

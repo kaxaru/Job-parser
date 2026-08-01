@@ -11,6 +11,7 @@
 import contextlib
 import json
 import uuid
+from typing import Any
 
 CLUSTERS_URL = ("https://chatik.hh.ru/chatik/api/filter_clusters"
                 "?filterUnread=false&filterHasTextMessage=false&do_not_track_session_events=true")
@@ -47,7 +48,7 @@ INVITED_STATES = frozenset({"INVITATION", "PHONE_INTERVIEW", "INTERVIEW",
 # назад не флипаются -> кешевый статус вечен (наш собственный отказ — тоже терминал)
 TERMINAL_STATES = DISCARD_STATES | {"DISCARD_BY_APPLICANT", "HIRED"}
 
-def _headers(xsrf: str) -> dict:
+def _headers(xsrf: str) -> dict[str, str]:
     return {
         "accept": "application/json",
         "x-xsrftoken": xsrf,
@@ -57,7 +58,7 @@ def _headers(xsrf: str) -> dict:
     }
 
 
-def applied_vacancy_ids(request_ctx, xsrf: str) -> set[str]:
+def applied_vacancy_ids(request_ctx: Any, xsrf: str) -> set[str]:
     """ID вакансий, на которые есть чат (=есть отклик). Пусто при ошибке/не-200.
     request_ctx — Playwright APIRequestContext (page.context.request) с куками профиля."""
     with contextlib.suppress(Exception):
@@ -71,12 +72,13 @@ def applied_vacancy_ids(request_ctx, xsrf: str) -> set[str]:
     return set()
 
 
-def _chat_vacancy_ids(item: dict) -> list[str]:
+def _chat_vacancy_ids(item: dict[str, Any]) -> list[str]:
     """vacancyId(ы) чата: item.resources.VACANCY = ["134809303"]."""
     return [str(v) for v in ((item.get("resources") or {}).get("VACANCY") or [])]
 
 
-def find_chat(request_ctx, xsrf: str, vacancy_id, pages: int = 3):
+def find_chat(request_ctx: Any, xsrf: str, vacancy_id: Any,
+              pages: int = 3) -> tuple[Any, Any]:
     """(chatId, applicantId) для вакансии — из item.id и item.currentParticipantId.
     (None, None), если чат ещё не создан. applicantId нужен для chat_data/сопроводительного."""
     vid = str(vacancy_id)
@@ -94,18 +96,19 @@ def find_chat(request_ctx, xsrf: str, vacancy_id, pages: int = 3):
     return None, None
 
 
-def chat_data(request_ctx, xsrf: str, chat_id, applicant_id) -> dict:
+def chat_data(request_ctx: Any, xsrf: str, chat_id: Any, applicant_id: Any) -> dict[str, Any]:
     """Полный chat_data (сообщения + состояние) или {} при ошибке. Cookie-only."""
     url = (f"{CHAT_DATA_URL}?chatId={chat_id}&applicantId={applicant_id}"
            f"&do_not_track_session_events=true")
     with contextlib.suppress(Exception):
         r = request_ctx.get(url, headers=_headers(xsrf))
         if r.status == 200:
-            return r.json()
+            data: dict[str, Any] = r.json()
+            return data
     return {}
 
 
-def chat_entry(chat_id, data: dict) -> dict:
+def chat_entry(chat_id: Any, data: dict[str, Any]) -> dict[str, Any]:
     """chat_data -> запись для chat_messages.json: {chatId, write, messages}.
     Формат ДОЛЖЕН совпадать с инлайн-сборкой в autoclick.sync_statuses (там она не
     вынесена сюда намеренно — боевой путь откликов не рефакторим ради этого). Общий
@@ -124,7 +127,7 @@ def chat_entry(chat_id, data: dict) -> dict:
     }
 
 
-def cover_message_id(data: dict):
+def cover_message_id(data: dict[str, Any]) -> Any:
     """id сообщения-отклика = слот сопроводительного. Это сообщение с workflowTransition
     (событие отклика), редактируемое (canEdit). Фолбэк — первое редактируемое. None — нет."""
     items = (((data.get("chat") or {}).get("messages") or {}).get("items")) or []
@@ -137,7 +140,7 @@ def cover_message_id(data: dict):
     return None
 
 
-def response_time(data: dict) -> str:
+def response_time(data: dict[str, Any]) -> str:
     """creationTime сообщения-отклика (workflowTransition), иначе самого раннего сообщения.
     Это РЕАЛЬНАЯ дата отклика — в т.ч. сделанного руками на hh.ru (любой отклик = чат).
     Пустая строка, если сообщений нет."""
@@ -145,10 +148,11 @@ def response_time(data: dict) -> str:
     resp = next((m for m in items if m.get("workflowTransitionId") or m.get("workflowTransition")), None)
     if resp is None and items:
         resp = min(items, key=lambda m: m.get("creationTime") or "")
-    return (resp or {}).get("creationTime") or ""
+    ts: str = (resp or {}).get("creationTime") or ""
+    return ts
 
 
-def save_cover(request_ctx, xsrf: str, chat_id, message_id, text: str) -> bool:
+def save_cover(request_ctx: Any, xsrf: str, chat_id: Any, message_id: Any, text: str) -> bool:
     """POST /save: {text, messageId} — записать письмо в СЛОТ СОПРОВОДИТЕЛЬНОГО (правит
     сообщение-отклик, а не шлёт новое). True при 2xx. Cookie-only, без fingerprint."""
     if not (message_id and text):
@@ -162,11 +166,11 @@ def save_cover(request_ctx, xsrf: str, chat_id, message_id, text: str) -> bool:
     payload = {"text": text, "messageId": int(message_id)}
     with contextlib.suppress(Exception):
         r = request_ctx.post(SAVE_URL, headers=headers, data=json.dumps(payload))
-        return 200 <= r.status < 300
+        return bool(200 <= r.status < 300)
     return False
 
 
-def send_message(request_ctx, xsrf: str, chat_id, text: str, *,
+def send_message(request_ctx: Any, xsrf: str, chat_id: Any, text: str, *,
                  vacancy_url: str = "", idempotency_key: str | None = None) -> bool:
     """Отправить НОВОЕ сообщение в чат. True при 2xx.
 
@@ -203,11 +207,12 @@ def send_message(request_ctx, xsrf: str, chat_id, text: str, *,
     }
     with contextlib.suppress(Exception):
         r = request_ctx.post(SEND_URL, headers=headers, data=json.dumps(payload))
-        return 200 <= r.status < 300
+        return bool(200 <= r.status < 300)
     return False
 
 
-def quick_replies(request_ctx, xsrf: str, chat_id, message_id) -> list[dict]:
+def quick_replies(request_ctx: Any, xsrf: str, chat_id: Any,
+                  message_id: Any) -> list[dict[str, Any]]:
     """Подсказки HH для ответа. ВНИМАНИЕ: это вопросы СОИСКАТЕЛЯ работодателю
     («Какой график работы?»), а не варианты ответа на его вопрос — на содержательные
     вопросы список приходит пустым. Держим для полноты API."""
@@ -216,18 +221,19 @@ def quick_replies(request_ctx, xsrf: str, chat_id, message_id) -> list[dict]:
     with contextlib.suppress(Exception):
         r = request_ctx.get(url, headers=_headers(xsrf))
         if r.status == 200:
-            return (r.json() or {}).get("quick_replies") or []
+            replies: list[dict[str, Any]] = (r.json() or {}).get("quick_replies") or []
+            return replies
     return []
 
 
-def list_chats(request_ctx, xsrf: str, pages: int = 30) -> list[dict]:
+def list_chats(request_ctx: Any, xsrf: str, pages: int = 30) -> list[dict[str, Any]]:
     """Все чаты постранично -> [{chatId, vacancyId, applicantId, lastMessageTime}].
     Пагинация до пустой страницы (или `pages` максимум). Cookie-only.
     lastMessageTime (ISO с tz) — creationTime последнего сообщения из самого списка:
     по нему инкрементальный синк решает «качать или взять из кеша» без запроса в чат.
     НЕ lastActivityTime: то поле обновляет в том числе НАШЕ чтение chat_data (замер
     23.07: после полного синка 84 % чатов «активны за сутки») — самоотравляющийся сигнал."""
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for page in range(pages):
         got = False
         with contextlib.suppress(Exception):
@@ -250,7 +256,7 @@ def list_chats(request_ctx, xsrf: str, pages: int = 30) -> list[dict]:
     return out
 
 
-def deep_get(obj, key: str):
+def deep_get(obj: Any, key: str) -> Any:
     """Первое значение по ключу на любой глубине (для currentApplicantState в chat_data)."""
     if isinstance(obj, dict):
         if key in obj:

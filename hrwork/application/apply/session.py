@@ -13,6 +13,8 @@
 (`.get/.post` -> объект с `.status`/`.json()`), поэтому `chat.py` не знает, кто его зовёт,
 и не меняется вовсе.
 """
+from typing import Any
+
 from hrwork.config import DATA_DIR, log
 from hrwork.infrastructure.sources.hh import BROWSER_UA
 from hrwork.infrastructure.storage import read_json_or
@@ -22,7 +24,7 @@ XSRF_COOKIE = "_xsrf"
 _TIMEOUT_S = 25
 
 
-def save_state(ctx) -> None:
+def save_state(ctx: Any) -> None:
     """Выгрузить куки живого браузерного контекста в STATE_FILE (зовётся после проверки
     логина в каждом браузерном прогоне — так состояние обновляется само)."""
     try:
@@ -32,7 +34,7 @@ def save_state(ctx) -> None:
         log.warning("Не удалось сохранить состояние сессии: {}", e)
 
 
-def _cookies_and_xsrf() -> tuple[dict, str]:
+def _cookies_and_xsrf() -> tuple[dict[str, Any], str]:
     """{имя: значение} кук hh.ru + xsrf-токен. ({}, '') — состояния нет/битое."""
     state = read_json_or(STATE_FILE, {})
     jar = {c["name"]: c["value"] for c in (state.get("cookies") or [])
@@ -45,32 +47,32 @@ class _Resp:
 
     __slots__ = ("_r", "status")
 
-    def __init__(self, r):
+    def __init__(self, r: Any):
         self._r = r
         self.status = r.status_code
 
-    def json(self):
+    def json(self) -> Any:
         return self._r.json()
 
 
 class CookieRequestContext:
     """Дак-тайп замена Playwright APIRequestContext для cookie-only эндпоинтов."""
 
-    def __init__(self, client):
+    def __init__(self, client: Any):
         self._c = client
 
-    def get(self, url, headers=None):
+    def get(self, url: str, headers: dict[str, str] | None = None) -> Any:
         return _Resp(self._c.get(url, headers=headers))
 
-    def post(self, url, headers=None, data=None):
+    def post(self, url: str, headers: dict[str, str] | None = None,
+             data: Any = None) -> Any:
         return _Resp(self._c.post(url, headers=headers, content=data))
 
-    def __enter__(self):
+    def __enter__(self) -> "CookieRequestContext":
         return self
 
-    def __exit__(self, *_):
+    def __exit__(self, *_: Any) -> None:
         self._c.close()
-        return False
 
 
 def open_client() -> tuple[CookieRequestContext | None, str]:

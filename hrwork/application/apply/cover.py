@@ -5,6 +5,7 @@ ANTHROPIC_API_KEY) пишет письмо по описанию — при лю
 чтобы отклик всё равно ушёл. Чистые функции (шаблон тестируется без сети).
 """
 import os
+from typing import Any
 
 from hrwork.config import log
 
@@ -50,7 +51,7 @@ def llm_cover(name: str, employer: str, description: str) -> str | None:
         return None
 
 
-def build_cover(cand, mode: str = "template") -> str:
+def build_cover(cand: Any, mode: str = "template") -> str:
     """Текст письма для кандидата (Candidate). mode='llm' пробует Claude и падает на шаблон;
     'template' (по умолчанию) — сразу шаблон."""
     if mode == "llm":

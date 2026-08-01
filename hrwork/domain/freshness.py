@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import datetime
 from enum import Enum
+from typing import Any
 
 FRESH_DAYS = 30     # <=30 дней от создания — свежая
 GHOST_DAYS = 60     # >60 дней и всё ещё висит — гост-вакансия
@@ -85,7 +86,7 @@ _COLORS = {
 _ORDER = {fc: i for i, fc in enumerate(FreshnessClass)}
 
 
-def parse_dt(value) -> datetime.datetime | None:
+def parse_dt(value: Any) -> datetime.datetime | None:
     """ISO-строка ('2026-04-30T08:20:03+03:00') или unix-секунды -> aware datetime (UTC)."""
     if value is None or value == "":
         return None
@@ -109,13 +110,13 @@ def _days_between(later: datetime.datetime, earlier: datetime.datetime | None) -
     return (later - earlier).days
 
 
-def age_days(created_iso, today: datetime.datetime | None = None) -> int | None:
+def age_days(created_iso: Any, today: datetime.datetime | None = None) -> int | None:
     """Сколько дней вакансии с момента СОЗДАНИЯ (реальный возраст)."""
     now = today or datetime.datetime.now(tz=datetime.timezone.utc)
     return _days_between(now, parse_dt(created_iso))
 
 
-def republish_gap_days(created_iso, published_iso) -> int | None:
+def republish_gap_days(created_iso: Any, published_iso: Any) -> int | None:
     """Разрыв между созданием и последней публикацией: >0 = вакансию переоткрывали."""
     created, published = parse_dt(created_iso), parse_dt(published_iso)
     if created is None or published is None:
@@ -136,10 +137,10 @@ def classify_age(age: int | float | None) -> FreshnessClass:
     return FreshnessClass.GHOST
 
 
-def classify(created_iso, today: datetime.datetime | None = None) -> FreshnessClass:
+def classify(created_iso: Any, today: datetime.datetime | None = None) -> FreshnessClass:
     """FreshnessClass по возрасту от СОЗДАНИЯ."""
     return classify_age(age_days(created_iso, today))
 
 
-def is_ghost(created_iso, today: datetime.datetime | None = None) -> bool:
+def is_ghost(created_iso: Any, today: datetime.datetime | None = None) -> bool:
     return classify(created_iso, today) is FreshnessClass.GHOST

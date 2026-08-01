@@ -22,7 +22,9 @@ import unicodedata
 
 from hrwork.application.apply.chat.chat_answer import EN, RU, detect_lang
 from hrwork.config import (
-    REPHRASE_ENABLED,  # noqa: F401 — читается извне как chat_rephrase.REPHRASE_ENABLED
+    REPHRASE_ENABLED as REPHRASE_ENABLED,  # реэкспорт: извне как chat_rephrase.REPHRASE_ENABLED
+)
+from hrwork.config import (
     REPHRASE_MAX_TOKENS,
     REPHRASE_MODEL,
     REPHRASE_TIMEOUT,

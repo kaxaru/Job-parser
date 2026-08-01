@@ -39,7 +39,7 @@ class Schedule(Enum):
         return cls.OFFICE
 
     @classmethod
-    def from_hirify_wf(cls, work_format: list[str]) -> "Schedule":
+    def from_hirify_wf(cls, work_format: list[str] | None) -> "Schedule":
         """work_format hirify (remote/hybrid/onsite) -> формат. Тот же приоритет remote > hybrid."""
         wf = work_format or []
         if "remote" in wf:

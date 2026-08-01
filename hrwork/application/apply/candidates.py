@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Any
 
 from hrwork.config import (
     APPLY_CORE_WIDE,
@@ -126,8 +127,8 @@ def _apply_tier(v: Vacancy, is_remote_any: bool) -> ApplyTier | None:
     return None
 
 
-def pick_candidates(records: list, marks: dict[str, str], limit: int,
-                    form_ids: set[str] | frozenset = frozenset()) -> list["Candidate"]:
+def pick_candidates(records: list[Any], marks: dict[str, str], limit: int,
+                    form_ids: set[str] | frozenset[str] = frozenset()) -> list["Candidate"]:
     """Вакансии под отклик (list[VacancyRecord]), МНОГОУРОВНЕВО (см. _apply_tier): опыт <3 лет,
     НЕ гост (>60 дн), НЕ в чёрном списке (ML/MLOps/senior по тайтлу), не другой язык в тайтле;
     уже отмеченные — мимо. Приоритет: tier (строгий -> широкий -> офис) -> младший опыт ->
@@ -167,6 +168,7 @@ def pick_candidates(records: list, marks: dict[str, str], limit: int,
             employer=v.employer, exp=v.experience, age=v.age_days(), desc=snippet, tier=tier,
         ))
     # приоритет: сначала строгий уровень целиком (tier), внутри — младший опыт, при равном — свежее
-    out.sort(key=lambda c: (c.tier, _EXP_ORDER.get(c.exp, _RANK_UNKNOWN),
+    out.sort(key=lambda c: (c.tier,
+                            _EXP_ORDER.get(c.exp, _RANK_UNKNOWN) if c.exp else _RANK_UNKNOWN,
                             c.age if c.age is not None else _AGE_UNKNOWN))
     return out[:limit]

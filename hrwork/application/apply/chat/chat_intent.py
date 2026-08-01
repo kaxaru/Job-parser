@@ -17,7 +17,10 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from hrwork.config import INTENT_ENABLED, INTENT_MODEL, log
+from hrwork.config import (
+    INTENT_ENABLED as INTENT_ENABLED,  # реэкспорт: читается извне как chat_intent.INTENT_ENABLED
+)
+from hrwork.config import INTENT_MODEL, log
 from hrwork.infrastructure.llm import chat_json
 
 # Метки намерения. Кластер {has_exp, years, years_tech, depth} — то, что regex путает и что

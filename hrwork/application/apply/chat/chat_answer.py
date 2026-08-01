@@ -16,6 +16,7 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from hrwork.application.apply.chat.chat_class import PLACE_Q, SALARY_Q
 from hrwork.config import BASE_DIR
@@ -188,33 +189,33 @@ _PHRASES = {
 }
 
 
-def load_profile() -> dict:
+def load_profile() -> dict[str, Any]:
     return read_json_or(PROFILE_FILE, {}) or {}
 
 
-def _answers(profile: dict) -> dict:
+def _answers(profile: dict[str, Any]) -> dict[str, Any]:
     return (profile or {}).get("answers") or {}
 
 
-def _fact(ans: dict, key: str, lang: str) -> str | None:
+def _fact(ans: dict[str, Any], key: str, lang: str) -> str | None:
     """Факт из профиля НА ЯЗЫКЕ ВОПРОСА. Для en ищем `<key>_en`; нет перевода -> None
     (молчим), а не отдаём русский текст в ответ на английский вопрос."""
     val = ans.get(key) if lang == RU else ans.get(f"{key}_en")
     return val if isinstance(val, str) and val.strip() else None
 
 
-def _known_stack(profile: dict) -> list[str]:
+def _known_stack(profile: dict[str, Any]) -> list[str]:
     """Технологии, про которые МОЖНО сказать «есть опыт». Пусто -> движок молчит."""
     return [str(s) for s in (_answers(profile).get("stack") or []) if str(s).strip()]
 
 
-def _past_stack(profile: dict) -> list[str]:
+def _past_stack(profile: dict[str, Any]) -> list[str]:
     """Технологии из ПРОШЛОГО опыта: отвечаем честной оговоркой «работал ранее»,
     а не наравне с текущим стеком (в резюме они помечены как прошлый опыт)."""
     return [str(s) for s in (_answers(profile).get("stack_past") or []) if str(s).strip()]
 
 
-def _practice_answer(question: str, ans: dict, lang: str) -> tuple[str, str] | None:
+def _practice_answer(question: str, ans: dict[str, Any], lang: str) -> tuple[str, str] | None:
     """Ответ про ПРАКТИКУ (тестирование, ETL, мониторинг…), а не про технологию.
 
     `answers.practices` — список {"q": regex тем, "a": ответ, "a_en": перевод}, порядок
@@ -258,21 +259,21 @@ def _residual(question: str, techs: list[str]) -> str:
 # Вынесены, чтобы regex-путь suggest И intent-роутер звали ОДИН код (нет расхождения).
 # Возвращают {"text","rule","lang"} либо None. `out`-логику дублируем как _mk (модульный
 # уровень — замыкание suggest сюда не дотянуть).
-def _mk(text: str, rule: str, lang: str) -> dict:
+def _mk(text: str, rule: str, lang: str) -> dict[str, Any]:
     return {"text": text, "rule": rule, "lang": lang}
 
 
-def _answer_frontend(ans: dict, lang: str) -> dict | None:
+def _answer_frontend(ans: dict[str, Any], lang: str) -> dict[str, Any] | None:
     fe = _fact(ans, "years_frontend_text", lang)
     return _mk(fe, "frontend", lang) if fe else None
 
 
-def _answer_years_python(ans: dict, lang: str) -> dict | None:
+def _answer_years_python(ans: dict[str, Any], lang: str) -> dict[str, Any] | None:
     val = _fact(ans, "years_python_text", lang) or _fact(ans, "years_text", lang)
     return _mk(val, "years", lang) if val else None
 
 
-def _answer_years(q: str, ans: dict, stack: list[str], past: list[str], lang: str) -> dict | None:
+def _answer_years(q: str, ans: dict[str, Any], stack: list[str], past: list[str], lang: str) -> dict[str, Any] | None:
     """Стаж. Python-контекст -> питоновский; конкретная технология -> молчим (backstop);
     иначе общий. Backstop (латинский тех-токен / упомянут стек-тех) — ВТОРОЙ рубеж, держит
     молчание даже если LLM ошиблась меткой years на вопросе про чужую технологию."""
@@ -284,7 +285,7 @@ def _answer_years(q: str, ans: dict, stack: list[str], past: list[str], lang: st
     return _mk(val, "years", lang) if val else None
 
 
-def _answer_has_exp(q: str, ans: dict, stack: list[str], past: list[str], lang: str) -> dict | None:
+def _answer_has_exp(q: str, ans: dict[str, Any], stack: list[str], past: list[str], lang: str) -> dict[str, Any] | None:
     say = _PHRASES[lang]
     if not stack:
         return None
@@ -307,8 +308,8 @@ def _answer_has_exp(q: str, ans: dict, stack: list[str], past: list[str], lang: 
 _INTENT_CLUSTER = frozenset({"has_exp", "years", "years_tech", "depth"})
 
 
-def _route_cluster(intent, q: str, ans: dict, stack: list[str], past: list[str],
-                   lang: str) -> dict | None:
+def _route_cluster(intent: Any, q: str, ans: dict[str, Any], stack: list[str], past: list[str],
+                   lang: str) -> dict[str, Any] | None:
     """Маршрутизация проблемного кластера по метке LLM к ЛОКАЛЬНОМУ факту.
     Инвариант: нет выделенного факта -> None (человек), не выдумываем."""
     label = intent.label
@@ -335,8 +336,9 @@ def _route_cluster(intent, q: str, ans: dict, stack: list[str], past: list[str],
     return None
 
 
-def suggest(question: str, profile: dict | None = None,
-            ctx: VacancyContext | None = None, intent=None) -> dict | None:
+def suggest(question: str, profile: dict[str, Any] | None = None,
+            ctx: VacancyContext | None = None,
+            intent: Any = None) -> dict[str, Any] | None:
     """Предложить ответ на вопрос бота (ru или en — по языку вопроса).
 
     ctx — контекст вакансии (тайтл/опыт/город): без него вопросы про деньги и место
@@ -354,7 +356,7 @@ def suggest(question: str, profile: dict | None = None,
     lang = detect_lang(q)
     say = _PHRASES[lang]
 
-    def out(text: str, rule: str) -> dict:
+    def out(text: str, rule: str) -> dict[str, Any]:
         return {"text": text, "rule": rule, "lang": lang}
 
     if _NEVER.search(q):

@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 from hrwork.config import DATA_DIR, log
@@ -48,8 +49,10 @@ def _pid_alive(pid: int) -> bool:
     return False
 
 
-def _lock_holder():
-    """(pid, age_s), если lock держит ЖИВОЙ свежий инстанс; иначе None (свободен/протух)."""
+def _lock_holder() -> tuple[str | int, int] | None:
+    """(pid, age_s), если lock держит ЖИВОЙ свежий инстанс; иначе None (свободен/протух).
+    pid — int из записи lock, либо строка "?" для битого файла (возраст берётся по mtime):
+    он только логируется, поэтому сентинел допустим."""
     if not LOCK_FILE.exists():
         return None
     try:
@@ -85,7 +88,7 @@ def release_if_mine() -> bool:
 
 
 @contextmanager
-def _single_instance(wait_retries: int = 0, wait_s: float = 60):
+def _single_instance(wait_retries: int = 0, wait_s: float = 60) -> Iterator[None]:
     """Отказ, если уже бежит свежий инстанс (lock не старше LOCK_TTL и PID жив).
     Протухший/осиротевший lock перезаписываем.
 

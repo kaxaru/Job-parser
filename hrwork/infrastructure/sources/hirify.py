@@ -10,6 +10,7 @@ import asyncio
 import html
 import json
 from dataclasses import dataclass
+from typing import Any
 
 from hrwork.config import (
     HIRIFY_ENRICH_CONCURRENCY,
@@ -50,7 +51,7 @@ class HirifyCfg:
 CFG = HirifyCfg()
 
 
-def _infer_period(usd_mid) -> str:
+def _infer_period(usd_mid: float | None) -> str:
     """Период зарплаты по USD-величине (в JSON поля нет). junior/middle: <$300 -> час,
     >$25k -> год, иначе месяц. Приблизительно (спорный $15–25k -> месяц)."""
     v = usd_mid or 0
@@ -61,7 +62,7 @@ def _infer_period(usd_mid) -> str:
     return "month"
 
 
-def _to_monthly(amount, period: str):
+def _to_monthly(amount: float | None, period: str) -> int | None:
     """Сумму в ИСХОДНОЙ валюте -> месячная: час×160 (раб.часов/мес), год/12, месяц как есть."""
     if amount is None:
         return None
@@ -69,16 +70,16 @@ def _to_monthly(amount, period: str):
         return round(amount * WORK_HOURS_PER_MONTH)
     if period == "year":
         return round(amount / MONTHS_PER_YEAR)
-    return amount
+    return round(amount)     # Salary.frm/to объявлены int — ACL приводит тип здесь
 
 
-def _clean_company(title) -> str:
+def _clean_company(title: Any) -> str:
     """company_title у hirify бывает плейсхолдером ('%hirify_global%') или None — в пусто."""
     t = (title or "").strip()
     return "" if (not t or t.startswith("%")) else t
 
 
-def _meta_header(it: dict) -> str:
+def _meta_header(it: dict[str, Any]) -> str:
     """Мета-шапка для модалки: страны-наниматели · уровень English · норм. зарплата (USD).
     hirify-специфика, которой нет у HH — выносим явно поверх описания.
 
@@ -100,12 +101,12 @@ def _meta_header(it: dict) -> str:
     return "<p>" + html.escape(" · ".join(parts)) + "</p>"
 
 
-def _sig(it: dict) -> str:
+def _sig(it: dict[str, Any]) -> str:
     """Маркер изменения вакансии для инкрементального enrich (updated_at, иначе created_at)."""
     return it.get("updated_at") or it.get("created_at") or ""
 
 
-def _normalize(it: dict, full: dict | None = None, *,
+def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None, *,
                cached_desc: str | None = None, enriched_at: str | None = None) -> VacancyRecord:
     """Элемент hirify-API -> VacancyRecord (ACL: hirify JSON СРАЗУ в домен, без HH-схемы).
     full — ответ /api/vacancies/{slug} с полным `text`; cached_desc — готовое описание из кеша
@@ -131,7 +132,7 @@ def _normalize(it: dict, full: dict | None = None, *,
     # описание: из кеша (без сети) | полный текст /slug | tldr-заглушка (дозагрузим позже)
     if cached_desc is not None:
         desc_html, enriched = cached_desc, True
-        at = enriched_at or storage.now_iso()           # переносим метку; None (legacy) -> заводим часы
+        at: str | None = enriched_at or storage.now_iso()  # переносим метку; None (legacy) -> заводим часы
     else:
         full_text = (full or {}).get("text")
         desc_html = _meta_header(it) + (full_text or it.get("tldr") or "")
@@ -164,10 +165,10 @@ class HirifySource(Source):
 
     name = "hirify"
 
-    def __init__(self, **_):
+    def __init__(self, **_: Any) -> None:
         pass                                    # прокси/сессия не нужны — публичный API
 
-    async def _curl_json(self, url: str) -> dict | None:
+    async def _curl_json(self, url: str) -> dict[str, Any] | None:
         """GET url -> распарсенный JSON или None после ретраев с бэкоффом."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
         delay = CFG.backoff_start
@@ -175,17 +176,18 @@ class HirifySource(Source):
             out = await fetch_bytes(url, headers=headers)
             if out:
                 try:
-                    return json.loads(out.decode("utf-8", "replace"))
+                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
+                    return payload
                 except json.JSONDecodeError as e:
                     log.debug("hirify {}: {}", url, e)
             await asyncio.sleep(delay)
             delay = min(delay * 2, CFG.backoff_max)
         return None
 
-    async def _get_page(self, page: int) -> dict | None:
+    async def _get_page(self, page: int) -> dict[str, Any] | None:
         return await self._curl_json(f"{CFG.api_url}?{HIRIFY_PARAMS}&page={page}")
 
-    async def _get_one(self, slug: str) -> dict | None:
+    async def _get_one(self, slug: str) -> dict[str, Any] | None:
         """Одиночная вакансия /api/vacancies/{slug} — полный `text` (описание)."""
         if not slug:
             return None
@@ -198,7 +200,7 @@ class HirifySource(Source):
         if not first:
             log.warning("hirify: страница 1 пуста — источник недоступен")
             return []
-        items: list[dict] = list(first.get("data") or [])
+        items: list[dict[str, Any]] = list(first.get("data") or [])
         # пагинация Laravel: last_page/total на верхнем уровне ответа (meta нет)
         last_page = min(int(first.get("last_page") or 1), CFG.max_pages)
         total = int(first.get("total") or len(items))
@@ -206,7 +208,7 @@ class HirifySource(Source):
 
         sem = asyncio.Semaphore(CFG.page_conc)
 
-        async def _page(p: int) -> list[dict]:
+        async def _page(p: int) -> list[dict[str, Any]]:
             async with sem:
                 d = await self._get_page(p)
             return (d or {}).get("data") or []
@@ -221,8 +223,8 @@ class HirifySource(Source):
         # /slug тянем ТОЛЬКО для новых/изменившихся (по _sig), не более HIRIFY_ENRICH_MAX за прогон.
         # Так полное покрытие описаниями растёт день за днём без пере-скачивания неизменных.
         cache = storage.load_desc_cache()               # {id: {sig, description_html, requirement, at}}
-        reuse: list[tuple[dict, dict]] = []             # (item, hit) — sig совпал и не протух
-        todo:  list[dict] = []                          # новые/изменившиеся/протухшие — кандидаты на /slug
+        reuse: list[tuple[dict[str, Any], dict[str, Any]]] = []   # (item, hit): sig совпал и не протух
+        todo:  list[dict[str, Any]] = []                          # новые/изменившиеся/протухшие — кандидаты на /slug
         for it in items:
             hit = cache.get(f"hirify_{it.get('id')}")
             if storage.cache_hit_usable(hit, _sig(it)):
@@ -234,7 +236,7 @@ class HirifySource(Source):
 
         esem = asyncio.Semaphore(CFG.enrich_conc)
 
-        async def _enrich(it: dict) -> VacancyRecord:
+        async def _enrich(it: dict[str, Any]) -> VacancyRecord:
             async with esem:
                 full = await self._get_one(it.get("slug", ""))
             return _normalize(it, full)

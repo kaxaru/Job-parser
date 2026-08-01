@@ -12,7 +12,7 @@
 """
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from hrwork.config import RAW_FILE
 from hrwork.domain.models import Vacancy
@@ -69,7 +69,7 @@ class JsonVacancyRepository:
 
     # ── ACL: сырой dict <-> record (единственная точка, где живёт raw-схема) ──
     @staticmethod
-    def _from_dict(d: dict) -> VacancyRecord:
+    def _from_dict(d: dict[str, Any]) -> VacancyRecord:
         return VacancyRecord(
             vacancy=parse_vacancy(d),
             url=d.get("alternate_url", "") or "",
@@ -81,7 +81,7 @@ class JsonVacancyRepository:
         )
 
     @staticmethod
-    def _to_dict(r: VacancyRecord) -> dict:
+    def _to_dict(r: VacancyRecord) -> dict[str, Any]:
         v = r.vacancy
         s = v.salary
         return {
@@ -107,7 +107,7 @@ class JsonVacancyRepository:
         }
 
 
-def record_from_vacancy(vacancy: Vacancy, **payload) -> VacancyRecord:
+def record_from_vacancy(vacancy: Vacancy, **payload: Any) -> VacancyRecord:
     """Хелпер для источников (F2b): собрать record из уже смапленной Vacancy + payload."""
     return VacancyRecord(vacancy=vacancy, **payload)
 

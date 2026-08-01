@@ -6,6 +6,7 @@
 """
 import json
 from threading import Lock
+from typing import Any
 
 from hrwork.config import DATA_DIR, log
 
@@ -33,7 +34,7 @@ def load_marks() -> dict[str, str]:
     return {str(k): v for k, v in data.items() if v in _ALLOWED}
 
 
-def save_marks(marks: dict) -> None:
+def save_marks(marks: dict[str, Any]) -> None:
     clean = {str(k): v for k, v in (marks or {}).items() if v in _ALLOWED}
     # Лок сериализует конкурентные сохранения (ThreadingHTTPServer) -> ни гонки за tmp,
     # ни частично записанного marks.json при краше (источник правды не бьётся).

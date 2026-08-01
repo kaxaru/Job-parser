@@ -1,6 +1,7 @@
 """Value Object зарплаты. Единый источник gross→net (НДФЛ 13%) и конвертации в RUB
 (раньше — parsing._salary_mid + infrastructure.net.rates.to_rub над примитивами)."""
 from dataclasses import dataclass
+from typing import Any
 
 from hrwork.config import NET_FROM_GROSS
 
@@ -13,7 +14,7 @@ class Salary:
     gross: bool = False
 
     @classmethod
-    def from_raw(cls, sal: dict | None) -> "Salary | None":
+    def from_raw(cls, sal: dict[str, Any] | None) -> "Salary | None":
         """{from,to,currency,gross} -> Salary (или None, если вилки нет)."""
         if not sal or (sal.get("from") is None and sal.get("to") is None):
             return None                          # is None, не truthiness: вилка from=0 — валидна

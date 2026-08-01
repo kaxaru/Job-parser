@@ -2,6 +2,7 @@
 import datetime
 import json
 import time
+from typing import Any, TypeGuard
 
 from hrwork.config import (
     CACHE_TTL_HOURS,
@@ -23,19 +24,20 @@ def now_iso() -> str:
     return datetime.datetime.now(tz=datetime.timezone.utc).isoformat()
 
 
-def load_raw() -> list[dict]:
+def load_raw() -> list[dict[str, Any]]:
     with open(RAW_FILE, encoding='utf-8') as f:
-        return json.load(f)
+        items: list[dict[str, Any]] = json.load(f)
+    return items
 
 
-def save_raw(items: list[dict]):
+def save_raw(items: list[dict[str, Any]]) -> None:
     # Атомарно (tmp + os.replace): крэш посреди записи не портит единственный файл
     # многочасового сбора.
     atomic_write_json(RAW_FILE, items)
     save_meta(len(items))
 
 
-def load_desc_cache() -> dict[str, dict]:
+def load_desc_cache() -> dict[str, dict[str, Any]]:
     """Кеш описаний из прошлого сбора: {id: {sig, description_html, requirement}}.
     Только реально обогащённые записи (_enriched) — tldr-заглушки не должны блокировать
     будущую дозагрузку. sig — маркер изменения (hirify: updated_at; hh: published_at).
@@ -55,9 +57,12 @@ def load_desc_cache() -> dict[str, dict]:
             if it.get('_enriched') and it.get('description_html')}
 
 
-def cache_hit_usable(hit: dict | None, cur_sig: str) -> bool:
+def cache_hit_usable(hit: dict[str, Any] | None, cur_sig: str) -> TypeGuard[dict[str, Any]]:
     """Годна ли запись кеша: сигнал совпал, описание есть и не старше DESC_CACHE_MAX_AGE_DAYS
-    (предохранитель от тихой правки без смены сигнала). 0 -> без ограничения по времени."""
+    (предохранитель от тихой правки без смены сигнала). 0 -> без ограничения по времени.
+
+    TypeGuard, а не bool: True гарантирует `hit is not None`, и вызывающий (hh.py::run_enrich)
+    читает поля записи без повторной проверки на None."""
     if not hit or hit['sig'] != cur_sig or not hit['description_html']:
         return False
     if DESC_CACHE_MAX_AGE_DAYS and hit.get('at'):
@@ -98,7 +103,7 @@ def cache_valid(force: bool = False) -> bool:
         return False
 
 
-def save_meta(count: int):
+def save_meta(count: int) -> None:
     meta = {
         'collected_at': time.time(),
         'cities': list(CITIES.keys()),

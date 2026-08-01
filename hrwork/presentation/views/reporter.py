@@ -6,6 +6,8 @@
 которых по-портальные срезы дашборда рисковали гонкой.
 """
 import csv
+from pathlib import Path
+from typing import Any
 
 from hrwork.application.analyzer import Analyzer
 from hrwork.config import REPORTS_DIR, log
@@ -20,11 +22,11 @@ def _fmt(n: int | None) -> str:
 class ReportWriter:
     """Вывод отчётов в конкретный каталог. Инстанс на прогон -> нет общих globals/гонки."""
 
-    def __init__(self, out_dir):
+    def __init__(self, out_dir: Path):
         self.out_dir = out_dir
         self.written: set[str] = set()   # имена CSV этого прогона (для чистки устаревших)
 
-    def table(self, headers: list, rows: list, title: str = ''):
+    def table(self, headers: list[Any], rows: list[Any], title: str = '') -> None:
         lines = []
         if title:
             lines += [f'\n{"=" * 72}', f'  {title}', '=' * 72]
@@ -39,7 +41,7 @@ class ReportWriter:
         lines.extend(fmt.format(*[str(x) for x in row]) for row in rows)
         log.info('\n{}', '\n'.join(lines))
 
-    def csv(self, name: str, headers: list, rows: list):
+    def csv(self, name: str, headers: list[Any], rows: list[Any]) -> None:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.written.add(name)
         path = self.out_dir / name
@@ -47,7 +49,7 @@ class ReportWriter:
             csv.writer(f).writerows([headers, *rows])
         log.info('-> {}', path)
 
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Удалить .csv, НЕ записанные в этом прогоне (отчёт стал условным и не сгенерился).
         Только в дефолтном каталоге: по-портальные подкаталоги пишутся заново, а удаление
         по чужому каталогу рисковало бы снести данные другого среза."""
@@ -61,17 +63,17 @@ class ReportWriter:
 
 # ── Отчёты: по функции на отчёт (a=Analyzer, w=ReportWriter). Порядок = реестр _REPORTS. ──
 
-def report_cities(a: Analyzer, w: ReportWriter):
+def report_cities(a: Analyzer, w: ReportWriter) -> None:
     counts = a.count_by_city()
     rows = [[c, n] for c, n in counts.most_common()]
     w.table(['Город', 'Вакансий'], rows, '1. Вакансий по городам')
     w.csv('01_cities.csv', ['Город', 'Вакансий'], rows)
 
 
-def report_tech_by_city(a: Analyzer, w: ReportWriter):
+def report_tech_by_city(a: Analyzer, w: ReportWriter) -> None:
     counts = a.count_by_city()
     tech_city = a.tech_by_city()
-    all_rows: list[list] = []
+    all_rows: list[list[Any]] = []
     lines = [f'\n{"=" * 72}', '  2. ТОП-10 технологий по городам', '=' * 72]
     for city, counter in sorted(tech_city.items()):
         lines.append(f'\n  {city}:')
@@ -84,7 +86,7 @@ def report_tech_by_city(a: Analyzer, w: ReportWriter):
     w.csv('02_tech_by_city.csv', ['Город', 'Технология', 'Упоминаний'], all_rows)
 
 
-def report_salary_by_lang(a: Analyzer, w: ReportWriter):
+def report_salary_by_lang(a: Analyzer, w: ReportWriter) -> None:
     sal_lang = a.salary_by_lang()
     cols = ['Язык', 'N', 'Медиана', 'P25', 'P75', 'Среднее']
     rows = sorted(
@@ -96,7 +98,7 @@ def report_salary_by_lang(a: Analyzer, w: ReportWriter):
     w.csv('03_salary_by_lang.csv', cols, rows)
 
 
-def report_salary_city_lang(a: Analyzer, w: ReportWriter):
+def report_salary_city_lang(a: Analyzer, w: ReportWriter) -> None:
     sal_lang = a.salary_by_lang()
     top_langs = sorted(sal_lang, key=lambda x: sal_lang[x]['median'], reverse=True)[:8]
     sal_cl = a.salary_city_lang()
@@ -113,13 +115,13 @@ def report_salary_city_lang(a: Analyzer, w: ReportWriter):
     w.csv('04_salary_city_lang.csv', ['Город', 'Язык', 'N', 'Медиана', 'P25', 'P75'], flat)
 
 
-def report_top_stacks(a: Analyzer, w: ReportWriter):
+def report_top_stacks(a: Analyzer, w: ReportWriter) -> None:
     rows = [[f'{t[0]} + {t[1]}', cnt] for t, cnt in a.top_stacks(20)]
     w.table(['Стек', 'Упоминаний'], rows, '5. Популярные пары языков')
     w.csv('05_top_stacks.csv', ['Стек', 'Упоминаний'], rows)
 
 
-def report_salary_by_exp(a: Analyzer, w: ReportWriter):
+def report_salary_by_exp(a: Analyzer, w: ReportWriter) -> None:
     sal_exp = a.salary_by_experience()
     order = ['Без опыта', '1–3 года', '3–6 лет', '6+ лет']
     cols = ['Опыт', 'N', 'Медиана', 'P25', 'P75']
@@ -129,7 +131,7 @@ def report_salary_by_exp(a: Analyzer, w: ReportWriter):
     w.csv('06_salary_by_exp.csv', cols, rows)
 
 
-def report_lang_stacks(a: Analyzer, w: ReportWriter):
+def report_lang_stacks(a: Analyzer, w: ReportWriter) -> None:
     # 7-8. Сопутствующий стек для Python и JavaScript
     for lang, fname, num in [('Python', '07_python_stack.csv', '07'),
                              ('JavaScript', '08_js_stack.csv', '08')]:
@@ -139,7 +141,7 @@ def report_lang_stacks(a: Analyzer, w: ReportWriter):
         w.csv(fname, ['Технология', 'Вакансий'], rows)
 
 
-def report_remote_by_city(a: Analyzer, w: ReportWriter):
+def report_remote_by_city(a: Analyzer, w: ReportWriter) -> None:
     cols = ['Город', 'Всего', 'Удалённо', 'Офис', '%удалённо']
     rows = [[r['city'], r['total'], r['remote'], r['onsite'], r['pct']]
             for r in a.remote_by_city()]
@@ -147,7 +149,7 @@ def report_remote_by_city(a: Analyzer, w: ReportWriter):
     w.csv('09_remote_by_city.csv', cols, rows)
 
 
-def report_freshness(a: Analyzer, w: ReportWriter):
+def report_freshness(a: Analyzer, w: ReportWriter) -> None:
     # 10. Свежесть вакансий (создана≤30дн = свежая; >60дн и висит = гост)
     fs = a.freshness_summary()
     if not fs['dated']:
@@ -165,7 +167,7 @@ def report_freshness(a: Analyzer, w: ReportWriter):
     w.csv('10_freshness_by_city.csv', cols, rows)
 
 
-def report_companies(a: Analyzer, w: ReportWriter):
+def report_companies(a: Analyzer, w: ReportWriter) -> None:
     # 11. Топ работодателей: вакансий + медиана «сколько висят»
     comp = a.by_company(30)
     if not comp:
@@ -177,7 +179,7 @@ def report_companies(a: Analyzer, w: ReportWriter):
     w.csv('11_companies.csv', cols, rows)
 
 
-def report_company_sizes(a: Analyzer, w: ReportWriter):
+def report_company_sizes(a: Analyzer, w: ReportWriter) -> None:
     # 11c. ВСЕ работодатели по размеру: длинный хвост, который не виден в топ-30.
     sizes = a.companies_by_size()
     if not any(r['companies'] for r in sizes):
@@ -189,7 +191,7 @@ def report_company_sizes(a: Analyzer, w: ReportWriter):
     w.csv('11c_company_sizes.csv', cols, rows)
 
 
-def report_by_source(a: Analyzer, w: ReportWriter):
+def report_by_source(a: Analyzer, w: ReportWriter) -> None:
     # 12. Разрез по порталам-источникам (агрегатор) — только если порталов >1
     src = a.by_source()
     if len(src) <= 1:
@@ -209,7 +211,7 @@ _REPORTS = [
 ]
 
 
-def run_reports(vacs: list[Vacancy], out_dir=None):
+def run_reports(vacs: list[Vacancy], out_dir: Path | None = None) -> None:
     """Сгенерировать отчёты. out_dir=None -> REPORTS_DIR (по умолчанию); иначе —
     по-портальный подкаталог (для фильтра источника в дашборде)."""
     a = Analyzer.with_live_rates(vacs)           # View-слой тянет FX; конструктор в сеть не ходит

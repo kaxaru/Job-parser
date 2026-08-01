@@ -19,6 +19,7 @@ import argparse
 import asyncio
 from collections import Counter
 from enum import Enum
+from typing import Any
 
 from hrwork.config import (
     COLLECT_MIN_RATIO,
@@ -37,7 +38,7 @@ from hrwork.infrastructure.storage import JsonVacancyRepository
 from hrwork.presentation.views.reporter import run_reports
 
 
-def _degraded_source(by_src, prior_by_src):
+def _degraded_source(by_src: Counter[str], prior_by_src: Counter[str]) -> str | None:
     """Первый источник, просевший ниже COLLECT_MIN_RATIO от прошлого среза (при заметном
     прошлом объёме >= COLLECT_SANITY_MIN) — признак блока/сбоя. Иначе None."""
     for src, prev_n in prior_by_src.items():
@@ -46,7 +47,7 @@ def _degraded_source(by_src, prior_by_src):
     return None
 
 
-async def collect(force: bool = False):
+async def collect(force: bool = False) -> list[Any]:
     repo = JsonVacancyRepository()
     if storage.cache_valid(force):
         return repo.load()
@@ -63,7 +64,7 @@ async def collect(force: bool = False):
     # Агрегатор: собираем все включённые порталы ПАРАЛЛЕЛЬНО через реестр Source.
     # collect() не знает про конкретные классы — только про имена из config.SOURCES.
     # Каждый источник отдаёт list[VacancyRecord] (ACL внутри адаптера).
-    async def _run_source(name: str):
+    async def _run_source(name: str) -> list[Any]:
         src = get_source(name, proxies=proxies)
         if src is None:
             log.warning('Неизвестный источник: {} (нет в реестре) — пропуск', name)
@@ -107,7 +108,7 @@ async def collect(force: bool = False):
     return items
 
 
-async def enrich(only_empty: bool = False):
+async def enrich(only_empty: bool = False) -> None:
     """Дозагрузить карточки (описание + HTML) поверх собранного vacancies_raw.json.
 
     only_empty=True — добирать лишь вакансии без описания; иначе обновить все
@@ -134,7 +135,7 @@ async def enrich(only_empty: bool = False):
                 have, len(records), have * 100 // len(records), RAW_FILE)
 
 
-def analyze(records=None):
+def analyze(records: list[Any] | None = None) -> None:
     if records is None:
         log.info('Загрузка {}...', RAW_FILE)
         records = JsonVacancyRepository().load()
@@ -171,35 +172,35 @@ class Mode(Enum):
         _HANDLERS[self](args)
 
 
-def _do_collect(args):
+def _do_collect(args: argparse.Namespace) -> None:
     asyncio.run(collect(force=args.force))
 
 
-def _do_enrich(args):
+def _do_enrich(args: argparse.Namespace) -> None:
     asyncio.run(enrich(only_empty=args.only_empty))
 
 
-def _do_analyze(args):
+def _do_analyze(args: argparse.Namespace) -> None:
     analyze()
 
 
-def _do_dashboard(args):
+def _do_dashboard(args: argparse.Namespace) -> None:
     # лениво: только этот режим тянет тяжёлый рендер дашборда
     from hrwork.presentation.views.dashboard import build_dashboard
     build_dashboard()
 
 
-def _do_feed(args):
+def _do_feed(args: argparse.Namespace) -> None:
     from hrwork.presentation.views.feed import build_feed
     build_feed()
 
 
-def _do_serve(args):
+def _do_serve(args: argparse.Namespace) -> None:
     from hrwork.presentation.server import run_server
     run_server(port=args.port)
 
 
-def _do_autoclick(args):
+def _do_autoclick(args: argparse.Namespace) -> None:
     # лениво: playwright — опциональная зависимость, нужен только этому режиму
     from hrwork.application.apply import autoclick
     if args.login:
@@ -213,7 +214,7 @@ def _do_autoclick(args):
                       force_bump=args.bump_only)   # явный --bump-only обходит кулдаун-гейт
 
 
-def _do_chat(args):
+def _do_chat(args: argparse.Namespace) -> None:
     # шаблонные автоответы бот-рекрутерам; браузер не нужен (cookie-only chatik API)
     from hrwork.application.apply.chat import chat_reply
     # poll ответов бота идёт автоматически внутри run() после отправки (wait=True);
@@ -224,7 +225,7 @@ def _do_chat(args):
                    use_intent=args.intent, use_rephrase=args.rephrase)
 
 
-def _do_forms(args):
+def _do_forms(args: argparse.Namespace) -> None:
     # форм-очередь: тот же авто-путь, что inline apply (заполнить + «Откликнуться» при полноте,
     # пробелы -> лог). Браузерный путь (берёт autoclick.lock); Playwright опционален. --dry = превью.
     # --sweep — снять структуру всех анкет в кеш (forms_cache.json), пропуская уже собранные.
@@ -239,7 +240,7 @@ def _do_forms(args):
               cover_mode=args.cover, limit=args.limit)
 
 
-def _do_hhapi(args):
+def _do_hhapi(args: argparse.Namespace) -> None:
     # официальный API как ВТОРОЙ путь (browser остаётся): --login один раз, --probe смотрит права
     from hrwork.infrastructure.sources import hh_api
     if args.login:
@@ -248,7 +249,7 @@ def _do_hhapi(args):
     hh_api.probe()
 
 
-def _do_all(args):
+def _do_all(args: argparse.Namespace) -> None:
     asyncio.run(collect(force=args.force))    # collect сохраняет файл
     analyze()                                 # -> repo.load() читает свежесохранённое
 
@@ -268,7 +269,7 @@ _HANDLERS = {
 }
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('mode', nargs='?', default=Mode.ALL, type=Mode, choices=list(Mode),

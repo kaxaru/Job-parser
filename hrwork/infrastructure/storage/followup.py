@@ -6,6 +6,7 @@
 """
 import datetime
 import json
+from typing import Any
 
 from hrwork.config import DATA_DIR, log
 from hrwork.infrastructure.storage import atomic_write_json, read_json_or
@@ -18,26 +19,29 @@ APPLIED_LOG_FILE = DATA_DIR / "applied_log.jsonl"          # журнал отк
 PENDING_FILE = DATA_DIR / "apply_pending.json"             # очередь ожидания (лента -> крон)
 
 
-def load_statuses() -> dict:
-    return read_json_or(RESPONSE_STATUS_FILE, {})
+def load_statuses() -> dict[str, Any]:
+    out: dict[str, Any] = read_json_or(RESPONSE_STATUS_FILE, {})
+    return out
 
 
-def save_statuses(statuses: dict) -> None:
+def save_statuses(statuses: dict[str, Any]) -> None:
     """Карту {vacancyId: employerState} на диск (атомарно). Полная перезапись —
     статусы меняются, старые не нужны."""
     atomic_write_json(RESPONSE_STATUS_FILE, statuses, indent=0)
 
 
-def load_form_vacancies() -> dict:
-    return read_json_or(FORM_VACANCIES_FILE, {})
+def load_form_vacancies() -> dict[str, Any]:
+    out: dict[str, Any] = read_json_or(FORM_VACANCIES_FILE, {})
+    return out
 
 
-def load_chat_messages() -> dict:
+def load_chat_messages() -> dict[str, Any]:
     """Переписка по вакансиям (наполняет sync_statuses — он и так тянет chat_data)."""
-    return read_json_or(CHAT_MESSAGES_FILE, {})
+    out: dict[str, Any] = read_json_or(CHAT_MESSAGES_FILE, {})
+    return out
 
 
-def save_chat_messages(data: dict) -> None:
+def save_chat_messages(data: dict[str, Any]) -> None:
     atomic_write_json(CHAT_MESSAGES_FILE, data, indent=0)
 
 
@@ -58,12 +62,12 @@ def append_applied(vid: str, name: str, url: str, via: str,
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
-def load_applied_log() -> list[dict]:
+def load_applied_log() -> list[dict[str, Any]]:
     """Журнал откликов -> список записей в порядке записи (старые первыми). Битые строки
     пропускаем (журнал append-only — частичная строка не должна ронять чтение)."""
     if not APPLIED_LOG_FILE.exists():
         return []
-    out: list[dict] = []
+    out: list[dict[str, Any]] = []
     for line in APPLIED_LOG_FILE.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -78,11 +82,12 @@ def load_applied_log() -> list[dict]:
 # ── Очередь ожидания: лента кладёт сюда вакансию, если браузер занят кроном; тот, кто
 #    владеет браузером (крон/воркер), дренажит очередь после своей работы. Разные процессы
 #    -> файловая координация (атомарная запись; окно гонки мало, эффект — пропуск/повтор). ──
-def load_pending() -> list[dict]:
-    return read_json_or(PENDING_FILE, [])
+def load_pending() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = read_json_or(PENDING_FILE, [])
+    return out
 
 
-def _save_pending(items: list[dict]) -> None:
+def _save_pending(items: list[dict[str, Any]]) -> None:
     atomic_write_json(PENDING_FILE, items, indent=0)
 
 
@@ -96,7 +101,7 @@ def enqueue_pending(vid: str, url: str, name: str, cover: str) -> int:
     return len(items)
 
 
-def pop_pending_one() -> dict | None:
+def pop_pending_one() -> dict[str, Any] | None:
     """Снять ПЕРВЫЙ элемент очереди (FIFO, атомарно). None — пусто. По одному, чтобы
     подхватывать добавленные во время дренажа."""
     items = load_pending()
@@ -131,11 +136,12 @@ def remove_form_vacancy(vid: str) -> None:
 # ── Кеш снятой структуры анкет: свип открывает форму, извлекает вопросы/опции и кладёт сюда,
 #    чтобы в СЛЕДУЮЩИЙ раз не гонять её через браузер повторно. Ключ — vacancyId, значение —
 #    {name,url,fields:[{prompt,ftype,options}],status,ts}. status: ok | empty | error. ──
-def load_form_cache() -> dict:
-    return read_json_or(FORM_CACHE_FILE, {})
+def load_form_cache() -> dict[str, Any]:
+    out: dict[str, Any] = read_json_or(FORM_CACHE_FILE, {})
+    return out
 
 
-def cache_form(vid: str, name: str, url: str, fields: list,
+def cache_form(vid: str, name: str, url: str, fields: list[Any],
                status: str, ts: str = "") -> None:
     """Запомнить структуру анкеты (идемпотентно по id, полная перезапись — записей немного).
     Пишется по одной форме сразу после извлечения (crash-safe: обрыв свипа не теряет собранное)."""

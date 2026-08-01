@@ -1,6 +1,7 @@
 """Value Object уровня опыта. Единый источник маппинга грейдов hirify -> опыт HH
 (раньше — hirify._GRADE_TO_EXP/_GRADE_ORDER) и подписи (config.EXP_LABELS)."""
 from enum import Enum
+from typing import Any
 
 from hrwork.config import EXP_LABELS
 
@@ -30,7 +31,7 @@ class Experience(Enum):
             return None
 
     @classmethod
-    def from_hirify_grades(cls, grades: list[dict]) -> "Experience | None":
+    def from_hirify_grades(cls, grades: list[dict[str, Any]] | None) -> "Experience | None":
         """Самый МЛАДШИЙ грейд вакансии hirify -> уровень опыта (None, если грейдов нет)."""
         names = {g.get("name") for g in (grades or [])}
         for grade, exp in _GRADE_TO_EXP:        # порядок = от младшего к старшему
