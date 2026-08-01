@@ -39,6 +39,20 @@ class Schedule(Enum):
         return cls.OFFICE
 
     @classmethod
+    def from_getmatch(cls, formats: list[str] | None) -> "Schedule":
+        """`format` из location_items getmatch (office/hybrid/remote/relocation_company)
+        -> формат. Тот же приоритет remote > hybrid > офис, что у остальных порталов.
+
+        `relocation_company` — это переезд ради работы В ОФИСЕ, поэтому офис, а не удалёнка:
+        иначе такие вакансии проходили бы удалённый фильтр отбора под отклик."""
+        f = formats or []
+        if "remote" in f:
+            return cls.REMOTE
+        if "hybrid" in f:
+            return cls.HYBRID
+        return cls.OFFICE
+
+    @classmethod
     def from_hirify_wf(cls, work_format: list[str] | None) -> "Schedule":
         """work_format hirify (remote/hybrid/onsite) -> формат. Тот же приоритет remote > hybrid."""
         wf = work_format or []
