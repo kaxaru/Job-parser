@@ -83,7 +83,7 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
 `search_demo/load.py` (переиндексация поиска), `hh.py dashboard` (Plotly),
 `python -m etl all` (DWH).
 
-**Что делает.** Пересбор вакансий трёх источников (hh + hirify + talanto) ->
+**Что делает.** Пересбор вакансий четырёх источников (hh + hirify + talanto + getmatch) ->
 `data/vacancies_raw.json`, следом освежает ленту, поиск, дашборд и DWH из этого же среза.
 
 **Почему лента идёт первым шагом.** `feed-data.js` — снимок на диске, а не живое чтение

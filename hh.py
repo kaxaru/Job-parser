@@ -30,6 +30,7 @@ from hrwork.config import (
     SOURCES,
     log,
 )
+from hrwork.domain.dedup import dedup_cross_source
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.proxy import load_proxies, mask_proxy
 from hrwork.infrastructure.sources import get_source
@@ -101,8 +102,17 @@ async def collect(force: bool = False) -> list[Any]:
                       'перезаписываю. Повтор при реальном спаде: --force.',
                       bad, by_src.get(bad, 0), prior_by_src[bad], COLLECT_MIN_RATIO)
             return repo.load()
+    # Кросс-портальный дедуп — СТРОГО ПОСЛЕ санити-гейта: гейт меряет здоровье ИСТОЧНИКА
+    # («портал отдал привычный объём?»), и подсовывать ему уже прореженные счётчики нельзя —
+    # схлопнутые копии выглядели бы как просадка таланто/getmatch и блокировали бы запись кеша.
+    items, dropped = dedup_cross_source(items, SOURCES)
+    if dropped:
+        log.info('Дедуп между порталами: снято {} копий ({}) — осталось {}',
+                 sum(dropped.values()),
+                 ', '.join(f'{k}: {v}' for k, v in dropped.most_common()), len(items))
     log.success('Всего уникальных: {} вакансий  ({})', len(items),
-                ', '.join(f'{k}: {v}' for k, v in by_src.items()))
+                ', '.join(f'{k}: {v}' for k, v in Counter(
+                    r.vacancy.source for r in items).items()))
     repo.save(items)
     log.info('Сырые данные: {}', RAW_FILE)
     return items

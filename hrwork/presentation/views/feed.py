@@ -27,6 +27,7 @@ from hrwork.config import (
     GRID,
     LANG_KEYS,
     PAPER,
+    PORTAL_SITES,
     RESUME_CORE,
     RESUME_EXP_IDS,
     ROLE_PATTERNS,
@@ -156,7 +157,7 @@ def build_feed() -> None:
             "form_dead": v.id in dead_forms,
             # ts последнего живого ответа HR (пусто — ответа не было): сортировка «Ответы»
             "hr_ts":    hr_replies.get(str(v.id), ""),
-            "source":   v.source,          # портал-источник (агрегатор): hh / hirify / …
+            "source":   v.source,          # портал: hh / hirify / talanto / getmatch
         })
         # описание (description_html, иначе текст requirement) — только для модалки;
         # санитизируем здесь, а не на клиенте: закрывает и serve, и file://
@@ -214,6 +215,8 @@ def build_feed() -> None:
         f"const MARK_VALUES_PY = {json.dumps(list(MARK_VALUES))};\n"     # словарь пометок (marks.py)
         # тупиковые виды чата (chat_class.FROZEN_KINDS): бейдж, фильтр «Личные» и счётчик
         f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
+        # подпись портала в карточке (config.PORTAL_SITES) — единый источник с Python
+        f"const PORTAL_SITES_PY = {json.dumps(PORTAL_SITES, ensure_ascii=False)};\n"
     )
     (DATA_DIR / "feed-data.js").write_text(data_js, encoding="utf-8")
     log.info("feed-data.js сохранён  ({:.1f} МБ)", len(data_js.encode("utf-8")) / 1e6)

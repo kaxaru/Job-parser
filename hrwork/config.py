@@ -75,7 +75,16 @@ log.add(
 # Мульти-портальный агрегатор: какие источники собираем (реестр в data/sources.py).
 # Порядок задаёт владельца id при дедупе (первое вхождение). hh — основной (с автооткликом),
 # hirify — доп. портал (JSON-API, только просмотр/аналитика).
-SOURCES = [s.strip() for s in os.getenv('SOURCES', 'hh,hirify,talanto').split(',') if s.strip()]
+SOURCES = [s.strip() for s in os.getenv('SOURCES', 'hh,hirify,talanto,getmatch').split(',') if s.strip()]
+# Домен портала для подписи в карточке ленты. Живёт в Python и инжектится в feed-data.js
+# (PORTAL_SITES_PY) — дублировать в JS нельзя, так уже разъезжались константы. Источник
+# без записи здесь получает своё имя как есть, а не чужую подпись.
+PORTAL_SITES = {
+    'hh':       'hh.ru',
+    'hirify':   'hirify.me',
+    'talanto':  'talanto.work',
+    'getmatch': 'getmatch.ru',
+}
 # Фильтр hirify (querystring API). Широкий: интересующие skills+специализации, БЕЗ
 # ограничений по грейду/формату/английскому/типу удалёнки (все значения). ~18k вакансий.
 HIRIFY_PARAMS = os.getenv(
@@ -110,6 +119,12 @@ TALANTO_PARAMS = os.getenv('TALANTO_PARAMS', 'limit=100&sort=newest')
 TALANTO_PAGE_CONCURRENCY = int(os.getenv('TALANTO_PAGE_CONCURRENCY', '8'))    # параллельных страниц
 TALANTO_ENRICH_CONCURRENCY = int(os.getenv('TALANTO_ENRICH_CONCURRENCY', '8'))  # параллельных /jobs/{id}
 TALANTO_ENRICH_MAX = int(os.getenv('TALANTO_ENRICH_MAX', '600'))              # описаний за прогон
+# getmatch.ru — публичный JSON-API отобранных IT-вакансий (~740 активных). Мелкий портал,
+# поэтому лимиты скромнее: enrich_max с запасом перекрывает весь объём за один прогон.
+GETMATCH_PAGE_SIZE = int(os.getenv('GETMATCH_PAGE_SIZE', '100'))              # offset/limit выдачи
+GETMATCH_PAGE_CONCURRENCY = int(os.getenv('GETMATCH_PAGE_CONCURRENCY', '4'))  # параллельных страниц
+GETMATCH_ENRICH_CONCURRENCY = int(os.getenv('GETMATCH_ENRICH_CONCURRENCY', '4'))  # параллельных /offers/{id}
+GETMATCH_ENRICH_MAX = int(os.getenv('GETMATCH_ENRICH_MAX', '900'))            # карточек за прогон
 HH_ENRICH_BATCH_MULT = int(os.getenv('HH_ENRICH_BATCH_MULT', '4'))          # batch = CONCURRENCY * MULT
 
 # ─── Нормализация зарплат ─────────────────────────────────────────────────────
@@ -374,20 +389,49 @@ LANG_KEYS = {
 ROLE_PATTERNS: dict[str, str] = {
     'Mobile':       r'\bandroid\b|\bios\b|flutter|react native|мобильн\w*\s*разраб|\bkmm\b',
     'QA':           r'\bqa\b|тестировщик|тестирован|\bтест\b|автотест|\baqa\b|quality assurance|\bsdet\b',
-    'DevOps':       r'devops|\bsre\b|систем\w*\s*администратор|sysadmin|инфраструктур|cloud engineer|reliability|\bdba\b|администратор баз|сетев\w*\s*инженер',
+    'DevOps':       r'devops|\bsre\b|систем\w*\s*администратор|sysadmin|инфраструктур|cloud engineer|reliability|\bdba\b|администратор баз|сетев\w*\s*инженер|'
+                    # БЕЗ голых `kubernetes` и `platform engineer`: DevOps стоит в таблице
+                    # раньше Data Eng/Data-ML/Security, и такие широкие слова крали у них
+                    # роль («Data Platform Engineer» -> DevOps, «Python-разработчик
+                    # (Kubernetes)» -> DevOps). Замер: 161 + 51 + 26 ложных перекладок.
+                    # devsecops — в Security, а НЕ здесь: DevOps идёт раньше, и 24 вакансии
+                    # с явным «безопасная разработка/AppSec» перестали быть Security.
+                    # `\biaas\b` не берём: IaaS — это домен продукта, а не роль
+                    # («Старший Go-разработчик, IaaS» — backend). Нужный
+                    # «IaaS / Kubernetes Platform Engineer» ловится по `kubernetes platform`.
+                    r'system administrator|database engineer|'
+                    r'kubernetes platform|windows server|'
+                    r'администратор\s+(?:sap|opensource|open source)|'
+                    r'инженер\w*\s*по\s*мониторингу',
     'Data Eng':     r'data engineer|инженер данных|дата.?инженер|\betl\b|data platform|\bdwh\b',
-    'Data/ML':      r'data scien|machine learning|\bml\b|\bnlp\b|нейросет|computer vision|дата.?са\w*|ml.?eng|\bai\b|искусствен\w*\s*интеллект|ml.?разраб',
+    # Английские ML-сокращения (getmatch/Сбер-стиль тайтлов). MLE/LLM/VLM однозначны;
+    # RL и DL — ТОЛЬКО в связке с engineer/инженер/lead: двухбуквенный код сам по себе
+    # ловил бы случайные подстроки.
+    'Data/ML':      r'data scien|machine learning|\bml\b|\bnlp\b|нейросет|computer vision|дата.?са\w*|ml.?eng|\bai\b|искусствен\w*\s*интеллект|ml.?разраб|'
+                    r'\bmle\b|\bllm\b|\bvlm\b|deep learning|\bcuda\b|нейронн\w*\s*сет\w*|'
+                    r'research engineer|pretrain|post.?training|genai|'
+                    r'\b(?:rl|dl)[\s\-]?(?:engineer|инженер|lead)',
     'Аналитик':     r'систем\w*\s*аналит|бизнес.?аналит|data analyst|аналитик данных|bi.?аналит|продуктов\w*\s*аналит|аналитик 1с|\bbi\b|финанс\w*\s*аналит|аналитик|\banalyst\b',
     'Embedded':     r'embedded|встраиваем|firmware|схемотехник|\bfpga\b|\basic\b|микроконтроллер|\bплис\b|verilog|радиоэлектрон|разработчик электрон',
-    'Security':     r'безопасн|security|пентест|pentest|infosec|appsec|soc analyst|защит\w*\s*информ',
+    # infrasec — НЕ опечатка infosec (инфраструктурная безопасность), DLP/EDR/СЗИ — классы
+    # средств защиты: тайтл «Администратор средств защиты от утечек (DLP)» слова
+    # «безопасность» не содержит вовсе.
+    'Security':     r'безопасн|security|пентест|pentest|infosec|appsec|soc analyst|защит\w*\s*информ|'
+                    r'infrasec|penetration test|\bdlp\b|\bedr\b|\bсзи\b|защит\w*\s*от\s*утечек|'
+                    r'devsecops',
     'Gamedev':      r'gamedev|game dev|\bunity\b|unreal|геймдиз|game.?prog|game.?desi',
     'Architect':    r'архитектор|architect',
     'Дизайнер':     r'дизайнер|designer|\bux\b|ui/ux|product design',
     'Frontend':     r'frontend|front-end|фронт.?енд|фронтенд|верстальщик|\bvue\b|angular|\breact\b(?! native)',
     'Backend':      r'backend|back-end|бэкенд|сервер\w*\s*разраб',
     'Fullstack':    r'fullstack|full.?stack|фулстек|фуллстек',
-    'Менеджер':     r'продакт|product manager|проджект|project manager|тимлид|team.?lead|руководител\w*\s*(разраб|групп|отдел\w*\s*разраб|\bit\b|ит)|head of (eng|dev|data)|\bcto\b|scrum master|владелец продукта|product owner',
-    'Разработчик':  r'разработчик|программист|\bdeveloper\b|инженер.?программист|software eng\w*|\bdev\b',
+    'Менеджер':     r'продакт|product manager|проджект|project manager|тимлид|team.?lead|руководител\w*\s*(разраб|групп|отдел\w*\s*разраб|\bit\b|ит)|head of (eng|dev|data)|\bcto\b|scrum master|владелец продукта|product owner|'
+                    r'менеджер\w*\s*продукта|engineering manager|tech.?lead|техлид|delivery manager|'
+                    r'head of product|\bcpo\b',
+    'Разработчик':  r'разработчик|программист|\bdeveloper\b|инженер.?программист|software eng\w*|\bdev\b|'
+                    r'staff engineer|principal engineer',
+    # Роли Support здесь НЕТ намеренно: поддержка отсекается раньше, в
+    # parsing._HARD_NON_IT — см. решение по инциденту «Яндекс Крауд: Поддержка».
 }
 
 EXP_LABELS = {

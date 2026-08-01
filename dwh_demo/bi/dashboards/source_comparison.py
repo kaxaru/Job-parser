@@ -1,4 +1,4 @@
-"""Дашборд сравнения ПОРТАЛОВ-ИСТОЧНИКОВ (hh / hirify / talanto).
+"""Дашборд сравнения ПОРТАЛОВ-ИСТОЧНИКОВ (hh / hirify / talanto / getmatch).
 
 Не путать с ComparisonDashboard — тот сравнивает ДВИЖКИ (pg/clickhouse/mssql) на одних
 данных. Здесь один движок (Postgres), но разрез по `source`: объёмы, зарплаты, доля
@@ -10,7 +10,7 @@ from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
 from .base import layout
 
-TITLE = "Источники — hh vs hirify vs talanto"
+TITLE = "Источники — hh vs hirify vs talanto vs getmatch"
 
 
 def _bar2(dim: str, series: str, metric: str) -> dict:

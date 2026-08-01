@@ -225,6 +225,19 @@ export const FROZEN_CHAT_KINDS = new Set(
   (typeof CHAT_FROZEN_PY !== 'undefined' && CHAT_FROZEN_PY) || ['ack', 'bot_interview']);
 export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
 
+/* Подпись портала в модалке. Единый источник — Python (config.PORTAL_SITES), инжектится
+   как PORTAL_SITES_PY; хардкод ниже — фолбэк для офлайна/тестов.
+   Раньше здесь стояло `v.source === 'hirify' ? 'hirify.me' : 'hh.ru'` — тернарник на два
+   портала, из-за которого talanto и getmatch подписывались как «hh.ru» (01.08.2026).
+   Неизвестный портал отдаёт своё имя как есть, а не чужую подпись. */
+const PORTAL_SITES = (typeof PORTAL_SITES_PY !== 'undefined' && PORTAL_SITES_PY) || {
+  hh: 'hh.ru', hirify: 'hirify.me', talanto: 'talanto.work', getmatch: 'getmatch.ru',
+};
+export function portalSite(source) {
+  const s = source || 'hh';
+  return PORTAL_SITES[s] || s;
+}
+
 /* «Приглашение» — работодатель проявил активность (не просто RESPONSE и не отказ). */
 const INVITED = new Set(['INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT', 'HIRED', 'CONSIDER']);
 

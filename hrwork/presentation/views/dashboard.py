@@ -59,13 +59,13 @@ _CHARTS = {
     "by_source":        (chart_by_source,         "Порталы",               "12_sources.csv"),
 }
 
-SOURCE_LABELS = {"all": "Все"}      # hh/hirify берут своё имя как есть
+SOURCE_LABELS = {"all": "Все"}      # порталы берут своё имя как есть
 
 
 def build_dashboard() -> None:
     # Грузим вакансии для по-портальных срезов отчётов (фильтр источника в дашборде).
     vacs = [r.vacancy for r in vacancy_repository().load()]
-    present = sorted({v.source for v in vacs})             # напр. ['hh', 'hirify']
+    present = sorted({v.source for v in vacs})   # из ДАННЫХ: напр. ['getmatch','hh','hirify']
     src_dirs = {"all": REPORTS_DIR}
     if len(present) > 1:                                    # срез по источнику нужен только у агрегатора
         for src in present:

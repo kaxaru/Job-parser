@@ -46,7 +46,7 @@ _FRESH_CASE = (
 _COLS = ("id, source, name, employer, city, sal_from, sal_to, sal_mid, currency, url, techs, "
          f"{_AGE} AS age_days, {_FRESH_CASE} AS fresh")
 
-SOURCES = ("hh", "hirify", "talanto")   # белый список порталов для фильтра источника
+SOURCES = ("hh", "hirify", "talanto", "getmatch")   # белый список порталов для фильтра
 
 # WHERE-фрагмент фильтра свежести по классу (null-даты в «свежие/недавние» не попадают).
 _FRESH_WHERE = {
@@ -268,7 +268,7 @@ def search(q: str | None = None, city: str | None = None, sal_min: int = 0,
            source: str | None = None) -> dict[str, Any]:
     """Полнотекстовый поиск с ранжированием и подсветкой. Возвращает dict с total
     (для пагинации) и results. `fresh` (fresh|recent|ghost) фильтрует по классу свежести,
-    `source` (hh|hirify|talanto) — по порталу. Детали SQL — в _build_sql()."""
+    `source` (hh|hirify|talanto|getmatch) — по порталу. Детали SQL — в _build_sql()."""
     q = q.strip() if (q and q.strip()) else None
     sal_min = int(sal_min or 0)
     limit = max(1, min(int(limit or 20), LIMIT_MAX))

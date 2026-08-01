@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import {
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
   countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
-  journalById, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
+  journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -615,5 +615,26 @@ describe('syntheticCard — карточка-призрак из журнала'
     assert.deepEqual(filterVacancies(ghostWithChat(), flt({})).map(v => v.id), []);
     assert.deepEqual(filterVacancies(ghostWithChat(), flt({ chatFilter: 'wait' })).map(v => v.id),
                      ['135759424']);
+  });
+});
+
+/* Регрессия 01.08.2026: подпись портала считалась тернарником на ДВА портала
+   (`v.source === 'hirify' ? 'hirify.me' : 'hh.ru'`), поэтому talanto и getmatch
+   подписывались в модалке как «hh.ru». */
+describe('portalSite — подпись портала в карточке', () => {
+  it('каждый портал получает свой домен', () => {
+    assert.equal(portalSite('hh'), 'hh.ru');
+    assert.equal(portalSite('hirify'), 'hirify.me');
+    assert.equal(portalSite('talanto'), 'talanto.work');
+    assert.equal(portalSite('getmatch'), 'getmatch.ru');
+  });
+
+  it('пустой источник -> hh (историческое умолчание карточек без поля)', () => {
+    assert.equal(portalSite(''), 'hh.ru');
+    assert.equal(portalSite(undefined), 'hh.ru');
+  });
+
+  it('неизвестный портал отдаёт своё имя, а не чужую подпись', () => {
+    assert.equal(portalSite('новый_портал'), 'новый_портал');
   });
 });

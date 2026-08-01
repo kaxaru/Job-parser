@@ -20,7 +20,8 @@
 
 ## Источники
 
-- `SOURCES` — `hh,hirify,talanto`. Порядок задаёт владельца id при дедупе.
+- `SOURCES` — `hh,hirify,talanto,getmatch`. Порядок задаёт победителя при кросс-портальном
+  дедупе (`domain/dedup.py`): hh первый, потому что с него работает автоотклик.
 - `HIRIFY_PARAMS` — querystring фильтра hirify: skills + специализации, без ограничений
   по грейду и формату (~18k вакансий).
 - `HIRIFY_ENRICH_MAX = 600` — потолок per-vacancy запросов за прогон.

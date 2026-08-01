@@ -39,7 +39,7 @@ CREATE TABLE search_demo.vacancies (
     -- id — text: основной проект неймспейсит id по источникам (hirify_/talanto_<uuid>),
     -- bigint + int(v.id) ронял 2/3 записей (hirify/talanto) на ValueError.
     id          text PRIMARY KEY,
-    source      text,          -- портал: hh | hirify | talanto (для фильтра источника)
+    source      text,          -- портал: hh | hirify | talanto | getmatch (фильтр источника)
     name        text NOT NULL,
     employer    text,
     city        text,

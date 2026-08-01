@@ -68,7 +68,7 @@ def _cap(s, n=CITY_MAX):
 class Vacancy:
     """Нейтральное представление вакансии — общий контракт для всех хранилищ."""
     id: str
-    source: str          # портал-источник: hh | hirify | talanto (из raw-поля _source)
+    source: str          # портал-источник: hh | hirify | talanto | getmatch (из _source)
     name: str
     city: str | None
     employer: str | None

@@ -4,8 +4,7 @@
 import { COVER_TEMPLATES, coverLetter } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
-  ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId,
-  isFrozenChat, matchColor, matchInk, SCHED_LABELS, STATUS_BTNS, statusInfo, tagClr, tagInk,
+  SCHED_LABELS, STATUS_BTNS, ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
 
@@ -308,7 +307,7 @@ export function showModal(v) {
   const schedLbl = SCHED_LABELS[v.schedule] || v.schedule || '';
   const salLine  = [sal, v.exp, schedLbl].filter(Boolean).join(' · ');
   const sub      = [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
-  const portal   = v.source === 'hirify' ? 'hirify.me' : 'hh.ru';
+  const portal   = portalSite(v.source);
   /* автоклик (Playwright) — только HH; у прочих порталов лишь прямая ссылка */
   const canBg    = _serverMode && (v.source || 'hh') === 'hh';
 
