@@ -241,6 +241,35 @@ export function appliedInRange(v, from, to) {
   return true;
 }
 
+/* Журнал откликов -> {id: запись первого отклика} (самый РАННИЙ ts на вакансию).
+   employer переносится из журнала: без него поиск по компании не находит «призраков»
+   (01.08.2026 — чат с «Константинов Семен Павлович» не искался ни по одному фильтру). */
+export function journalById(applied) {
+  const byId = {};
+  for (const e of applied || []) {
+    if (!e?.id) continue;
+    const prev = byId[e.id];
+    if (!prev || (e.ts && e.ts < prev.ts)) {
+      byId[e.id] = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
+                     employer: e.employer };
+    }
+  }
+  return byId;
+}
+
+/* Карточка-«призрак» для отклика на вакансию, которой нет в текущем сборе: поля неизвестны,
+   кроме тех, что сохранил журнал (имя, ссылка, работодатель). Скрыта в общем списке
+   (filterVacancies: _synthetic), видна в «Мои отклики» и под чат-фильтрами. */
+export function syntheticCard(id, a = {}) {
+  return {
+    id, name: a.name || `Вакансия ${id}`, url: a.url || `https://hh.ru/vacancy/${id}`,
+    employer: a.employer || '', city: '', techs: [], sal_from: null, sal_to: null,
+    sal_mid: null, currency: '', exp: '', schedule: '', remote_any: false, role: '',
+    age: null, gap: null, fresh: 'unknown', resp: null, status: null, needs_form: false,
+    form_dead: false, source: '', _synthetic: true, applied: a,
+  };
+}
+
 /* Инфо для бейджа: подпись + цвет (отказ красный, приглашение зелёный, отклик серый). */
 export function statusInfo(v) {
   const s = v.status;

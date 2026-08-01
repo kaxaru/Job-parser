@@ -18,6 +18,7 @@ import contextlib
 import random
 import time
 from types import SimpleNamespace
+from typing import Any
 from urllib.parse import urlparse
 
 from hrwork.application.apply import cover
@@ -48,10 +49,10 @@ def _is_hh(url: str) -> bool:
     return False
 
 
-_VAC_CTX: dict | None = None       # ленивый кеш {id: (employer, desc, name, salary_floor)}
+_VAC_CTX: dict[str, Any] | None = None       # ленивый кеш {id: (employer, desc, name, salary_floor)}
 
 
-def _load_vac_ctx() -> dict:
+def _load_vac_ctx() -> dict[str, Any]:
     global _VAC_CTX
     if _VAC_CTX is None:
         _VAC_CTX = {}
@@ -77,7 +78,7 @@ def _vacancy_floor(vid: str) -> int | None:
     return v[3] if v else None
 
 
-def _resolve(field, resume_ctx: str, sal_target: int | None = None,
+def _resolve(field: Any, resume_ctx: str, sal_target: int | None = None,
              vacancy_text: str = "") -> tuple[str | None, str | None]:
     """Ответ на поле. Зарплата -> ТОЛЬКО код (в LLM не уходит, приватность). Иначе: словарь ->
     suggest(text) -> LLM -> (None,None). -> (подпись/текст, own|None)."""
@@ -113,7 +114,7 @@ def _resolve(field, resume_ctx: str, sal_target: int | None = None,
     return None, None
 
 
-def _fill_field(page, field, value: str, own: str | None = None) -> bool:
+def _fill_field(page: Any, field: Any, value: str, own: str | None = None) -> bool:
     """Заполнить ОДНО поле (DOM-литерал; никогда submit). «Свой вариант» -> парный textarea."""
     with contextlib.suppress(Exception):
         if field.ftype is form_read.FieldType.SELECT:
@@ -131,7 +132,7 @@ def _fill_field(page, field, value: str, own: str | None = None) -> bool:
     return False
 
 
-def _fill_cover(page, vid: str, rec: dict, cover_mode: str) -> None:
+def _fill_cover(page: Any, vid: str, rec: dict[str, Any], cover_mode: str) -> None:
     """Сопроводительное — в поле письма на самой форме (не через chatik). Textarea спрятан за
     тоглом «Добавить» (`_LETTER_TOGGLE`, выверено живым прогоном 134804227) — сперва раскрыть."""
     emp, desc, nm = _vacancy_ctx(vid)
@@ -146,7 +147,7 @@ def _fill_cover(page, vid: str, rec: dict, cover_mode: str) -> None:
     log.warning("[{}] письмо НЕ вписано (поле не найдено/fill упал) — отклик уйдёт без него", vid)
 
 
-def _submitted(page) -> bool:
+def _submitted(page: Any) -> bool:
     """Отклик реально ушёл: появился чат-топик или «Вы откликнулись» (иначе не метим applied)."""
     with contextlib.suppress(Exception):
         return bool(page.locator('[data-qa="vacancy-response-link-view-topic"]').count()
@@ -154,7 +155,7 @@ def _submitted(page) -> bool:
     return False
 
 
-def _wait_submitted(page, tries: int = 6) -> bool:
+def _wait_submitted(page: Any, tries: int = 6) -> bool:
     """Поллинг подтверждения до ~12с: HH перерисовывает карточку с лагом (инцидент 134804227,
     2026-07-22 — отклик УШЁЛ, но за 2с подтверждение не успело, прогон счёл его неотправленным)."""
     for _ in range(tries):
@@ -164,7 +165,7 @@ def _wait_submitted(page, tries: int = 6) -> bool:
     return False
 
 
-def try_autofill(page, cand, cover_mode: str = "template") -> bool:
+def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
     """Inline авто-отклик на анкету (вызывается из apply_one под гейтом FORMS_ENABLED, страница
     уже на форме). Резолвит ВСЕ поля; при полноте — заполняет, пишет письмо, ЖМЁТ «Откликнуться»
     -> True (верификацию делает apply_one). Пустое извлечение или ХОТЬ ОДИН пробел -> НЕ шлёт,
@@ -188,7 +189,13 @@ def try_autofill(page, cand, cover_mode: str = "template") -> bool:
     # Playwright и возвращает False (селектор разъехался, поле скрыто, вариант не совпал), а
     # раньше результат выбрасывался — и submit жался по форме с дырами. Инвариант «шлём ТОЛЬКО
     # при полноте» обязан покрывать оба этапа.
-    unfilled = [f for f, val, own in resolved if not _fill_field(page, f, val, own)]
+    # Отдельный список с СУЖЕННЫМ типом (str вместо str | None): гейт `gaps` выше уже вернул
+    # False, если хоть один ответ пуст, и типы это фиксируют — `_fill_field` требует str,
+    # так что пустой ответ физически не может дойти до заполнения формы.
+    ready: list[tuple[form_read.FormField, str, str | None]] = [
+        (f, val, own) for f, val, own in resolved if val is not None
+    ]
+    unfilled = [f for f, val, own in ready if not _fill_field(page, f, val, own)]
     if unfilled:
         for f in unfilled:
             log.warning("[{}] поле НЕ вписалось (селектор/DOM): {}", cand.id, f.prompt[:90])
@@ -207,7 +214,7 @@ def try_autofill(page, cand, cover_mode: str = "template") -> bool:
     return True
 
 
-def _open_form(page) -> None:
+def _open_form(page: Any) -> None:
     """С карточки вакансии перейти на форму отклика: клик «Откликнуться/пройти тест» + модалка
     релокации. Клик ОТКРЫВАЕТ форму с вопросами — это НЕ отправка (submit — отдельная _SUBMIT).
     Нужен только `run()` (бэклог хранит URL карточки); в inline-пути apply_one клик уже сделан."""
@@ -218,7 +225,7 @@ def _open_form(page) -> None:
     page.wait_for_timeout(1_500)
 
 
-def _dry_preview(page, vid: str, rec: dict) -> None:
+def _dry_preview(page: Any, vid: str, rec: dict[str, Any]) -> None:
     """Показать поля + резолвинг для одной вакансии, ничего не трогая."""
     resume_ctx = form_fill.build_resume_ctx() if FORMS_ENABLED else ""
     fields = form_read.extract_fields(page)
@@ -234,7 +241,7 @@ def _dry_preview(page, vid: str, rec: dict) -> None:
     log.info("[{}] {} — полей {}, пробелов {}", vid, rec.get("name"), len(fields), gaps)
 
 
-def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict:
+def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict[str, Any]:
     """Пройти форм-очередь и снять структуру каждой анкеты (вопрос/тип/опции) в кеш
     `forms_cache.json`. Пропускает уже закешированные (если не `refresh`) — СЛЕДУЮЩИЙ проход
     трогает только новые формы, мёртвые (0 полей) больше не открывает. DRY: submit НЕ жмётся.
@@ -300,7 +307,7 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict:
     return {"queue": len(queue), "swept": swept, "cached": len(cached)}
 
 
-def clean_queue() -> dict:
+def clean_queue() -> dict[str, Any]:
     """Вычистить форм-очередь БЕЗ браузера: мёртвые (кеш status = empty/error — истёкшие/без формы)
     и уже откликнутые (в applied_log/marks) — чтобы не гонять зря и НЕ слать повторный отклик."""
     q = store.forms()
@@ -320,7 +327,7 @@ def clean_queue() -> dict:
 
 
 def run(dry: bool = False, only: str = "", headless: bool = False,
-        cover_mode: str = "template", limit: int = 0) -> dict:
+        cover_mode: str = "template", limit: int = 0) -> dict[str, Any]:
     """Обработать НАКОПЛЕННУЮ форм-очередь тем же авто-путём, что inline apply: полные анкеты ->
     заполнить + «Откликнуться»; пробелы -> лог. `--dry` — только резолвинг; `limit` — максимум
     ОТПРАВЛЕННЫХ за запуск (дренаж бэклога батчами, не одним залпом)."""
@@ -388,8 +395,12 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
                 # HH_DAILY_APPLY_CAP не защитил и мы упёрлись в лимит HH. В журнал такие отклики
                 # попадали лишь позже — синком из чатов и с чужим каналом `hh`.
                 store.bump_quota(1)
+                # employer — из кеша вакансий, а не из rec: в форм-очереди лежат только
+                # {name, url, ts}. Без него запись журнала уходит с пустым работодателем, и
+                # когда вакансия выпадет из выдачи, её карточка-«призрак» в ленте не найдётся
+                # поиском по компании (01.08.2026, docs/errors.md).
                 store.log_applied(vid, rec.get("name", ""), rec.get("url", ""),
-                                  via=ApplyChannel.CRON)
+                                  via=ApplyChannel.CRON, employer=_vacancy_ctx(vid)[0])
                 submitted += 1
                 time.sleep(random.uniform(*FORM_PAUSE))    # см. FORM_PAUSE: темп важнее скорости
     log.info("Форм-очередь: {} обработано, {} откликов отправлено", len(queue), submitted)

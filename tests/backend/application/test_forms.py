@@ -391,18 +391,24 @@ class _RunPage:
 @pytest.fixture
 def drain_env(monkeypatch):
     """Очередь из одной вакансии + перехват всех записей учёта."""
-    seen: dict = {"quota": 0, "journal": [], "marked": [], "removed": []}
+    seen: dict = {"quota": 0, "journal": [], "employers": [], "marked": [], "removed": []}
     monkeypatch.setattr(forms.store, "forms",
                         lambda: {"111": {"name": "Backend разработчик",
                                          "url": "https://hh.ru/vacancy/111"}})
+    # Контекст вакансий — заглушкой: в очереди лежат только {name, url, ts}, работодателя
+    # дренаж берёт отсюда. Без подмены _load_vac_ctx() полез бы в реальный vacancies_raw.json.
+    monkeypatch.setattr(forms, "_VAC_CTX",
+                        {"111": ("Константинов Семен Павлович", "", "Backend разработчик", None)})
     monkeypatch.setattr(forms.store, "applied_ids", set)
     monkeypatch.setattr(forms.store, "marks", dict)
     monkeypatch.setattr(forms.store, "remove_form", lambda v: seen["removed"].append(v))
     monkeypatch.setattr(forms.store, "mark_applied", lambda v: seen["marked"].append(v))
     monkeypatch.setattr(forms.store, "bump_quota",
                         lambda n: seen.__setitem__("quota", seen["quota"] + n))
-    monkeypatch.setattr(forms.store, "log_applied",
-                        lambda vid, name, url, via, **k: seen["journal"].append((vid, via.code)))
+    def _log(vid, name, url, via, **k):
+        seen["journal"].append((vid, via.code))
+        seen["employers"].append(k.get("employer", ""))
+    monkeypatch.setattr(forms.store, "log_applied", _log)
     return seen
 
 
@@ -418,6 +424,19 @@ def test_sent_form_reply_counts_toward_daily_quota(monkeypatch, drain_env):
     assert drain_env["journal"] == [("111", "cron")]
     assert drain_env["marked"] == ["111"]
     assert drain_env["removed"] == ["111"]
+
+
+def test_drained_form_writes_employer_to_journal(monkeypatch, drain_env):
+    # Регрессия 01.08.2026: дренаж форм писал журнал без работодателя (в очереди его нет),
+    # и «призрак» выпавшей из выдачи вакансии не находился поиском по компании.
+    import sys
+    monkeypatch.setitem(sys.modules, "playwright.sync_api",
+                        type(sys)("playwright.sync_api"))
+    import contextlib as _ctx
+    sys.modules["playwright.sync_api"].sync_playwright = _ctx.nullcontext
+    _stub_browser(monkeypatch, autofill_result=True)
+    forms.run()
+    assert drain_env["employers"] == ["Константинов Семен Павлович"]
 
 
 def test_unsent_form_leaves_quota_untouched(monkeypatch, drain_env):

@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import {
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
   countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
-  resolveCur, statusInfo, tagClr, tagInk,
+  journalById, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
@@ -549,5 +549,71 @@ describe('chatAgeLabel — давность последнего сообщен�
     assert.equal(chatAgeLabel('', now), '');
     assert.equal(chatAgeLabel('garbage', now), '');
     assert.equal(chatAgeLabel('2026-07-25T09:00:00+03:00', now), '');
+  });
+});
+
+/* Регрессия 01.08.2026: чат по вакансии 135759424 («QA-инженер (тестировщик)»,
+   Константинов Семен Павлович) не находился НИ ПО ОДНОМУ фильтру ленты. Вакансия выпала
+   из сборки feed-data.js, «призрак» из журнала создавался с employer: '', а поиск идёт по
+   `name + employer` -> запрос по компании не матчился никогда. */
+describe('journalById — свёртка журнала откликов', () => {
+  it('на вакансию берётся САМЫЙ РАННИЙ отклик', () => {
+    const byId = journalById([
+      { id: '7', ts: '2026-07-31T13:13:44+04:00', via: 'cron', status: 'applied' },
+      { id: '7', ts: '2026-07-20T10:00:00+04:00', via: 'manual', status: 'applied' },
+    ]);
+    assert.equal(byId['7'].ts, '2026-07-20T10:00:00+04:00');
+    assert.equal(byId['7'].via, 'manual');
+  });
+
+  it('переносит employer из журнала', () => {
+    const byId = journalById([{
+      id: '135759424', ts: '2026-07-31T13:13:44+04:00', via: 'cron', status: 'applied',
+      name: 'QA-инженер (тестировщик)', url: 'https://hh.ru/vacancy/135759424',
+      employer: 'Константинов Семен Павлович',
+    }]);
+    assert.equal(byId['135759424'].employer, 'Константинов Семен Павлович');
+  });
+
+  it('записи без id отбрасываются', () => {
+    assert.deepEqual(journalById([{ ts: '2026-07-31T13:13:44+04:00' }, null]), {});
+  });
+});
+
+describe('syntheticCard — карточка-призрак из журнала', () => {
+  const a = {
+    ts: '2026-07-31T13:13:44+04:00', via: 'cron', status: 'applied',
+    name: 'QA-инженер (тестировщик)', url: 'https://hh.ru/vacancy/135759424',
+    employer: 'Константинов Семен Павлович',
+  };
+
+  it('сохраняет работодателя из журнала', () => {
+    assert.equal(syntheticCard('135759424', a).employer, 'Константинов Семен Павлович');
+  });
+
+  /* chat вешает оверлей (main.js::initOverlay) уже поверх карточки — воспроизводим тот же
+     порядок: сначала призрак из журнала, затем свёртка переписки. */
+  const ghostWithChat = () => [{ ...syntheticCard('135759424', a),
+                                 chat: { needs_reply: true, sender: 'human' } }];
+
+  it('поиск по компании находит призрака', () => {
+    const found = filterVacancies(ghostWithChat(),
+                                  flt({ search: ['константинов'], chatFilter: 'wait' }));
+    assert.deepEqual(found.map(v => v.id), ['135759424']);
+  });
+
+  it('нет работодателя в журнале -> пустая строка, не undefined', () => {
+    assert.equal(syntheticCard('42', { ts: '2026-07-31T13:13:44+04:00' }).employer, '');
+  });
+
+  it('нет имени в журнале -> подпись по id', () => {
+    assert.equal(syntheticCard('42', {}).name, 'Вакансия 42');
+    assert.equal(syntheticCard('42', {}).url, 'https://hh.ru/vacancy/42');
+  });
+
+  it('скрыт в общем списке, показан под чат-фильтром', () => {
+    assert.deepEqual(filterVacancies(ghostWithChat(), flt({})).map(v => v.id), []);
+    assert.deepEqual(filterVacancies(ghostWithChat(), flt({ chatFilter: 'wait' })).map(v => v.id),
+                     ['135759424']);
   });
 });

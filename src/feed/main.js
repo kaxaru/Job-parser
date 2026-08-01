@@ -9,6 +9,7 @@ import {
 } from './marks.js';
 import {
   appliedInRange, cardTone, convert, countActiveFilters, fmtK, isFrozenChat,
+  journalById, syntheticCard,
 } from './model.js';
 import { createStore } from './store.js';
 import {
@@ -426,28 +427,15 @@ function ymd(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-/* Журнал откликов -> {id: {ts, via, status, name, url}} с самым РАННИМ ts на вакансию
-   (первый отклик). Обогащаем существующие карточки и синтезируем «призраков» для откликов
-   на вакансии, которых нет в текущем сборе (они видны только в режиме «Мои отклики»). */
+/* Журнал откликов -> обогащение существующих карточек + синтез «призраков» для откликов
+   на вакансии, которых нет в текущем сборе (видны в «Мои отклики» и под чат-фильтрами).
+   Свёртка журнала и форма карточки — в model.js (чистые, под тестом). */
 function applyJournal(applied) {
-  const byId = {};
-  for (const e of applied || []) {
-    if (!e?.id) continue;
-    const prev = byId[e.id];
-    if (!prev || (e.ts && e.ts < prev.ts)) byId[e.id] = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url };
-  }
   let count = 0;
-  for (const [id, a] of Object.entries(byId)) {
+  for (const [id, a] of Object.entries(journalById(applied))) {
     const v = V_MAP[id];
     if (v) { v.applied = a; bustCard(id); count++; continue; }
-    const syn = {
-      id, name: a.name || `Вакансия ${id}`, url: a.url || `https://hh.ru/vacancy/${id}`,
-      employer: '', city: '', techs: [], sal_from: null, sal_to: null, sal_mid: null,
-      currency: '', exp: '', schedule: '', remote_any: false, role: '', age: null,
-      gap: null, fresh: 'unknown', resp: null, status: null, needs_form: false,
-      form_dead: false,
-      source: '', _synthetic: true, applied: a,
-    };
+    const syn = syntheticCard(id, a);
     VACANCIES.push(syn); V_MAP[id] = syn; count++;
   }
   return count;

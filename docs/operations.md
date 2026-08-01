@@ -78,12 +78,20 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
 
 **Расписание.** Ежедневно 12:00, `ExecutionTimeLimit` 2 ч, `StartWhenAvailable`.
 
-**Команда.** `cron/cron_collect.bat`: `hh.py collect`, затем best-effort пересборка статистики
-(шаги 0–3): `docker compose up -d --wait` (поднять стек), `search_demo/load.py`
-(переиндексация поиска), `hh.py dashboard` (Plotly), `python -m etl all` (DWH).
+**Команда.** `cron/cron_collect.bat`: `hh.py collect`, затем best-effort пересборка
+(шаги −1…3): `hh.py feed` (лента), `docker compose up -d --wait` (поднять стек),
+`search_demo/load.py` (переиндексация поиска), `hh.py dashboard` (Plotly),
+`python -m etl all` (DWH).
 
 **Что делает.** Пересбор вакансий трёх источников (hh + hirify + talanto) ->
-`data/vacancies_raw.json`, следом освежает поиск, дашборд и DWH из этого же среза.
+`data/vacancies_raw.json`, следом освежает ленту, поиск, дашборд и DWH из этого же среза.
+
+**Почему лента идёт первым шагом.** `feed-data.js` — снимок на диске, а не живое чтение
+кеша: `serve` его только раздаёт. Пока шаг отсутствовал (до 01.08.2026), лента застывала
+на дате ручного `hh.py feed` — в ней не хватало 5331 собранной вакансии и 68 вакансий
+с живыми чатами. Оверлей `initOverlay` подтягивает status/forms/chats и синтезирует
+«призраков» из журнала, но состав ленты и `hr_ts` (сортировка «Ответы») он не чинит.
+Порядок: до Docker-блока, потому что шаги 0/1/3 идут минуты и падают на выключенном Docker.
 
 **Ресурсы.** Сам сбор — curl/HTTP (браузер и `autoclick.lock` не трогает). Шаги пересборки
 дополнительно поднимают Docker-стек и гоняют ETL/дашборд (best-effort: Docker выключен ->
@@ -344,7 +352,8 @@ Get-Process python, node -ErrorAction SilentlyContinue      # должно бы�
 
 ```
 python hh.py collect                   # уважает кеш и гейт
-python hh.py feed                      # пересобрать ленту
+python hh.py feed                      # пересобрать ленту (крон делает это сам после сбора;
+                                       # руками — когда нужна лента свежее суточной)
 python hh.py dashboard
 python hh.py serve --port 8000
 python hh.py autoclick --apply-limit 1 --headed     # один отклик, глазами
