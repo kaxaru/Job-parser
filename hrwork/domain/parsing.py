@@ -206,9 +206,31 @@ _CREATIVE_NON_IT = re.compile(
 )
 
 
+# ПОДДЕРЖКА, английская и «сопроводительная» (01.08.2026). Правило про поддержку в
+# _HARD_NON_IT знало только русские тайтлы, поэтому «IT Support L3 (IT Administrator)»,
+# «helpdesk» и «Инженер сопровождения 1С (L2)» проходили мимо и попадали в IT — часть даже
+# в «Разработчика», потому что 1С считается языком и открывала фолбэк по стеку.
+#
+# Отдельным гейтом, а не строкой в _HARD_NON_IT: тот безусловен, а здесь нужен щадящий
+# случай. «Сопровождение» часто дописывают к обязанностям настоящего разработчика
+# («Разработчик 1С / Сопровождение 1С», «Инженер-программист по сопровождению 1С»), и
+# такие тайтлы прятать нельзя. Замер: паттерн ловит 477 вакансий, из них 8 названы
+# разработчиком — их гейт пропускает.
+_SUPPORT_NON_IT = re.compile(
+    r'\bit support\b|helpdesk|help desk|хелпдеск|\bsupport engineer\b|'
+    r'групп\w*\s+поддержк|поддержк\w*\s+(?:1с|бизнес|пользовател|приложен)|'
+    # `.{0,15}` ловит слово между, как и в _HARD_NON_IT: «по сопровождению HR платформы»
+    r'сопровожден\w*.{0,15}?(?:1с|\bsap\b|платформ)',
+    re.I,
+)
+_DEV_NOUN = re.compile(r'разработчик|программист|\bdeveloper\b', re.I)
+
+
 def _detect_role(name: str, techs: list[str]) -> Role:
     if _HARD_NON_IT.search(name):
         return Role.NON_IT                      # безусловно не-IT (водитель/курьер/…)
+    if _SUPPORT_NON_IT.search(name) and not _DEV_NOUN.search(name):
+        return Role.NON_IT                      # поддержка — кроме тайтлов, назвавших разработчика
     if _GIG_NON_IT.search(name):
         return Role.NON_IT                      # крауд-подработка/разметка (AI-тренер/асессор)
     if _CREATIVE_NON_IT.search(name) and not any(t in LANG_KEYS for t in _detect_techs(name)):

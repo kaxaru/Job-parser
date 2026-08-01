@@ -286,3 +286,82 @@ def test_parse_vacancy_source_default_hh():
 
 def test_parse_vacancy_source_from_underscore_key():
     assert parse_vacancy({**RAW, "_source": "hirify"}).source == "hirify"
+
+
+# ── Детектор ролей: английские инженерные тайтлы (01.08.2026) ───────────────────────────
+# getmatch — кураторский IT-портал, поэтому его «Не-IT» = гарантированный промах детектора.
+# Замер на 491 карточке: 104 ложных «Не-IT», из них 47 чинят правила ниже. Детектор знал
+# русские тайтлы и терял чисто английские ML/инфра/безопасность.
+
+@pytest.mark.parametrize("title,expected", [
+    # ML: аббревиатуры, которых не было в словаре
+    ("MLE (Online RL) / Post-Training LLM (Middle+ / Senior)", Role.DATA_ML),
+    ("Senior DL (VLM, GigaChat Vision)", Role.DATA_ML),
+    ("Deep Learning/CUDA Engineer (GigaChat)", Role.DATA_ML),
+    ("Senior Research Engineer (LLM Pretraining)", Role.DATA_ML),
+    ("Специалист по разработке нейронных сетей", Role.DATA_ML),
+    # инфраструктура
+    ("System Administrator", Role.DEVOPS),
+    ("Windows Server Engineer", Role.DEVOPS),
+    ("Senior Database Engineer", Role.DEVOPS),
+    ("Senior IaaS / Kubernetes Platform Engineer", Role.DEVOPS),
+    # безопасность: infrasec != infosec, а DLP/EDR/СЗИ слова «безопасность» не содержат
+    ("Senior InfraSec Engineer", Role.SECURITY),
+    ("Penetration Testing Specialist (CICADA8)", Role.SECURITY),
+    ("Администратор систем сбора событий с конечных точек (EDR)", Role.SECURITY),
+    ("Администратор средств защиты от утечек критической информации (DLP)", Role.SECURITY),
+    ("DevSecOps-инженер", Role.SECURITY),
+    # управление инженерными командами
+    ("Engineering Manager: Offsite Discovery", Role.MANAGER),
+    ("Principal Tech Lead в домен Retail", Role.MANAGER),
+    ("Старший менеджер продукта (Каналы в MAX)", Role.MANAGER),
+    ("Staff Engineer", Role.DEVELOPER),
+])
+def test_detect_role_english_engineering_titles(title, expected):
+    assert _detect_role(title, []) is expected
+
+
+def test_devsecops_stays_security_not_devops():
+    """DevOps проверяется РАНЬШЕ Security: пока `devsecops` стоял в DevOps, 24 вакансии
+    с явной «безопасной разработкой» переставали быть Security."""
+    assert _detect_role("Инженер по безопасной разработке (DevSecOps)", []) is Role.SECURITY
+    assert _detect_role("Application Security инженер (AppSec/DevSecOps)", []) is Role.SECURITY
+
+
+@pytest.mark.parametrize("title,expected", [
+    # IaaS — домен продукта, а не роль: тайтл называет backend-разработчика
+    ("Старший Go-разработчик, IaaS", Role.DEVELOPER),
+    # голый kubernetes в DevOps крал разработчиков (DevOps идёт раньше в таблице)
+    ("Python-разработчик (Kubernetes)", Role.DEVELOPER),
+    # `platform engineer` крал у Data Eng
+    ("Data Platform Engineer", Role.DATA_ENG),
+])
+def test_broad_infra_words_do_not_steal_specific_roles(title, expected):
+    assert _detect_role(title, ["Python"]) is expected
+
+
+# ── Поддержка вне выдачи: английские варианты правила (01.08.2026) ──────────────────────
+# Решение сохранено прежним (инцидент «Яндекс Крауд: Поддержка»): поддержка — не инженерная
+# роль. Правило знало только русские тайтлы, поэтому английские уезжали в IT, а «сопровождение
+# 1С» — даже в «Разработчика», т.к. 1С считается языком и открывала фолбэк по стеку.
+
+@pytest.mark.parametrize("title", [
+    "IT Support L3 (IT Administrator)",
+    "Helpdesk инженер",
+    "Инженер сопровождения 1С (L2)",
+    "Специалист группы поддержки бизнес-приложений",
+    "Главный инженер по сопровождению HR платформы / Консультант SAP",
+])
+def test_support_titles_are_non_it(title):
+    assert _detect_role(title, ["1С"]) is Role.NON_IT
+
+
+@pytest.mark.parametrize("title", [
+    "Разработчик 1С / Сопровождение 1С (доработка, конфигурирование)",
+    "Инженер-программист по сопровождению 1С",
+    "Старший программист отдела сопровождения 1С",
+])
+def test_support_gate_spares_titles_that_name_a_developer(title):
+    """«Сопровождение» часто дописывают к обязанностям настоящего разработчика — прятать
+    такие тайтлы нельзя. Замер: паттерн ловит 477 вакансий, названы разработчиком 8."""
+    assert _detect_role(title, ["1С"]) is not Role.NON_IT
