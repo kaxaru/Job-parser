@@ -26,6 +26,10 @@ python dwh_demo/search_demo/bench.py   # меряет -> REPORT.md (UTF-8)
 - btree по `city` и `sal_mid`
 - колонки `source` (портал) и `created_at` (дата создания) + btree `ix_source`/`ix_created`
   — фильтры источника/свежести на странице `/search` основного проекта
+- btree `ix_salmid_page` по `(sal_mid DESC NULLS LAST, id)` — под ORDER BY стартового
+  показа `/search`. Отдельно от `ix_salmid`: у ASC-индекса NULL'ы в конце, и обратный
+  проход даёт `DESC NULLS FIRST` — планировщик его не возьмёт. Замер 01.08.2026: запрос
+  без `q` 138 мс -> 1.3 мс (22 буфера вместо ~50 000)
 
 `bench.py` перезаписывает `REPORT.md` результатами прогона.
 

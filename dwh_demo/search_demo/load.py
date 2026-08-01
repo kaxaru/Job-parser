@@ -101,6 +101,13 @@ def main():
     cur.execute("CREATE INDEX ix_name_trgm ON search_demo.vacancies USING GIN (name gin_trgm_ops);")
     cur.execute("CREATE INDEX ix_city      ON search_demo.vacancies (city);")
     cur.execute("CREATE INDEX ix_salmid    ON search_demo.vacancies (sal_mid);")
+    # Порядок колонок ТОЧНО повторяет ORDER BY стартового показа /search
+    # (search.py::_PLAIN.order = "sal_mid DESC NULLS LAST, id"). ix_salmid для него
+    # непригоден: у ASC-индекса NULL'ы в конце, и обратный проход даёт DESC NULLS FIRST —
+    # планировщик такой индекс не возьмёт и уходит в Seq Scan по всем 87k строк.
+    # Замер 01.08.2026: запрос без q 138 мс -> 1.3 мс (22 буфера вместо ~50 000).
+    cur.execute("CREATE INDEX ix_salmid_page ON search_demo.vacancies "
+                "(sal_mid DESC NULLS LAST, id);")
     cur.execute("CREATE INDEX ix_created   ON search_demo.vacancies (created_at);")
     cur.execute("CREATE INDEX ix_source    ON search_demo.vacancies (source);")
     cur.execute("ANALYZE search_demo.vacancies;")
