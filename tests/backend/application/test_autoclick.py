@@ -531,3 +531,80 @@ def test_sync_never_skips_chat_missing_from_cache_or_journal():
     st = {"1": "DISCARD"}
     assert autoclick._sync_from_cache(old, {}, st, {"1"}, _NOW) is False        # нет в кеше
     assert autoclick._sync_from_cache(old, _CACHED, st, set(), _NOW) is False   # не журналирован
+
+
+# ── Watchdog: пороги проверены замером (03.08.2026) ─────────────────────────────────────
+# Дедлайна на ОТДЕЛЬНЫЙ Playwright-вызов не существует: sync-API привязан к своему потоку
+# (вызов из демон-потока валит драйвер с greenlet.error), а залипший вызов отпускает python
+# только со смертью процесса. Watchdog — единственное средство, и порог снижать некуда.
+
+def test_watchdog_threshold_covers_the_longest_healthy_run():
+    """Замер 128 прогонов: медиана 27 мин, p90 36, максимум 37.4. Порог обязан быть выше,
+    иначе watchdog начнёт резать рабочие прогоны вместо зависших."""
+    longest_healthy_s = 38 * 60
+    assert longest_healthy_s < autoclick.WATCHDOG_KILL_S
+
+
+def test_watchdog_fires_before_the_next_cron_slot():
+    """Слоты идут каждые 90 минут: зависший прогон обязан умереть до следующего."""
+    assert autoclick.WATCHDOG_KILL_S < 90 * 60
+    assert autoclick.WATCHDOG_DUMP_S < autoclick.WATCHDOG_KILL_S   # дамп стека ДО сноса
+
+
+# ── Предохранитель от блокировки HH (02.08.2026) ────────────────────────────────────────
+# «Кнопки отклика нет» трактуется как архив/внешний сайт. При мягкой блокировке аккаунта
+# страница грузится, React-корень на месте, а кнопки нет — и прогон час молол активные
+# вакансии, каждой карточкой подтверждая HH, что перед ним бот. Замер 19 суток лога:
+# отношение пропусков к откликам выросло с 0.3 до 36, максимальная серия — 268 подряд.
+
+@pytest.fixture
+def batch_env(monkeypatch):
+    """Пул из 200 кандидатов; все браузерные вызовы и запись состояния — заглушками."""
+    seen = {"applied": [], "quota": 0}
+    pool = [autoclick.Candidate(id=str(i), name=f"Вакансия {i}", url=f"https://hh.ru/vacancy/{i}")
+            for i in range(200)]
+    monkeypatch.setattr(autoclick, "pick_candidates", lambda *a, **k: pool)
+    monkeypatch.setattr(autoclick, "vacancy_repository", lambda: type("R", (), {"load": staticmethod(list)})())
+    monkeypatch.setattr(autoclick, "skippable_form_ids", lambda *a, **k: set())
+    monkeypatch.setattr(autoclick.store, "applied_today", lambda: 0)
+    monkeypatch.setattr(autoclick.store, "marks", dict)
+    monkeypatch.setattr(autoclick.store, "forms", dict)
+    monkeypatch.setattr(autoclick.store, "form_cache", dict)
+    monkeypatch.setattr(autoclick.store, "mark_applied", lambda v: seen["applied"].append(v))
+    monkeypatch.setattr(autoclick.store, "bump_quota", lambda n: seen.__setitem__("quota", seen["quota"] + n) or seen["quota"])
+    monkeypatch.setattr(autoclick.store, "log_applied", lambda *a, **k: None)
+    monkeypatch.setattr(autoclick.store, "merge_marks", lambda m: None)
+    monkeypatch.setattr(autoclick, "_send_cover_via_chat", lambda *a, **k: True)
+    monkeypatch.setattr(autoclick.time, "sleep", lambda s: None)
+    return seen
+
+
+def test_blocked_account_stops_run_instead_of_grinding_the_pool(batch_env, monkeypatch):
+    """Все карточки без кнопки -> останов на пороге, а не перемалывание всего пула."""
+    tried = []
+
+    def always_skip(page, cand):
+        tried.append(cand.id)
+        return autoclick.ApplyOutcome.SKIP
+
+    monkeypatch.setattr(autoclick, "apply_one", always_skip)
+    assert autoclick._apply_batch(page=None, apply_limit=20, daily_cap=200) == 0
+    assert len(tried) == autoclick.APPLY_SKIP_STREAK_MAX      # ровно порог, не весь пул
+
+
+def test_successful_apply_resets_the_skip_streak(batch_env, monkeypatch):
+    """Пропуски вперемешку с откликами — норма пула (архив, уже откликались, внешние):
+    серия обнуляется, и прогон продолжается до цели по откликам."""
+    seq = []
+
+    def alternate(page, cand):
+        # 40 пропусков, затем отклик — и так по кругу: до порога 50 подряд не доходит
+        i = int(cand.id)
+        out = autoclick.ApplyOutcome.APPLIED if i % 41 == 40 else autoclick.ApplyOutcome.SKIP
+        seq.append(out)
+        return out
+
+    monkeypatch.setattr(autoclick, "apply_one", alternate)
+    applied = autoclick._apply_batch(page=None, apply_limit=3, daily_cap=200)
+    assert applied == 3
+    assert len(seq) > autoclick.APPLY_SKIP_STREAK_MAX          # прогон НЕ остановился на пороге

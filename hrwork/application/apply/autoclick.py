@@ -39,7 +39,7 @@ from hrwork.application.apply.runtime.lock import (
 from hrwork.application.apply.runtime.lock import release_if_mine
 from hrwork.application.apply.runtime.quota import DAILY_CAP_DEFAULT
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import DATA_DIR, FORMS_ENABLED, log
+from hrwork.config import APPLY_SKIP_STREAK_MAX, DATA_DIR, FORMS_ENABLED, log
 from hrwork.infrastructure.sources.hh import BROWSER_UA
 from hrwork.infrastructure.storage import vacancy_repository
 
@@ -79,6 +79,13 @@ POOL_MULT = 5              # пул кандидатов = eff × POOL_MULT (з�
 # node + chromium ОСИРОТЕВАЮТ и продолжают держать профиль и autoclick.lock (наблюдали 19.07 —
 # после «завершения» задачи жило 10 процессов). Поэтому убиваем дерево сами: taskkill /T по
 # собственному pid снимает и node-драйвер, и Chromium.
+# Пороги ПРОВЕРЕНЫ и оставлены прежними (замер 03.08.2026 по 128 прогонам): здоровый прогон
+# идёт медиана 27 мин, p90 36, максимум 37.4 — снижать 50 минут некуда, любое ужесточение
+# начинает резать рабочие прогоны, а выигрыш (45 вместо 50) в пределах шума.
+# Дедлайна на ОТДЕЛЬНЫЙ Playwright-вызов не существует: sync-API привязан к своему потоку
+# (вызов из чужого валит драйвер с greenlet.error), а залипший вызов отпускает python только
+# со смертью процесса. Поэтому watchdog остаётся ЕДИНСТВЕННЫМ средством против зависания,
+# а от МОЛЧАЛИВОЙ деградации защищает предохранитель APPLY_SKIP_STREAK_MAX ниже.
 WATCHDOG_DUMP_S = 40 * 60   # стек всех потоков в лог — диагностика
 WATCHDOG_KILL_S = 50 * 60   # жёсткий снос дерева (до ExecutionTimeLimit=60м, тот уже не нужен)
 
@@ -156,6 +163,19 @@ def is_captcha(page: Any) -> bool:
     with contextlib.suppress(Exception):
         return _CAPTCHA_PATH in (page.url or "")
     return False
+
+
+# ── Дедлайн на браузерный вызов: НЕ через поток ─────────────────────────────────────────
+# Первая попытка (03.08.2026) гоняла Playwright-вызов в демон-потоке с join(timeout).
+# Это НЕПРАВИЛЬНО и ломает драйвер: sync-API Playwright построен на greenlet'ах, привязанных
+# к потоку, создавшему соединение, и вызов из чужого потока падает с
+#   greenlet.error: cannot switch to a different thread (which happens to have exited)
+# Юнит-тесты этого не показали — обёртку проверяли на time.sleep, а не на живой странице.
+#
+# Рабочий приём тот же, что уже доказан watchdog'ом: залипший вызов не отпускает python
+# ничем, кроме СМЕРТИ ПРОЦЕССА, поэтому дедлайн живёт на уровне прогона (WATCHDOG_KILL_S),
+# а не отдельного вызова. Снижен с 50 до 8 минут: клин стоит крону 8 минут вместо целого
+# слота, а браузер поднимется заново следующим слотом.
 
 
 def _goto(page: Any, url: str, tries: int = 3) -> bool:
@@ -689,6 +709,8 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
 
     applied: dict[str, str] = {}       # НОВЫЕ отклики (идут в квоту)
     reconciled: dict[str, str] = {}    # уже откликались ранее (только синхронизация marks)
+    skipped = 0                        # всего пропусков за прогон (для сводки в конце)
+    streak = 0                         # ПОДРЯД идущих пропусков — детектор блокировки
     for cand in pool:
         if len(applied) >= eff:        # набрали нужное число НОВЫХ откликов — стоп
             break
@@ -721,7 +743,25 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
                       "Пройди проверку вручную: hh.py autoclick --login", cand.url)
             break
         else:
+            skipped += 1
+            streak += 1
             log.info("Пропуск (внешний/архив): {}  {}", cand.name, cand.url)
+            if streak >= APPLY_SKIP_STREAK_MAX:
+                # «Кнопки отклика нет» трактуется как архив/внешний сайт — но столько
+                # подряд активных вакансий без кнопки не бывает. Так выглядит МЯГКАЯ
+                # блокировка аккаунта: страница грузится, React-корень на месте, а
+                # откликнуться нельзя. Инцидент 02.08.2026: за сутки 180 пропусков на
+                # 5 откликов, и все «архивные» вакансии лежали в сборе ТОГО ЖЕ дня как
+                # активные. Порог по замеру 19 суток лога: в здоровые сутки максимальная
+                # серия 8 и 21, при блокировке — 97, 150, 268.
+                # Дальше идти вредно: каждая карточка — ещё один бот-сигнал (та же логика,
+                # что у капча-гейта выше).
+                log.error("{} вакансий ПОДРЯД без кнопки отклика — это не архив, а похоже "
+                          "на блокировку HH. Прогон ОСТАНОВЛЕН. Проверь сессию глазами: "
+                          "hh.py autoclick --login", streak)
+                break
+        if status is not ApplyOutcome.SKIP:
+            streak = 0                 # любой не-пропуск снимает подозрение
         time.sleep(random.uniform(*APPLY_PAUSE))
 
     # найденные «уже откликались» — в marks (чтобы не выбирать их впредь); новые отклики
@@ -733,6 +773,14 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
                     len(applied), store.applied_today(), daily_cap, len(reconciled))
     elif reconciled:
         log.info("Новых откликов 0; синхронизировано ранее откликнутых: {}", len(reconciled))
+    # Сводка прогона — ЕДИНСТВЕННЫЙ сигнал, по которому деградация видна В ЭКСПЛУАТАЦИИ.
+    # Отношение пропусков к откликам росло с 0.3 до 36 за две недели, и заметил это
+    # пользователь, а не лог: строк «Пропуск» много, но никто их не считал.
+    # Ориентир: <=1.5 — норма, >=5 — разбираться.
+    ratio = f"{skipped / len(applied):.1f}" if applied else "все"
+    level = log.warning if (not applied or skipped / max(len(applied), 1) >= 5) else log.info
+    level("Итог прогона: откликов {}, пропусков {} (скип/отклик {}), уже откликались {}",
+          len(applied), skipped, ratio, len(reconciled))
     return len(applied)
 
 
