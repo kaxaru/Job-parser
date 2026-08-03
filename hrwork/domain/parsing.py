@@ -1,4 +1,5 @@
 """Разбор сырого JSON HH API в доменную модель Vacancy."""
+import hashlib
 import re
 from typing import Any
 
@@ -86,6 +87,17 @@ _DEVICE_OS = re.compile(r'\b(?:ios|android)\b', re.I)
 def _strip_device_req(text: str) -> str:
     return _DEVICE_CLAUSE.sub(
         lambda m: ' ' if _DEVICE_OS.search(m.group(0)) else m.group(0), text)
+
+
+# Сигнатура словаря стека. Техи кешируются в raw (`_techs`), и если поменять TECH_PATTERNS
+# или логику пресина, кеш обязан протухнуть САМ — иначе лента месяцами показывала бы стек,
+# посчитанный старыми правилами, и никто бы не заметил. Хеш считается по исходнику словаря
+# ПЛЮС версия алгоритма: правка _detect_techs без правки паттернов тоже требует пересчёта.
+_DETECT_ALGO_VERSION = 1
+DETECT_SIG = hashlib.blake2s(
+    (repr(sorted(TECH_PATTERNS.items())) + f"|v{_DETECT_ALGO_VERSION}").encode("utf-8"),
+    digest_size=6,
+).hexdigest()
 
 
 def _detect_techs(text: str) -> list[str]:
@@ -249,11 +261,17 @@ def _detect_role(name: str, techs: list[str]) -> Role:
 
 def build_vacancy(*, vid: Any, name: Any, city: Any, city_id: Any, salary: Any,
                   experience: Any, schedule: Any, detect_text: Any, employer: Any,
-                  created_at: Any, published_at: Any, responses: Any, source: Any) -> Vacancy:
+                  created_at: Any, published_at: Any, responses: Any, source: Any,
+                  techs: list[str] | None = None) -> Vacancy:
     """Доменная фабрика: собрать Vacancy, посчитав техи (по detect_text) и роль (по тайтлу).
     Единая точка детекции стека/роли для ВСЕХ ACL — и persisted-dict (parse_vacancy),
-    и адаптеров источников (hh/hirify). detect_text = тайтл + текст сниппета/карточки."""
-    techs = _detect_techs(detect_text)
+    и адаптеров источников (hh/hirify). detect_text = тайтл + текст сниппета/карточки.
+
+    `techs` — ГОТОВЫЕ техи из кеша (parse_vacancy, см. DETECT_SIG). Передаются, только
+    когда сигнатура словарей совпала; иначе None и считаем заново. Роль от техов дешёвая,
+    её всегда считаем здесь — так она не разъедется с текущим ROLE_PATTERNS."""
+    if techs is None:
+        techs = _detect_techs(detect_text)
     return Vacancy(
         id          = vid,
         name        = name,
@@ -292,4 +310,10 @@ def parse_vacancy(raw: dict[str, Any]) -> Vacancy:
         published_at = raw.get('published_at'),
         responses    = raw.get('responses'),
         source       = raw.get('_source') or 'hh',   # портал-источник (зеркалит _city)
+        # Готовые техи из кеша — ТОЛЬКО при совпадении сигнатуры словаря. Детекция стека
+        # стоила 46 с из 77 на загрузку 81k записей (1.48 млн re.search), и её результат
+        # не меняется, пока не менялись ни текст вакансии, ни TECH_PATTERNS. Текст меняется
+        # -> запись перезаписывается сбором целиком; словарь меняется -> не сойдётся
+        # DETECT_SIG, и техи пересчитаются сами.
+        techs        = raw.get('_techs') if raw.get('_dv') == DETECT_SIG else None,
     )

@@ -16,7 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from hrwork.config import RAW_FILE
 from hrwork.domain.models import Vacancy
-from hrwork.domain.parsing import parse_vacancy
+from hrwork.domain.parsing import DETECT_SIG, parse_vacancy
 
 from .files import save_meta
 from .jsonio import atomic_write_json, read_json_or
@@ -104,6 +104,11 @@ class JsonVacancyRepository:
             "_sig": r.sig,
             "_enriched": r.enriched,
             "_enriched_at": r.enriched_at,
+            # Кеш детекции стека: при загрузке техи берутся отсюда, если _dv совпал с
+            # текущей сигнатурой словаря (parsing.DETECT_SIG). Роль НЕ кешируем — она
+            # считается по тайтлу и техам, это дёшево, а ROLE_PATTERNS правятся чаще.
+            "_techs": v.techs,
+            "_dv": DETECT_SIG,
         }
 
 
