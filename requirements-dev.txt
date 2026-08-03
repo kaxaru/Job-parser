@@ -2,4 +2,7 @@
 -r requirements.txt
 pytest>=8
 ruff>=0.6
-mypy>=2.3          ; строгая проверка типов, настройки — mypy.ini
+# строгая проверка типов, настройки — mypy.ini
+# (комментарий через #, а НЕ через ';' — точка с запятой в requirements это
+#  маркер окружения PEP 508, и pip падает на нём: InvalidRequirement)
+mypy>=2.3
