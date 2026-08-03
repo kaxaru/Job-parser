@@ -583,7 +583,7 @@ def test_blocked_account_stops_run_instead_of_grinding_the_pool(batch_env, monke
     """Все карточки без кнопки -> останов на пороге, а не перемалывание всего пула."""
     tried = []
 
-    def always_skip(page, cand):
+    def always_skip(page, cand, **kw):
         tried.append(cand.id)
         return autoclick.ApplyOutcome.SKIP
 
@@ -597,7 +597,7 @@ def test_successful_apply_resets_the_skip_streak(batch_env, monkeypatch):
     серия обнуляется, и прогон продолжается до цели по откликам."""
     seq = []
 
-    def alternate(page, cand):
+    def alternate(page, cand, **kw):
         # 40 пропусков, затем отклик — и так по кругу: до порога 50 подряд не доходит
         i = int(cand.id)
         out = autoclick.ApplyOutcome.APPLIED if i % 41 == 40 else autoclick.ApplyOutcome.SKIP

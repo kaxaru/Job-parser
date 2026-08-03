@@ -440,10 +440,73 @@ def bump_resumes(page: Any) -> int:
 # СЛОТ сопроводительного через chatik /save (chat.save_cover, cookie-only, надёжно).
 _RESPONSE_SUBMIT = ('[data-qa="vacancy-response-letter-submit"], '
                     '[data-qa="vacancy-response-submit-popup"]')
+# Поле сопроводительного на странице/в модалке отклика.
+_RESPONSE_LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'
+# Маркеры АРХИВНОЙ вакансии (одна CSS-строка с запятой, не кортеж — см. _RESPONSE_SUBMIT).
+# Сверено 04.08.2026 на живых страницах: оба есть у архивных и отсутствуют у активных.
+# Отличать архив от «кнопки нет по другой причине» обязательно: под общим ярлыком
+# «внешний/архив» три недели пряталось обязательное сопроводительное письмо.
+_ARCHIVED = ('[data-qa="vacancy-archive-description"], '
+             '[data-qa="vacancy-title-archived-text"]')
 
 
-def apply_one(page: Any, cand: Candidate) -> ApplyOutcome:
-    """Отклик на одну вакансию (БЕЗ письма — письмо шлётся отдельно в чат). Исход:
+def _submit_diag(page: Any) -> str:
+    """Почему подтверждение отклика не пришло — одной строкой в лог.
+
+    До 03.08.2026 эта ветка возвращала SKIP МОЛЧА, и отказ был неотличим от архива: на 50
+    пропусков в логе приходилось 3 строки «кнопки отклика нет», остальные 47 не оставляли
+    ничего. Так деградация с 2.8 до 62 пропусков на отклик шла три недели незамеченной.
+    Только чтение DOM и всё под suppress: после клика страница может быть в любом состоянии,
+    и диагностика не имеет права уронить прогон."""
+    bits: list[str] = []
+    with contextlib.suppress(Exception):
+        bits.append(f"url={page.url}")
+    with contextlib.suppress(Exception):
+        btn = page.locator(_RESPONSE_SUBMIT).first
+        if not btn.count():
+            bits.append("сабмит=нет")
+        else:
+            bits.append("сабмит=disabled" if btn.is_disabled(timeout=1_000) else "сабмит=активен")
+    with contextlib.suppress(Exception):
+        letter = page.locator(_RESPONSE_LETTER).first
+        if letter.count():
+            bits.append("письмо=" + ("ПУСТО" if not (letter.input_value(timeout=1_000) or "").strip()
+                                     else "заполнено"))
+    return ", ".join(bits) or "состояние страницы недоступно"
+
+
+def _fill_letter_if_required(page: Any, cand: Candidate,
+                             cover_text: str = "", cover_mode: str = "template") -> bool:
+    """Вписать сопроводительное, если без него HH не даёт откликнуться.
+
+    Часть работодателей помечает письмо обязательным: поле пустое -> кнопка «Откликнуться»
+    приходит с `disabled`, клик по ней падает по таймауту, и отклик молча не уходит. Замер
+    03.08.2026: 11 из 11 «архивных» вакансий были живые (`active=true`) именно с этим.
+
+    Заполняем ТОЛЬКО когда кнопка disabled — там, где HH пускает и так, поведение прежнее
+    (письмо по-прежнему уходит в СЛОТ сопроводительного через chatik, см. _send_cover_via_chat).
+    Текст строится ЛЕНИВО: сюда доходят только живые вакансии, где отклик реально идёт,
+    поэтому режим 'llm' не тратит запрос на архив и пропуски."""
+    with contextlib.suppress(Exception):
+        btn = page.locator(_RESPONSE_SUBMIT).first
+        if not btn.count() or not btn.is_disabled(timeout=1_000):
+            return False                        # кнопка активна — письмо не требуется
+        letter = page.locator(_RESPONSE_LETTER).first
+        if not letter.count():
+            return False                        # disabled не из-за письма — не наш случай
+        # пробельный текст — не письмо: он не снимет disabled, но затрёт поле
+        text = (cover_text or "").strip() or cover.build_cover(cand, cover_mode).strip()
+        if not text:
+            return False
+        letter.fill(text, timeout=3_000)
+        log.info("{}: письмо обязательно — вписал в форму отклика ({} симв.)", cand.id, len(text))
+        return True
+    return False
+
+
+def apply_one(page: Any, cand: Candidate, cover_text: str = "",
+              cover_mode: str = "template") -> ApplyOutcome:
+    """Отклик на одну вакансию (письмо — только если HH требует его для отправки). Исход:
       APPLIED — отклик отправлен; ALREADY — уже откликались (кнопка заменена на «Чат»);
       FORM — вакансия с вопросами работодателя (в форм-очередь, руками);
       CAPTCHA — HH увёл на проверку, дальше идти бессмысленно;
@@ -455,10 +518,14 @@ def apply_one(page: Any, cand: Candidate) -> ApplyOutcome:
     try:
         btn.wait_for(timeout=8_000)
     except Exception:
-        # кнопки «Откликнуться» нет — уже откликались или внешний/архив
+        # кнопки «Откликнуться» нет — уже откликались, архив или что-то ещё
         if page.locator('[data-qa="vacancy-response-link-view-topic"]').count():
             return ApplyOutcome.ALREADY
-        log.debug("{}: кнопки отклика нет (архив/внешний сайт)", cand.id)
+        archived = False
+        with contextlib.suppress(Exception):
+            archived = bool(page.locator(_ARCHIVED).count())
+        log.info("{}: {}", cand.id, "вакансия в архиве" if archived else
+                 "кнопки отклика нет, и это НЕ архив — внешний сайт либо смена вёрстки HH")
         return ApplyOutcome.SKIP
     is_survey = bool(re.search(r"тест|опрос", btn.inner_text().lower()))
     if is_survey and not FORMS_ENABLED:                 # OFF (крон-дефолт) — как раньше, в очередь
@@ -485,6 +552,7 @@ def apply_one(page: Any, cand: Candidate) -> ApplyOutcome:
             return ApplyOutcome.FORM
         # try_autofill заполнил и нажал «Откликнуться» -> верифицируем общим блоком ниже
     else:
+        _fill_letter_if_required(page, cand, cover_text, cover_mode)
         with contextlib.suppress(Exception):        # обычный отклик — ОДИН локатор, не перебор!
             page.locator(_RESPONSE_SUBMIT).first.click(timeout=3_000)
     ok = page.locator('[data-qa="vacancy-response-link-view-topic"]').or_(
@@ -493,6 +561,7 @@ def apply_one(page: Any, cand: Candidate) -> ApplyOutcome:
         ok.wait_for(timeout=10_000)
         return ApplyOutcome.APPLIED
     except Exception:
+        log.warning("{}: отклик НЕ подтверждён за 10с — {}", cand.id, _submit_diag(page))
         return ApplyOutcome.SKIP
 
 
@@ -716,7 +785,7 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
             break
         status = ApplyOutcome.SKIP
         try:
-            status = apply_one(page, cand)
+            status = apply_one(page, cand, cover_mode=cover_mode)
         except Exception as e:
             log.warning("{} ({}): {}", cand.name, cand.id, e)
         if status is ApplyOutcome.APPLIED:
@@ -745,20 +814,26 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
         else:
             skipped += 1
             streak += 1
-            log.info("Пропуск (внешний/архив): {}  {}", cand.name, cand.url)
+            # причину пишет apply_one строкой выше — здесь только сам факт и вакансия
+            log.info("Пропуск: {}  {}", cand.name, cand.url)
             if streak >= APPLY_SKIP_STREAK_MAX:
-                # «Кнопки отклика нет» трактуется как архив/внешний сайт — но столько
-                # подряд активных вакансий без кнопки не бывает. Так выглядит МЯГКАЯ
-                # блокировка аккаунта: страница грузится, React-корень на месте, а
-                # откликнуться нельзя. Инцидент 02.08.2026: за сутки 180 пропусков на
-                # 5 откликов, и все «архивные» вакансии лежали в сборе ТОГО ЖЕ дня как
-                # активные. Порог по замеру 19 суток лога: в здоровые сутки максимальная
-                # серия 8 и 21, при блокировке — 97, 150, 268.
-                # Дальше идти вредно: каждая карточка — ещё один бот-сигнал (та же логика,
-                # что у капча-гейта выше).
-                log.error("{} вакансий ПОДРЯД без кнопки отклика — это не архив, а похоже "
-                          "на блокировку HH. Прогон ОСТАНОВЛЕН. Проверь сессию глазами: "
-                          "hh.py autoclick --login", streak)
+                # Длинная серия пропусков — сигнал, что прогон идёт вхолостую. Дальше идти
+                # вредно: если причина в аккаунте, каждая карточка — ещё один бот-сигнал
+                # (та же логика, что у капча-гейта выше).
+                #
+                # ВЕРДИКТ НЕ СТАВИМ. Предохранитель ставился 02.08.2026 с формулировкой
+                # «похоже на блокировку HH», и это оказалось неверно: 03.08 разбор показал,
+                # что 47 из 50 таких вакансий были живые (`active=true archived=false`), а
+                # отклик не уходил из-за ОБЯЗАТЕЛЬНОГО сопроводительного — кнопка submit
+                # приходила `disabled` (см. _fill_letter_if_required). Порог 50 был выбран
+                # по замеру, где «здоровые» сутки уже содержали этот же дефект, поэтому
+                # калибровать его заново надо на чистых прогонах, а не на той статистике.
+                #
+                # Причину каждого пропуска теперь пишет apply_one — она в логе выше.
+                log.error("{} вакансий ПОДРЯД без отклика — прогон идёт вхолостую и "
+                          "ОСТАНОВЛЕН. Причины пропусков — строками выше; если там «письмо "
+                          "обязательно» или «НЕ подтверждён», дело в форме отклика, а не в "
+                          "сессии. Сессию проверить: hh.py autoclick --login", streak)
                 break
         if status is not ApplyOutcome.SKIP:
             streak = 0                 # любой не-пропуск снимает подозрение
@@ -834,7 +909,7 @@ def _apply_one_vacancy(page: Any, vid: str, url: str, cover_text: str,
     воркером и разовым apply_vacancy). Пишет marks/quota/форм-очередь."""
     cand = Candidate(id=vid, name=name or vid, url=url or f"https://hh.ru/vacancy/{vid}")
     result = {"status": "error", "letter": False}
-    st = apply_one(page, cand)
+    st = apply_one(page, cand, cover_text=cover_text)
     result["status"] = st.code                   # wire-строка (тот же код) для ответа /api/apply
     if st is ApplyOutcome.APPLIED:
         store.mark_applied(vid)
