@@ -6,7 +6,15 @@
 <link rel="stylesheet" href="dashboard.css">
 <!-- Тема до отрисовки, чтобы страница не мигнула тёмной; ключ общий с лентой -->
 <script>try{if(localStorage.getItem('feed.theme')==='light'){document.documentElement.dataset.theme='light';}}catch(e){}</script>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+{# plotly.js: сперва ЛОКАЛЬНАЯ копия рядом с дашбордом (замер: CDN стоил 7.9 с из 8.0 с
+   до первого графика), CDN — только фолбэк, если файл не скачался при сборке.
+   defer: блокирующий <script> держал пустую страницу до загрузки библиотеки. #}
+{% if plotly_local %}
+<script defer src="{{ plotly_local }}"
+        onerror="var s=document.createElement('script');s.defer=true;s.src='{{ plotly_cdn }}';document.head.appendChild(s);"></script>
+{% else %}
+<script defer src="{{ plotly_cdn }}"></script>
+{% endif %}
 </head>
 <body>
 <header>
@@ -46,7 +54,12 @@
   {% for s in sources %}
   {% for k in keys %}
   {% if variants[s][k] %}
-  <div class="tab-pane" id="pane-{{ s }}-{{ k }}" data-src="{{ s }}" data-key="{{ k }}">{{ variants[s][k] }}</div>
+  <div class="tab-pane" id="pane-{{ s }}-{{ k }}" data-src="{{ s }}" data-key="{{ k }}">
+    <div class="fig-loading"><span class="spinner"></span>Строю график…</div>
+    <div class="fig" id="fig_{{ s }}_{{ k }}"></div>
+    {# Данные фигуры лежат инертным JSON: браузер их НЕ исполняет, пока график не понадобится #}
+    <script type="application/json" id="figdata_{{ s }}_{{ k }}">{{ variants[s][k] }}</script>
+  </div>
   {% endif %}
   {% endfor %}
   {% endfor %}

@@ -10,17 +10,44 @@ function _paneFor(src, key) {
       || document.getElementById(`pane-all-${key}`);   /* фолбэк: у источника нет этого графика */
 }
 
+/* ── Ленивая отрисовка ──
+   Раньше dashboard.py отдавал фигуры через pio.to_html, то есть 67 блоков
+   <script>Plotly.newPlot(…)</script> — и ВСЕ выполнялись при загрузке, хотя видна одна
+   панель (13 графиков × 5 срезов, 66 диаграмм в скрытые div'ы). Теперь данные лежат
+   инертным <script type="application/json">, а график строится по факту показа.
+   Построенные помним: повторное переключение вкладок бесплатное. */
+const _drawn = new Set();
+
+function _drawPane(pane) {
+  if (!pane || _drawn.has(pane.id)) { return; }
+  const host = pane.querySelector('.fig');
+  const data = pane.querySelector('script[type="application/json"]');
+  if (!host || !data) { return; }
+  if (!window.Plotly) { return; }      /* библиотека ещё грузится — перерисуем по её готовности */
+  const fig = JSON.parse(data.textContent);
+  Plotly.newPlot(host, fig.data, fig.layout, { responsive: true });
+  _drawn.add(pane.id);
+  pane.classList.add('fig-ready');     /* CSS убирает прелоадер */
+}
+
 function _render() {
   document.querySelectorAll('.tab-pane').forEach(p => { p.classList.remove('active'); });
   document.querySelectorAll('.tab-btn').forEach(b => { b.classList.remove('active'); });
   document.querySelectorAll('.src-btn').forEach(b => { b.classList.remove('active'); });
   const pane = _paneFor(_src, _key);
-  if (pane) { pane.classList.add('active'); }
+  if (pane) { pane.classList.add('active'); _drawPane(pane); }
   const btn = document.getElementById(`btn-${_key}`);
   if (btn) { btn.classList.add('active'); }
   const sbtn = document.getElementById(`src-${_src}`);
   if (sbtn) { sbtn.classList.add('active'); }
   window.dispatchEvent(new Event('resize'));            /* Plotly перерисует под размер видимой панели */
+}
+
+/* plotly.js подключён с defer и может приехать ПОЗЖЕ первого _render: тогда график не
+   построился и панель осталась с прелоадером. Дожимаем по загрузке страницы. */
+function _drawWhenPlotlyReady() {
+  if (window.Plotly) { _drawPane(_paneFor(_src, _key)); return; }
+  window.addEventListener('load', () => { _drawPane(_paneFor(_src, _key)); }, { once: true });
 }
 
 function showTab(key) { _key = key; _render(); }
@@ -80,6 +107,7 @@ function initDashboard(src, key) {
   _src = src;
   _key = key;
   _render();
+  _drawWhenPlotlyReady();      /* plotly с defer: если ещё не приехал — дорисуем по load */
   _applyTheme(localStorage.getItem('feed.theme') === 'light' ? 'light' : 'dark');
   const btn = document.getElementById('theme-toggle');
   if (btn) {

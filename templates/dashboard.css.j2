@@ -169,3 +169,29 @@ header p { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
 .tab-pane { display: none; }
 .tab-pane.active { display: block; }
 .tab-pane > div { width: 100% !important; }
+
+/* ── Прелоадер графика ──
+   Диаграмма строится лениво (dashboard.js::_drawPane), а plotly.js едет с CDN с defer.
+   До готовности панель показывала пустоту — теперь спиннер. Снимается классом
+   .fig-ready, который ставит JS сразу после Plotly.newPlot. */
+.fig-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 48px 8px;
+  color: {{ text }};
+  opacity: .65;
+  font-size: 14px;
+}
+.tab-pane.fig-ready .fig-loading { display: none; }
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid {{ grid }};
+  border-top-color: {{ accent }};
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+/* Пока график не построен, у .fig нулевая высота — страница не «прыгает» при появлении */
+.tab-pane .fig:empty { min-height: 0; }

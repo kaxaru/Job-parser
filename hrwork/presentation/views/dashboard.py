@@ -2,6 +2,7 @@
 import csv
 import datetime
 import shutil
+import urllib.request
 
 import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader
@@ -61,6 +62,36 @@ _CHARTS = {
 
 SOURCE_LABELS = {"all": "Все"}      # порталы берут своё имя как есть
 
+# plotly.js держим РЯДОМ с дашбордом, а не тянем с CDN на каждое открытие: замер 03.08.2026
+# показал 7.96 с из 8.03 с до первого графика — это скачивание ~3.5 МБ. Раньше цена пряталась
+# за отрисовкой 67 диаграмм, после ленивого рендера стала главной.
+# Версия ЗАКРЕПЛЕНА: фигуры сериализуются этой же версией plotly, расхождение мажора ломает
+# схему figure. Файл лежит в data/ (гитигнорен) и качается один раз при сборке; если скачать
+# не удалось — шаблон падает на CDN, дашборд остаётся рабочим.
+PLOTLY_VERSION = "2.35.2"
+PLOTLY_CDN = f"https://cdn.plot.ly/plotly-{PLOTLY_VERSION}.min.js"
+PLOTLY_LOCAL = DATA_DIR / f"plotly-{PLOTLY_VERSION}.min.js"
+
+
+def _ensure_plotly() -> str | None:
+    """Скачать plotly.js рядом с дашбордом, если его там нет. Возвращает имя файла для
+    относительной ссылки (работает и через `hh.py serve`, и при открытии как file://),
+    либо None — тогда шаблон возьмёт CDN."""
+    if PLOTLY_LOCAL.exists() and PLOTLY_LOCAL.stat().st_size > 1_000_000:
+        return PLOTLY_LOCAL.name
+    try:
+        # URL фиксированный https, не из пользовательского ввода
+        with urllib.request.urlopen(PLOTLY_CDN, timeout=60) as r:
+            data = r.read()
+        tmp = PLOTLY_LOCAL.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(PLOTLY_LOCAL)                  # атомарно: полуфайл не подхватится
+        log.info("plotly.js скачан локально: {:.1f} МБ -> {}", len(data) / 1e6, PLOTLY_LOCAL.name)
+        return PLOTLY_LOCAL.name
+    except Exception as e:
+        log.warning("plotly.js скачать не удалось ({}) — дашборд возьмёт CDN", e)
+        return None
+
 
 def build_dashboard() -> None:
     # Грузим вакансии для по-портальных срезов отчётов (фильтр источника в дашборде).
@@ -101,8 +132,11 @@ def build_dashboard() -> None:
                 continue                                   # «Порталы» — только в общем срезе
             if not (base / csvf).exists():
                 continue                                   # у источника нет данных для графика
-            vd[k] = pio.to_html(_fn(base), full_html=False, include_plotlyjs=False,
-                                div_id=f"fig_{src}_{k}", config={"responsive": True})
+            # to_json, а НЕ to_html: to_html оборачивает фигуру в <script>Plotly.newPlot(…),
+            # и все такие блоки выполняются при загрузке страницы — 67 диаграмм разом, из
+            # них 66 в скрытых панелях (13 графиков × 5 срезов). Отдаём чистые данные,
+            # а строит их dashboard.js по факту показа панели.
+            vd[k] = pio.to_json(_fn(base))
         variants[src] = vd
 
     # Динамическая статистика — без хардкода
@@ -138,6 +172,8 @@ def build_dashboard() -> None:
         total_vacancies=total_vacancies,
         total_cities=total_cities,
         year=datetime.date.today().year,
+        plotly_local=_ensure_plotly(),        # None -> шаблон возьмёт CDN
+        plotly_cdn=PLOTLY_CDN,
     )
 
     DASHBOARD_OUT.write_text(html, encoding="utf-8")
