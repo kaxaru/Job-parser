@@ -99,6 +99,10 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
       - run: ruff check .
+      # mypy strict — правило проекта («ноль ошибок на hrwork + hh.py», CLAUDE.md), которое
+      # до 07.08.2026 нигде не проверялось автоматически: в CI его не было, и локально он
+      # держался только дисциплиной. Тот же вызов стоит в hooks/pre-commit.
+      - run: mypy --config-file mypy.ini
       - run: pytest -q
 
   # ── JS-линтер: Biome по клиентским скриптам ленты/дашборда (корень репо) ──

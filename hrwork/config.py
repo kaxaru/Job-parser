@@ -76,7 +76,8 @@ log.add(
 # Порядок задаёт владельца id при дедупе (первое вхождение). hh — основной (с автооткликом),
 # hirify — доп. портал (JSON-API, только просмотр/аналитика).
 SOURCES = [s.strip() for s in os.getenv(
-    'SOURCES', 'hh,hirify,talanto,getmatch,arbeitnow,himalayas').split(',') if s.strip()]
+    'SOURCES',
+    'hh,hirify,talanto,getmatch,arbeitnow,himalayas,web3').split(',') if s.strip()]
 # Домен портала для подписи в карточке ленты. Живёт в Python и инжектится в feed-data.js
 # (PORTAL_SITES_PY) — дублировать в JS нельзя, так уже разъезжались константы. Источник
 # без записи здесь получает своё имя как есть, а не чужую подпись.
@@ -87,6 +88,7 @@ PORTAL_SITES = {
     'getmatch':  'getmatch.ru',
     'arbeitnow': 'arbeitnow.com',
     'himalayas': 'himalayas.app',
+    'web3':      'web3.career',
 }
 # Фильтр hirify (querystring API). Широкий: интересующие skills+специализации, БЕЗ
 # ограничений по грейду/формату/английскому/типу удалёнки (все значения). ~18k вакансий.
@@ -145,6 +147,24 @@ HIMALAYAS_PAGE_CONCURRENCY = int(os.getenv('HIMALAYAS_PAGE_CONCURRENCY', '12'))
 # нечего. Здесь же 67k посторонних записей удвоили бы кеш и откатили оптимизацию его загрузки
 # (67 -> 29 с), ничего не дав CRM по IT-вакансиям. Отсев по role.is_it — на входе источника.
 GLOBAL_SOURCES_IT_ONLY = os.getenv('GLOBAL_SOURCES_IT_ONLY', '1') != '0'
+# web3.career — web3/крипто-рынок. Токен бесплатный, но ОБЯЗАТЕЛЕН: без него API редиректит
+# на форму регистрации. Пусто -> источник пропускается (не падает).
+WEB3_TOKEN = os.getenv('WEB3_TOKEN', '').strip()
+# Пагинации у API НЕТ (проверены page/offset/skip/start/p — все отдают ту же сотню), потолок
+# limit=100. Поэтому охват набирается перебором ТЕГОВ: каждый отдаёт свои до ста.
+# Список задан явно, а НЕ парсится с главной портала: разметка может измениться в любой
+# момент, и молча опустевший список означал бы молча опустевший сбор. Отобраны теги под
+# профиль (backend/data/инженерия) плюс грейдовые и форматные — они дают срез по всему
+# порталу, а не только по стеку. Замер 07.08.2026: 17 тегов -> 957 уникальных вакансий.
+WEB3_TAGS = [t.strip() for t in os.getenv('WEB3_TAGS', ','.join((
+    'python', 'backend', 'golang', 'rust', 'node', 'typescript', 'javascript', 'java',
+    'sql', 'postgres', 'mongodb', 'redis', 'aws', 'docker', 'kubernetes', 'devops',
+    'infrastructure', 'cloud-engineer', 'data-science', 'ai', 'machine-learning',
+    'analyst', 'full-stack', 'front-end', 'engineer', 'dev', 'developer-relations',
+    'junior', 'entry-level', 'intern', 'remote', 'blockchain', 'defi', 'crypto',
+    'solidity', 'evm', 'layer-2', 'cryptography', 'security', 'gaming',
+))).split(',') if t.strip()]
+WEB3_TAG_CONCURRENCY = int(os.getenv('WEB3_TAG_CONCURRENCY', '6'))   # тегов параллельно
 HH_ENRICH_BATCH_MULT = int(os.getenv('HH_ENRICH_BATCH_MULT', '4'))          # batch = CONCURRENCY * MULT
 
 # ─── Нормализация зарплат ─────────────────────────────────────────────────────
