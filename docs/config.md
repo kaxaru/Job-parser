@@ -20,14 +20,25 @@
 
 ## Источники
 
-- `SOURCES` — `hh,hirify,talanto,getmatch`. Порядок задаёт победителя при кросс-портальном
-  дедупе (`domain/dedup.py`): hh первый, потому что с него работает автоотклик.
+- `SOURCES` — `hh,hirify,talanto,getmatch,arbeitnow,himalayas`. Порядок задаёт победителя при
+  кросс-портальном дедупе (`domain/dedup.py`): hh первый, потому что с него работает автоотклик.
+  Первые четыре — рынок РФ, последние два — глобальный (см. `docs/collect.md`).
 - `HIRIFY_PARAMS` — querystring фильтра hirify: skills + специализации, без ограничений
   по грейду и формату (~18k вакансий).
 - `HIRIFY_ENRICH_MAX = 600` — потолок per-vacancy запросов за прогон.
 - `TALANTO_PARAMS` — querystring фильтра talanto (`limit=100&sort=newest`, без `period` —
   все активные ~40–50k).
 - `TALANTO_ENRICH_MAX = 600` — потолок per-vacancy запросов talanto за прогон.
+- `ARBEITNOW_MAX_PAGES = 120`, `ARBEITNOW_PAGE_CONCURRENCY = 6` — обход arbeitnow (реально
+  ~41 страница по 100; лимит только страховка, обход рвётся на первой пустой).
+- `HIMALAYAS_MAX_PAGES = 2000`, `HIMALAYAS_PAGE_CONCURRENCY = 12` — обход himalayas. Страница
+  жёстко 20, выдача кончается на ~4870-й; дефолт берёт свежие ~40k карточек за 8.7 мин.
+  **Поднимать до полных 4900 без переделки сбора нельзя:** источник копит все записи в памяти
+  до возврата, и на дефолтных 2000 страницах процесс занимал 731 МБ (замер 07.08.2026) —
+  на 4900 это ~1.8 ГБ, а прогон идёт вместе с hh и talanto. Полный охват сперва требует
+  постраничной отдачи вместо накопления списка.
+- `GLOBAL_SOURCES_IT_ONLY = 1` — отсев не-IT на входе arbeitnow/himalayas (это общие
+  job-борды: 66 % и 63 % не-IT). `0` — забирать всё, включая ритейл и логистику.
 - `DESC_CACHE_MAX_AGE_DAYS = 14` — предохранитель от тихой правки описания без смены
   сигнала. `0` = чистый signal-based режим.
 
@@ -156,6 +167,8 @@
 `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` / `PGPASSWORD`.
 
 **Поведение:** `SOURCES`, `HIRIFY_PARAMS`, `HIRIFY_ENRICH_MAX`, `TALANTO_PARAMS`,
+`ARBEITNOW_MAX_PAGES`, `ARBEITNOW_PAGE_CONCURRENCY`, `HIMALAYAS_MAX_PAGES`,
+`HIMALAYAS_PAGE_CONCURRENCY`, `GLOBAL_SOURCES_IT_ONLY`,
 `TALANTO_ENRICH_MAX`, `TALANTO_PAGE_CONCURRENCY`, `TALANTO_ENRICH_CONCURRENCY`,
 `DESC_CACHE_MAX_AGE_DAYS`, `COLLECT_MIN_RATIO`, `COLLECT_SANITY_MIN`, `CURL_MAX_TIME`,
 `HTTP_BACKEND`, `HIRIFY_PAGE_CONCURRENCY`, `HIRIFY_ENRICH_CONCURRENCY`, `HH_ENRICH_BATCH_MULT`,

@@ -19,6 +19,7 @@ from typing import Any, NamedTuple
 # DSN живёт в одном месте — hrwork/config.PG_DSN (там же грузится .env). Здесь только
 # имя таблицы (специфично поиску). Спайк (load.py/bench.py) тоже берёт PG_DSN из config.
 from hrwork.config import PG_DSN
+from hrwork.config import SOURCES as CONFIG_SOURCES
 from hrwork.domain.freshness import FRESH_DAYS, GHOST_DAYS  # единый источник порогов (как в ленте)
 
 TABLE = os.getenv("SEARCH_TABLE", "search_demo.vacancies")
@@ -46,7 +47,10 @@ _FRESH_CASE = (
 _COLS = ("id, source, name, employer, city, sal_from, sal_to, sal_mid, currency, url, techs, "
          f"{_AGE} AS age_days, {_FRESH_CASE} AS fresh")
 
-SOURCES = ("hh", "hirify", "talanto", "getmatch")   # белый список порталов для фильтра
+# Белый список порталов для фильтра — из config.SOURCES, а НЕ своим кортежем: захардкоженный
+# список уже разъезжался с реальным набором источников (getmatch, 01.08.2026), и новый портал
+# молча выпадал из фильтра поиска, хотя в данных был.
+SOURCES = tuple(CONFIG_SOURCES)
 
 # WHERE-фрагмент фильтра свежести по классу (null-даты в «свежие/недавние» не попадают).
 _FRESH_WHERE = {

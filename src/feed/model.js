@@ -232,6 +232,7 @@ export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
    Неизвестный портал отдаёт своё имя как есть, а не чужую подпись. */
 const PORTAL_SITES = (typeof PORTAL_SITES_PY !== 'undefined' && PORTAL_SITES_PY) || {
   hh: 'hh.ru', hirify: 'hirify.me', talanto: 'talanto.work', getmatch: 'getmatch.ru',
+  arbeitnow: 'arbeitnow.com', himalayas: 'himalayas.app',
 };
 export function portalSite(source) {
   const s = source || 'hh';

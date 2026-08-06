@@ -75,15 +75,18 @@ log.add(
 # Мульти-портальный агрегатор: какие источники собираем (реестр в data/sources.py).
 # Порядок задаёт владельца id при дедупе (первое вхождение). hh — основной (с автооткликом),
 # hirify — доп. портал (JSON-API, только просмотр/аналитика).
-SOURCES = [s.strip() for s in os.getenv('SOURCES', 'hh,hirify,talanto,getmatch').split(',') if s.strip()]
+SOURCES = [s.strip() for s in os.getenv(
+    'SOURCES', 'hh,hirify,talanto,getmatch,arbeitnow,himalayas').split(',') if s.strip()]
 # Домен портала для подписи в карточке ленты. Живёт в Python и инжектится в feed-data.js
 # (PORTAL_SITES_PY) — дублировать в JS нельзя, так уже разъезжались константы. Источник
 # без записи здесь получает своё имя как есть, а не чужую подпись.
 PORTAL_SITES = {
-    'hh':       'hh.ru',
-    'hirify':   'hirify.me',
-    'talanto':  'talanto.work',
-    'getmatch': 'getmatch.ru',
+    'hh':        'hh.ru',
+    'hirify':    'hirify.me',
+    'talanto':   'talanto.work',
+    'getmatch':  'getmatch.ru',
+    'arbeitnow': 'arbeitnow.com',
+    'himalayas': 'himalayas.app',
 }
 # Фильтр hirify (querystring API). Широкий: интересующие skills+специализации, БЕЗ
 # ограничений по грейду/формату/английскому/типу удалёнки (все значения). ~18k вакансий.
@@ -125,6 +128,23 @@ GETMATCH_PAGE_SIZE = int(os.getenv('GETMATCH_PAGE_SIZE', '100'))              # 
 GETMATCH_PAGE_CONCURRENCY = int(os.getenv('GETMATCH_PAGE_CONCURRENCY', '4'))  # параллельных страниц
 GETMATCH_ENRICH_CONCURRENCY = int(os.getenv('GETMATCH_ENRICH_CONCURRENCY', '4'))  # параллельных /offers/{id}
 GETMATCH_ENRICH_MAX = int(os.getenv('GETMATCH_ENRICH_MAX', '900'))            # карточек за прогон
+# arbeitnow.com — глобальный/европейский JSON-API. Однофазный: описание приходит в списке,
+# поэтому enrich-лимитов нет. Замер 07.08.2026: 41 страница × 100 ≈ 4100 вакансий; max_pages
+# с запасом, обход всё равно останавливается на первой пустой странице.
+ARBEITNOW_MAX_PAGES = int(os.getenv('ARBEITNOW_MAX_PAGES', '120'))            # страховка от бесконечного обхода
+ARBEITNOW_PAGE_CONCURRENCY = int(os.getenv('ARBEITNOW_PAGE_CONCURRENCY', '6'))  # страниц в пачке
+# himalayas.app — global remote. Страница жёстко 20 (портал игнорирует limit>20).
+# Замер 07.08.2026: выдача кончается на offset ~97 300, то есть ~4870 страниц и ~50 суток
+# вглубь. Полный обход занял бы ~34 мин и удвоил бы кеш, поэтому по умолчанию берём свежие
+# 2000 страниц (~40k вакансий, ~20 суток) — поднять до полного: HIMALAYAS_MAX_PAGES=4900.
+HIMALAYAS_MAX_PAGES = int(os.getenv('HIMALAYAS_MAX_PAGES', '2000'))
+HIMALAYAS_PAGE_CONCURRENCY = int(os.getenv('HIMALAYAS_PAGE_CONCURRENCY', '12'))
+# arbeitnow и himalayas — ОБЩИЕ job-борды, а не IT-порталы: замер 07.08.2026 дал 66 % и 63 %
+# не-IT (ритейл, продажи, логистика, медицина), причём доля ровная по всей глубине выдачи.
+# У профильных источников она 5–37 % (hirify 5, getmatch 9, talanto 28, hh 37), там фильтровать
+# нечего. Здесь же 67k посторонних записей удвоили бы кеш и откатили оптимизацию его загрузки
+# (67 -> 29 с), ничего не дав CRM по IT-вакансиям. Отсев по role.is_it — на входе источника.
+GLOBAL_SOURCES_IT_ONLY = os.getenv('GLOBAL_SOURCES_IT_ONLY', '1') != '0'
 HH_ENRICH_BATCH_MULT = int(os.getenv('HH_ENRICH_BATCH_MULT', '4'))          # batch = CONCURRENCY * MULT
 
 # ─── Нормализация зарплат ─────────────────────────────────────────────────────
