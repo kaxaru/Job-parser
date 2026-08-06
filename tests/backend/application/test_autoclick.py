@@ -71,28 +71,69 @@ def test_skips_non_engineering_roles(name):
 @pytest.mark.parametrize("name", [
     "Разработчик Python, группа по управлению рисками",
     "Разработчик моделей оценки кредитных рисков",
-    "Аналитик данных",
-    "Системный аналитик",
 ])
 def test_keeps_dev_roles_in_same_domain(name):
     assert len(pick_candidates([_raw(name=name)], marks={}, limit=10)) == 1
 
 
-# роль «Аналитик»: берём только айтишные подтипы, доменных пропускаем
+# ── Целевая специализация: backend + data/LLM engineering (задана 07.08.2026) ──
+# Прежнее требование было ОБРАТНЫМ — айтишные аналитики проходили (APPLY_ANALYST_OK).
+# Отменено сознательно, поэтому тесты на пропуск аналитиков заменены на тесты отсева.
 @pytest.mark.parametrize("name", [
-    "Аналитик данных", "Системный аналитик", "Data Analyst",
-    "Дата-аналитик", "Аналитик данных (Junior)",
+    "Аналитик данных", "Data Analyst", "Дата-аналитик", "Аналитик данных (Junior)",
+    "Системный аналитик", "Бизнес-аналитик", "Product Analyst (AI tools)",
+    "BI-аналитик", "Финансовый аналитик", "Аналитик-экономист",
 ])
-def test_analyst_it_subtypes_pass(name):
-    assert len(pick_candidates([_raw(name=name)], marks={}, limit=10)) == 1
-
-
-@pytest.mark.parametrize("name", [
-    "Финансовый аналитик", "Логист-аналитик", "Медицинский аналитик",
-    "Консультант-аналитик", "Специалист-аналитик отдела закупок", "Аналитик-экономист",
-])
-def test_analyst_domain_subtypes_skipped(name):
+def test_all_analysts_are_out_of_scope(name):
     assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+@pytest.mark.parametrize("name", [
+    "QA Engineer", "QA Automation Engineer (Python)", "Middle AQA Python инженер",
+    "SDET", "Тестировщик", "Инженер по нагрузочному тестированию",
+    "Автотестировщик Python", "Test Engineer", "Quality Assurance Specialist",
+])
+def test_all_qa_is_out_of_scope(name):
+    assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+# QA на LLM/DWH-продукте — всё ещё QA: исключение для гибридов на него НЕ распространяется
+@pytest.mark.parametrize("name", [
+    "QA Engineer (LLM-платформа)",
+    "QA Engineer (DWH / ETL)",
+    "Тестировщик (LLM, ML)",
+])
+def test_qa_is_out_of_scope_even_on_target_products(name):
+    assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+def test_data_analyst_on_a_data_platform_is_still_an_analyst():
+    # «платформа данных» описывает ПРОДУКТ работодателя, а не инженерную роль
+    name = "Data - аналитик (Платформа данных для финансовой отчетности)"
+    assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+@pytest.mark.parametrize("name", [
+    "ML инженер (Python)", "Python / MLOps engineer", "Python ML-разработчик",
+    "Machine Learning Engineer", "Data Scientist", "Стажёр-дата-сайентист",
+    "Инженер машинного обучения", "NLP Engineer", "Computer Vision Engineer",
+])
+def test_ml_and_ds_are_out_of_scope(name):
+    assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+# Инженерный маркер перевешивает «аналитика»/ML рядом с ним — это целевые вакансии.
+@pytest.mark.parametrize("name", [
+    "Data Engineer/Data Analyst",
+    "Data engineer+analyst (DWH)",
+    "Системный аналитик DWH/BI",
+    "Data Scientist (NLP / LLM) в команду СберБизнес",
+    "LLM Engineer",
+    "AI-разработчик / LLM Engineer",
+    "Инженер данных (ETL)",
+])
+def test_target_engineering_survives_the_blacklists(name):
+    assert len(pick_candidates([_raw(name=name)], marks={}, limit=10)) == 1
 
 
 def test_skips_form_vacancies_without_touching_marks():
@@ -168,12 +209,11 @@ def test_keeps_fresh_and_undated():
 
 
 @pytest.mark.parametrize("name", [
-    "Senior Python разработчик", "ML инженер (Python)", "Python / MLOps engineer",
-    "Python ML-разработчик", "Ведущий backend-разработчик Python",
+    "Senior Python разработчик", "Ведущий backend-разработчик Python",
     "Старший Python-разработчик", "Python Team Lead", "Python Backend (Lead)",
     "Тимлид Python",
 ])
-def test_blacklist_ml_mlops_senior(name):
+def test_blacklist_senior_grades(name):
     assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
 
 

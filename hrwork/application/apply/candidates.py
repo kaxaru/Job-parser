@@ -67,12 +67,42 @@ APPLY_SKIP_GHOSTS = True                                 # не откликат
 # Исключаем по форм-очереди, а НЕ через marks: в ленте они остаются с бейджем «форма»,
 # отказом не помечаются, и снять фильтр можно одним флагом.
 APPLY_SKIP_FORMS = True
-# Чёрный список по ТАЙТЛУ: не откликаемся на ML/MLOps/senior-роли (и их рус-эквиваленты
-# ведущий/старший/тимлид/lead — иначе «Ведущий backend» проскакивает мимо «senior»).
-# \bml\b не ловит HTML/XML (нет границы перед ml); ловит «ML», «ML-инженер», «ML/DS».
-APPLY_BLACKLIST = re.compile(
-    r"\bml\b|\bml[\s\-/]?ops\b|\bmlops\b|\bsenior\b|\bсеньор|\bсиньор"
+# Чёрный список по ГРЕЙДУ: senior-роли и рус-эквиваленты (ведущий/старший/тимлид/lead —
+# иначе «Ведущий backend» проскакивает мимо «senior»).
+APPLY_SENIOR_BLACKLIST = re.compile(
+    r"\bsenior\b|\bсеньор|\bсиньор"
     r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b|\bprincipal\b|\bstaff\b",
+    re.I)
+
+# ── Целевая специализация: backend + data/LLM engineering ──────────────────────────────
+# Задана пользователем 07.08.2026. Всё, что в неё не входит, из откликов исключается:
+# QA, аналитики (любые — и data/BI, и системные/бизнес/продуктовые), ML/DS.
+#
+# Исключение для ГИБРИДОВ: «Data Engineer/Data Analyst», «Data engineer+analyst (DWH)» —
+# инженерные вакансии с аналитическим уклоном, и слово «analyst» рядом не повод их терять.
+# Замер на живом пуле: таких 16.
+#
+# На QA исключение НЕ распространяется (проверка QA идёт раньше): «QA Engineer (LLM-платформа)»
+# и «Тестировщик (LLM, ML)» — это тестирование, а не LLM-инженерия, и они должны отсекаться.
+# Маркеры описывают РОЛЬ, а не продукт работодателя: «платформа данных» намеренно НЕ входит,
+# иначе «Data-аналитик (Платформа данных для финансовой отчётности)» проходил бы как инженер.
+APPLY_TARGET_ENGINEERING = re.compile(
+    r"\bllm\b|\brag\b|data\s+engineer|дата.?инженер|инженер\w*\s+данных|\bdwh\b|\betl\b",
+    re.I)
+# QA целиком и БЕЗУСЛОВНО, включая QA с Python в тайтле (в пуле их 10 из 114).
+APPLY_QA_BLACKLIST = re.compile(
+    r"\bqa\b|\baqa\b|\bqc\b|\bsdet\b|quality\s+assurance|test\w*\s+engineer"
+    r"|тестировщ|тестирован|автотест",
+    re.I)
+# Аналитики целиком. Прежняя логика была ОБРАТНОЙ (APPLY_ANALYST_OK пропускал айтишные
+# подтипы) — отменена сознательно: аналитика не входит в целевую специализацию.
+APPLY_ANALYST_BLACKLIST = re.compile(r"аналитик|analyst|\bbi\b", re.I)
+# ML/DS. LLM и RAG сюда НЕ входят — они целевые, см. APPLY_TARGET_ENGINEERING выше:
+# «Data Scientist (NLP / LLM)» остаётся в пуле по маркеру LLM.
+# \bml\b не ловит HTML/XML (нет границы перед ml); ловит «ML», «ML-инженер», «ML/DS».
+APPLY_ML_BLACKLIST = re.compile(
+    r"\bml\b|\bml[\s\-/]?ops\b|\bmlops\b|\bmle\b|machine\s+learning|машинн\w*\s+обучени"
+    r"|data\s+scientist|дата.?са[йи]ентист|deep\s+learning|computer\s+vision|\bnlp\b",
     re.I)
 # «Ищу только python»: даже если Python есть в требованиях (как «плюс»), вакансию с
 # ДРУГИМ основным языком в ТАЙТЛЕ не берём — иначе «Java-разработчик (+Python)» проскочит.
@@ -87,15 +117,6 @@ APPLY_LANG_BLACKLIST = re.compile(
 # ОТКЛИКА, поэтому фильтр живёт в apply-слое.
 # Целимся в РОЛЬ-существительное (аналитик/менеджер), а не в домен: «Разработчик моделей
 # оценки кредитных рисков» — настоящая dev-вакансия и проходить обязана.
-# Роль «Аналитик» смешивает АЙТИШНЫХ аналитиков (данных/системный/data) и ДОМЕННЫХ
-# (финансовый, логист, медицинский, консультант, по закупкам). Точечные регексы по каждому
-# домену — бесконечный whack-a-mole, поэтому инвертируем: в отклики берём только явно
-# айтишные подтипы, всё прочее в этой роли пропускаем. Другие роли (Backend/DevOps/QA/…)
-# правилом не затронуты — там ложных срабатываний почти нет.
-APPLY_ANALYST_OK = re.compile(
-    r"аналитик\w*\s+данных|данн\w*\s+аналитик|систем\w*\s+аналит"
-    r"|\bdata\b|дата.?аналит|data.?аналит",
-    re.I)
 APPLY_ROLE_BLACKLIST = re.compile(
     r"риск.?(?:аналит|менеджер)"                  # Риск-аналитик / Риск-менеджер по аналитике
     r"|портфельн\w*\s*(?:аналит|менеджер)"        # Портфельный аналитик/портфельный менеджер
@@ -148,12 +169,19 @@ def pick_candidates(records: list[Any], marks: dict[str, str], limit: int,
             continue                                    # не-IT (поддержка/ритейл/крауд-разметка) — мимо
         if v.experience not in APPLY_EXPS:
             continue                                    # None (не указан) тоже не проходит
-        if APPLY_BLACKLIST.search(v.name):
-            continue                                    # ML/MLOps/senior — не наш уровень
+        if APPLY_SENIOR_BLACKLIST.search(v.name):
+            continue                                    # senior/lead — не наш грейд
         if APPLY_ROLE_BLACKLIST.search(v.name):
             continue                                    # риск/портфельный/планирование ресурсов — не инженерная роль
-        if v.role is Role.ANALYST and not APPLY_ANALYST_OK.search(v.name):
-            continue                                    # доменный аналитик (финансы/логистика/медицина/…)
+        # QA — безусловно, до исключения: «QA Engineer (LLM-платформа)» это тестирование.
+        if APPLY_QA_BLACKLIST.search(v.name) or v.role is Role.QA:
+            continue
+        # Аналитика и ML — с исключением: инженерный маркер в тайтле перевешивает.
+        if not APPLY_TARGET_ENGINEERING.search(v.name):
+            if APPLY_ANALYST_BLACKLIST.search(v.name) or APPLY_ML_BLACKLIST.search(v.name):
+                continue                                # аналитик / ML — мимо
+            if v.role is Role.ANALYST:
+                continue                                # роль поймала то, чего нет в тайтле
         if "python" not in v.name.lower() and APPLY_LANG_BLACKLIST.search(v.name):
             continue                                    # другой язык в тайтле (Java/C#/…) — мимо
         if APPLY_SKIP_GHOSTS and v.is_ghost():
