@@ -23,6 +23,22 @@ describe('matchesResume — жёсткий фильтр «по резюме» (�
   it('нет технологий из RESUME_CORE → false', () => {
     assert.equal(matchesResume(vac({ techs: ['Java', 'Go'] })), false);
   });
+
+  /* ИНЦИДЕНТ 07.08.2026: у arbeitnow и web3 грейда в API нет вовсе — 1326 и 1740 карточек
+     с пустым exp, — и фильтр выбрасывал оба портала целиком, хотя resumeMatch тот же
+     неизвестный опыт считает нейтральным (12 баллов). Отсекаем неподходящий грейд,
+     а не отсутствие данных о нём. */
+  for (const empty of ['', null, undefined]) {
+    it(`неизвестный опыт (${JSON.stringify(empty)}) → true, а не отсев`, () => {
+      assert.equal(matchesResume(vac({ exp: empty })), true);
+    });
+  }
+  it('неизвестный опыт не отменяет остальные условия — без Python всё равно false', () => {
+    assert.equal(matchesResume(vac({ exp: '', techs: ['Java'] })), false);
+  });
+  it('неизвестный опыт не отменяет требование удалёнки', () => {
+    assert.equal(matchesResume(vac({ exp: '', remote_any: false })), false);
+  });
 });
 
 describe('resumeMatch — % совпадения (стек60 + опыт25 + удалёнка15)', () => {

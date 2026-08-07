@@ -13,7 +13,13 @@ const RESUME_REQUIRE_REMOTE = true;                      /* true — показ�
 
 export function matchesResume(v) {
   if (RESUME_REQUIRE_REMOTE && !v.remote_any) return false;
-  if (!RESUME_EXPS.has(v.exp)) return false;
+  /* Опыт НЕИЗВЕСТЕН -> пропускаем, а не отсекаем: то же решение, что у resumeMatch ниже
+     («неизвестный опыт — нейтрально», 12 баллов). Раньше две функции в одном файле
+     трактовали пустой грейд противоположно, и это молчало, пока все источники его отдавали.
+     С приходом arbeitnow и web3 (07.08.2026) грейда в API нет вовсе — 1326 и 1740 карточек
+     с пустым exp, — и жёсткий фильтр выбрасывал оба портала ЦЕЛИКОМ. Отсекаем только явно
+     неподходящий грейд, а не отсутствие данных о нём. */
+  if (v.exp && !RESUME_EXPS.has(v.exp)) return false;
   return v.techs.some(t => RESUME_CORE.includes(t));
 }
 
