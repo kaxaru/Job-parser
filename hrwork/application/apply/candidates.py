@@ -11,10 +11,12 @@ from enum import Enum, IntEnum
 from typing import Any
 
 from hrwork.config import (
+    APPLY_BLACKLISTS,
     APPLY_CORE_WIDE,
     APPLY_OFFICE_CITIES,
     RESUME_CORE,
     RESUME_EXP_IDS,
+    log,
 )
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
@@ -68,12 +70,33 @@ APPLY_SKIP_GHOSTS = True                                 # не откликат
 # Исключаем по форм-очереди, а НЕ через marks: в ленте они остаются с бейджем «форма»,
 # отказом не помечаются, и снять фильтр можно одним флагом.
 APPLY_SKIP_FORMS = True
+# ── Чёрные списки: дефолт здесь, переопределение — в resume_profile.json ──────────────
+# Регексы ниже это ПРЕДПОЧТЕНИЯ КОНКРЕТНОГО СОИСКАТЕЛЯ, а не логика приложения. Владелец
+# профиля меняет их, не трогая код: ключ в `blacklists` профиля побеждает дефолт, пустая
+# строка выключает правило целиком. Так чужой форк не конфликтует с апстримом при обновлении.
+def _rx(key: str, default: str) -> "re.Pattern[str]":
+    """Регекс правила: из профиля, иначе дефолт. Битый регекс в профиле НЕ роняет сбор —
+    падаем на дефолт с предупреждением: у пользователя нет способа отладить его иначе,
+    а тихо отключить правило отбора хуже, чем взять наше."""
+    raw = APPLY_BLACKLISTS.get(key)
+    if raw is None:
+        return re.compile(default, re.I)
+    if not raw.strip():
+        # Пустая строка = «правило мне не нужно». `(?!)` не матчится никогда — это честнее,
+        # чем пустой паттерн, который совпадает с ЛЮБОЙ строкой и отсеял бы всё подряд.
+        return re.compile(r"(?!)")
+    try:
+        return re.compile(raw, re.I)
+    except re.error as e:
+        log.warning("resume_profile.blacklists.{}: неверный регекс ({}) — беру дефолт", key, e)
+        return re.compile(default, re.I)
+
+
 # Чёрный список по ГРЕЙДУ: senior-роли и рус-эквиваленты (ведущий/старший/тимлид/lead —
 # иначе «Ведущий backend» проскакивает мимо «senior»).
-APPLY_SENIOR_BLACKLIST = re.compile(
+APPLY_SENIOR_BLACKLIST = _rx("senior",
     r"\bsenior\b|\bсеньор|\bсиньор"
-    r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b|\bprincipal\b|\bstaff\b",
-    re.I)
+    r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b|\bprincipal\b|\bstaff\b")
 
 # ── РУКОВОДЯЩИЕ должности: всё, что выше Lead ──────────────────────────────────────────
 # Задано пользователем 07.08.2026: интересны только стандартные инженерные позиции до
@@ -83,12 +106,11 @@ APPLY_SENIOR_BLACKLIST = re.compile(
 #
 # `architect` тоже здесь: в лестницах грейдов он идёт вровень со staff/principal, которые
 # уже отсекаются выше, — держать его отдельно было бы непоследовательно.
-APPLY_MANAGEMENT_BLACKLIST = re.compile(
+APPLY_MANAGEMENT_BLACKLIST = _rx("management",
     r"руководител|начальник|директор|заведующ|заместител"
     r"|\bhead\s+of\b|\bhead\b|\bdirector\b|\bvp\b|vice\s+president|\bchief\b"
     r"|\bcto\b|\bceo\b|\bcoo\b|\bcio\b|\bcpo\b|\bexecutive\b|\bfounder\b"
-    r"|\bmanager\b|\bmanagement\b|\bsupervisor\b|\barchitect\b|архитектор",
-    re.I)
+    r"|\bmanager\b|\bmanagement\b|\bsupervisor\b|\barchitect\b|архитектор")
 # Инженерные существительные — если такое стоит в тайтле РАНЬШЕ управленческого слова,
 # роль инженерная, а управленческое слово относится к чему-то ещё. Реальный случай из пула:
 # «Python-разработчик (AI-агент Операционный директор)» — вакансия разработчика, «директор»
@@ -119,31 +141,27 @@ def _is_management(name: str) -> bool:
 # и «Тестировщик (LLM, ML)» — это тестирование, а не LLM-инженерия, и они должны отсекаться.
 # Маркеры описывают РОЛЬ, а не продукт работодателя: «платформа данных» намеренно НЕ входит,
 # иначе «Data-аналитик (Платформа данных для финансовой отчётности)» проходил бы как инженер.
-APPLY_TARGET_ENGINEERING = re.compile(
-    r"\bllm\b|\brag\b|data\s+engineer|дата.?инженер|инженер\w*\s+данных|\bdwh\b|\betl\b",
-    re.I)
+APPLY_TARGET_ENGINEERING = _rx("target_engineering",
+    r"\bllm\b|\brag\b|data\s+engineer|дата.?инженер|инженер\w*\s+данных|\bdwh\b|\betl\b")
 # QA целиком и БЕЗУСЛОВНО, включая QA с Python в тайтле (в пуле их 10 из 114).
-APPLY_QA_BLACKLIST = re.compile(
+APPLY_QA_BLACKLIST = _rx("qa",
     r"\bqa\b|\baqa\b|\bqc\b|\bsdet\b|quality\s+assurance|test\w*\s+engineer"
-    r"|тестировщ|тестирован|автотест",
-    re.I)
+    r"|тестировщ|тестирован|автотест")
 # Аналитики целиком. Прежняя логика была ОБРАТНОЙ (APPLY_ANALYST_OK пропускал айтишные
 # подтипы) — отменена сознательно: аналитика не входит в целевую специализацию.
-APPLY_ANALYST_BLACKLIST = re.compile(r"аналитик|analyst|\bbi\b", re.I)
+APPLY_ANALYST_BLACKLIST = _rx("analyst", r"аналитик|analyst|\bbi\b")
 # ML/DS. LLM и RAG сюда НЕ входят — они целевые, см. APPLY_TARGET_ENGINEERING выше:
 # «Data Scientist (NLP / LLM)» остаётся в пуле по маркеру LLM.
 # \bml\b не ловит HTML/XML (нет границы перед ml); ловит «ML», «ML-инженер», «ML/DS».
-APPLY_ML_BLACKLIST = re.compile(
+APPLY_ML_BLACKLIST = _rx("ml",
     r"\bml\b|\bml[\s\-/]?ops\b|\bmlops\b|\bmle\b|machine\s+learning|машинн\w*\s+обучени"
-    r"|data\s+scientist|дата.?са[йи]ентист|deep\s+learning|computer\s+vision|\bnlp\b",
-    re.I)
+    r"|data\s+scientist|дата.?са[йи]ентист|deep\s+learning|computer\s+vision|\bnlp\b")
 # DevOps / SRE / инфраструктура — эксплуатация, а не разработка (задано 07.08.2026:
 # «больше интересует писать код»). Замер на живом пуле: 127 таких тайтлов из 583, причём
 # 123 — чистая инфраструктура и лишь 4 гибрида, где рядом стоит код.
-APPLY_DEVOPS_BLACKLIST = re.compile(
+APPLY_DEVOPS_BLACKLIST = _rx("devops",
     r"\bdevops\b|\bdevsecops\b|\bsre\b|site\s+reliability|\bplatform\s+engineer\b"
-    r"|систем\w*\s+администратор|сисадмин|\bsysadmin\b|инфраструктур",
-    re.I)
+    r"|систем\w*\s+администратор|сисадмин|\bsysadmin\b|инфраструктур")
 # Маркер «здесь пишут код» — снимает devops-запрет. Отдельно от APPLY_TARGET_ENGINEERING:
 # тот про целевой домен (LLM/DWH/ETL), а этот про сам характер работы. Реальные гибриды
 # из пула: «Инженер-программист по безопасной разработке / Middle DevSecOps»,
@@ -155,21 +173,19 @@ _CODE_MARKER = re.compile(
 # «Ищу только python»: даже если Python есть в требованиях (как «плюс»), вакансию с
 # ДРУГИМ основным языком в ТАЙТЛЕ не берём — иначе «Java-разработчик (+Python)» проскочит.
 # Только backend-конкуренты Python; JS/TS/React не считаем (Python-fullstack ок).
-APPLY_LANG_BLACKLIST = re.compile(
+APPLY_LANG_BLACKLIST = _rx("other_lang",
     r"\bjava\b(?!script)|\bc#|\bc\+\+|\bcpp\b|\bphp\b|\bgolang\b|\bscala\b|\bruby\b"
-    r"|\bkotlin\b|\brust\b|\bdelphi\b|\bperl\b|\.net\b|\b1с\b|\b1c\b|\bgo[-\s]?разраб",
-    re.I)
+    r"|\bkotlin\b|\brust\b|\bdelphi\b|\bperl\b|\.net\b|\b1с\b|\b1c\b|\bgo[-\s]?разраб")
 # НЕ-ИНЖЕНЕРНЫЕ роли, формально проходящие как IT: `_apply_tier` смотрит только на СТЕК и
 # формат, поэтому «Риск-аналитик» с упоминанием Python в JD получал tier STRICT. Роль
 # (`Аналитик`) тут не помогает — она таксономия РЫНКА для дашборда, а это предпочтения
 # ОТКЛИКА, поэтому фильтр живёт в apply-слое.
 # Целимся в РОЛЬ-существительное (аналитик/менеджер), а не в домен: «Разработчик моделей
 # оценки кредитных рисков» — настоящая dev-вакансия и проходить обязана.
-APPLY_ROLE_BLACKLIST = re.compile(
+APPLY_ROLE_BLACKLIST = _rx("non_engineering",
     r"риск.?(?:аналит|менеджер)"                  # Риск-аналитик / Риск-менеджер по аналитике
     r"|портфельн\w*\s*(?:аналит|менеджер)"        # Портфельный аналитик/портфельный менеджер
-    r"|планировани\w*.{0,25}ресурс",              # Аналитик по планированию и управлению ресурсами
-    re.I)
+    r"|планировани\w*.{0,25}ресурс")              # Аналитик по планированию и управлению ресурсами
 # Приоритет опыта в очереди: младший грейд раньше (= порядок членов Experience:
 # NONE -> BETWEEN_1_3 -> ...). Меньше ранг = раньше. None/неизвестный -> в конец.
 _EXP_ORDER = {e: i for i, e in enumerate(Experience)}

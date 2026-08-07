@@ -44,7 +44,14 @@
     "english_text_en": "English — B1 (intermediate).",
     "education_text_en": "Higher education: <university>, <faculty>, degree in <major>, <year>.",
     "citizenship_text_en": "<Country> citizenship, currently residing in <country>.",
-    "answer_negative": true
+    "answer_negative": true,
+    "form_answers": [
+      {
+        "q": "из\\s+как(ого|ой)\\s+(города|страны)|город\\w*\\s+(прожив|работ)|откуда\\s.{0,20}?работ",
+        "a": "Работаю удалённо из города <город> (<страна>)."
+      }
+    ],
+    "_comment_form_answers": "form_answers — ответы на поля АНКЕТ (hh.py forms). `q` это РЕГЕКС по тексту поля, `a` — ответ. Первая запись, чей ответ проходит по опциям поля, выигрывает. Пустой список = движок отвечает только на зарплату (детерминированный код) и через LLM; остальные поля уходят человеку. Наполнять по мере встречи новых вопросов — формулировку смотреть в `hh.py forms --dry`."
   },
   "form_answers": [
     {
@@ -79,5 +86,28 @@
       "a": "Да, есть, в пределах 4-х часов",
       "_note": "пример: часовой пояс относительно Москвы"
     }
-  ]
+  ],
+  "_comment_blacklists": "blacklists — ПРЕДПОЧТЕНИЯ ПО ВАКАНСИЯМ, регексы по ТАЙТЛУ (без учёта регистра). Ключ отсутствует -> берётся дефолт из candidates.py. Пустая строка -> правило ВЫКЛЮЧЕНО целиком. Битый регекс -> предупреждение в лог и дефолт. Правила проверяются в порядке ниже, побеждает первое совпавшее.",
+  "blacklists": {
+    "_help_senior": "грейд выше нашего; сюда же рус-эквиваленты",
+    "senior": "\\bsenior\\b|\\bсеньор|\\bведущ|\\bстарш|\\bтимлид|\\blead\\b|\\bprincipal\\b|\\bstaff\\b",
+    "_help_management": "руководящие: выше lead. Снимается инженерным существительным РАНЬШЕ в тайтле",
+    "management": "руководител|начальник|директор|\\bhead\\b|\\bdirector\\b|\\bvp\\b|\\bcto\\b|\\bmanager\\b|\\barchitect\\b|архитектор",
+    "_help_non_engineering": "формально IT, но роль не инженерная",
+    "non_engineering": "риск.?(?:аналит|менеджер)|портфельн\\w*\\s*(?:аналит|менеджер)",
+    "_help_qa": "тестирование. Проверяется ДО target_engineering: «QA Engineer (LLM)» это всё равно QA",
+    "qa": "\\bqa\\b|\\baqa\\b|\\bsdet\\b|тестировщ|тестирован|автотест|quality\\s+assurance",
+    "_help_analyst": "аналитики любые. Снимается маркером target_engineering",
+    "analyst": "аналитик|analyst|\\bbi\\b",
+    "_help_ml": "ML/DS. LLM и RAG сюда НЕ входят — они в target_engineering",
+    "ml": "\\bml\\b|mlops|machine\\s+learning|data\\s+scientist|\\bnlp\\b|computer\\s+vision",
+    "_help_devops": "эксплуатация вместо разработки. Снимается маркером кода в тайтле",
+    "devops": "\\bdevops\\b|\\bsre\\b|\\bdevsecops\\b|site\\s+reliability|систем\\w*\\s+администратор|инфраструктур",
+    "_help_other_lang": "другой основной язык. НЕ применяется, если в тайтле есть python",
+    "other_lang": "\\bjava\\b(?!script)|\\bc#|\\bc\\+\\+|\\bphp\\b|\\bgolang\\b|\\bruby\\b|\\.net\\b|\\b1с\\b",
+    "_help_target_engineering": "ИСКЛЮЧЕНИЕ, а не запрет: снимает analyst и ml (но не qa)",
+    "target_engineering": "\\bllm\\b|\\brag\\b|data\\s+engineer|дата.?инженер|\\bdwh\\b|\\betl\\b"
+  },
+  "_comment_cover": "cover_template — письмо для КРОН-откликов (cover.py). Подстановки: {name} — тайтл вакансии, {employer} — компания (пустая -> «вашей компании»). Пусто -> дефолт из кода. У ленты свой набор — src/feed/cover.js::COVER_TEMPLATES.",
+  "cover_template": ""
 }
