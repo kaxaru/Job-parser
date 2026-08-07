@@ -23,6 +23,7 @@ from hrwork.config import (
     BG,
     DATA_DIR,
     EXP_LABELS,
+    FEED_COVER_TEMPLATES,
     FEED_OUT,
     GRID,
     LANG_KEYS,
@@ -225,6 +226,10 @@ def build_feed() -> None:
         # ещё не было — дефект латентный). `INVITED` в JS был дословной копией набора.
         f"const DISCARD_STATES_PY = {json.dumps(sorted(chat.DISCARD_STATES))};\n"
         f"const INVITED_STATES_PY = {json.dumps(sorted(chat.INVITED_STATES))};\n"
+        # Шаблоны писем ЛЕНТЫ из профиля (feed_cover_templates) — строки с подстановками
+        # {role}/{company}/{stack}. Пусто -> cover.js берёт свои дефолты, поведение прежнее.
+        f"const FEED_COVER_TEMPLATES_PY = "
+        f"{json.dumps(FEED_COVER_TEMPLATES, ensure_ascii=False)};\n"
     )
     (DATA_DIR / "feed-data.js").write_text(data_js, encoding="utf-8")
     log.info("feed-data.js сохранён  ({:.1f} МБ)", len(data_js.encode("utf-8")) / 1e6)

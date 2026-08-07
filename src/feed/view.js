@@ -1,7 +1,7 @@
 /* View — рендеринг DOM из состояния. Чистые билдеры разметки + императивные
    обновления (innerHTML, classList). Бизнес-логику не содержит — берёт из Model. */
 
-import { COVER_TEMPLATES, coverLetter } from './cover.js';
+import { coverLetter, coverTemplates } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
   SCHED_LABELS, STATUS_BTNS, ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, statusInfo, tagClr, tagInk,
@@ -339,7 +339,7 @@ export function showModal(v) {
      иначе Tab уходил в карточки под затемнением, а после закрытия фокус терялся вовсе. */
   _returnFocusTo = document.activeElement;
   modalBox.querySelector('.modal-close')?.focus();
-  coverIdx = hashId(v.id) % COVER_TEMPLATES.length;   /* стабильный вариант на вакансию */
+  coverIdx = hashId(v.id) % coverTemplates().length;   /* стабильный вариант на вакансию */
   renderCover(v);
   renderDesc(v);
 }
@@ -378,10 +378,10 @@ function renderCover(v) {
       </span>
     </div>
     <textarea class="cover-text" id="cover-text" spellcheck="false"></textarea>
-    <div class="cover-hint">Вариант <span id="cover-idx"></span> из ${COVER_TEMPLATES.length} — отредактируйте под себя перед отправкой</div>`;
+    <div class="cover-hint">Вариант <span id="cover-idx"></span> из ${coverTemplates().length} — отредактируйте под себя перед отправкой</div>`;
   fillCover(v);
   document.getElementById('cover-reroll').addEventListener('click', () => {
-    coverIdx = (coverIdx + 1) % COVER_TEMPLATES.length;
+    coverIdx = (coverIdx + 1) % coverTemplates().length;
     fillCover(v);
   });
   document.getElementById('cover-copy').addEventListener('click', copyCover);

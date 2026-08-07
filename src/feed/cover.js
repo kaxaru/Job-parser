@@ -4,7 +4,8 @@
 
    Под своё резюме меняй:
    - RESUME_TECH_SET / TECH_LABEL — какие технологии из стека вакансии упоминать в письме и как подписывать;
-   - COVER_TEMPLATES — сами тексты (role/company/stack подставляются автоматически в coverLetter). */
+   - тексты писем — через resume_profile.json::feed_cover_templates (правка кода не нужна);
+     COVER_TEMPLATES ниже — дефолты, которые работают, пока профиль их не переопределил. */
 
 /* Технологии, которые упоминаем в письме, если они есть в стеке вакансии (+ подписи). */
 const RESUME_TECH_SET = new Set(
@@ -68,6 +69,25 @@ export const COVER_TEMPLATES = [
 Буду рад рассказать, чем могу быть полезен именно вам. Спасибо!`,
 ];
 
+/* ДЕЙСТВУЮЩИЙ набор шаблонов: профиль пользователя, иначе COVER_TEMPLATES выше.
+
+   Профиль (resume_profile.json::feed_cover_templates) инжектится как FEED_COVER_TEMPLATES_PY.
+   Там это СТРОКИ с подстановками {role}/{company}/{stack} — функции в JSON не положить, а
+   править письма под своё резюме человек должен без правки кода (тот же довод, что у
+   blacklists и cover_template). Пусто/нет ключа -> дефолты, поведение прежнее.
+
+   Резолвим НА ВЫЗОВЕ, а не при импорте: бандл ленты грузится модулем, и порядок относительно
+   feed-data.js не гарантирован — при импорт-тайме профиль молча терялся бы.
+   Длину берут и view.js (ротация вариантов, подпись «Вариант N из M»), и coverLetter —
+   отсюда общая функция, иначе счётчик разъедется с реальным набором. */
+export function coverTemplates() {
+  const raw = (typeof FEED_COVER_TEMPLATES_PY !== 'undefined') ? FEED_COVER_TEMPLATES_PY : null;
+  if (!Array.isArray(raw) || !raw.length) return COVER_TEMPLATES;
+  return raw.map(t => ({ role, company, stack }) =>
+    String(t).replaceAll('{role}', role).replaceAll('{company}', company)
+             .replaceAll('{stack}', stack));
+}
+
 export function coverLetter(v, idx) {
   const role    = v.name ? `«${v.name}»` : 'разработчика';
   const company = v.employer ? ` в компании ${v.employer}` : '';
@@ -75,5 +95,6 @@ export function coverLetter(v, idx) {
   const stack   = matched.length
     ? `В вашем стеке вижу ${humanList(matched)} — именно с этим работаю каждый день.`
     : 'Мой основной стек — Python, FastAPI, Docker и PostgreSQL/MySQL.';
-  return COVER_TEMPLATES[idx % COVER_TEMPLATES.length]({ role, company, stack });
+  const tpl = coverTemplates();
+  return tpl[idx % tpl.length]({ role, company, stack });
 }

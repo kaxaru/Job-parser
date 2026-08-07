@@ -78,14 +78,13 @@ def _const(js_text: str, name: str):
     raise KeyError(name)
 
 
-@pytest.fixture(scope="module")
-def feed_globals(tmp_path_factory):
-    """Собрать ленту один раз (build_feed дорогой) и вернуть распарсенный feed-data.js.
+def _build_feed_data(out_dir, **config_overrides):
+    """Собрать ленту в `out_dir` с подменёнными зависимостями и вернуть текст feed-data.js.
 
-    Модульный скоуп -> одна сборка на все параметризованные проверки; свой MonkeyPatch-
-    контекст (фикстура monkeypatch функциональная и сюда не подходит)."""
-    out = tmp_path_factory.mktemp("feed")
-    data = out / "data"
+    Свой MonkeyPatch-контекст: фикстура `monkeypatch` функциональная и в модульную не годится.
+    `config_overrides` — атрибуты модуля `feed` (константы конфига), чтобы проверять инжекцию
+    настроек профиля, не трогая файл на диске."""
+    data = out_dir / "data"
     records = _records()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(feed, "vacancy_repository", lambda: _Repo(records))
@@ -97,8 +96,16 @@ def feed_globals(tmp_path_factory):
         mp.setattr(feed.shutil, "which", lambda _name: None)   # esbuild off -> не собираем feed.js
         mp.setattr(feed, "DATA_DIR", data)
         mp.setattr(feed, "FEED_OUT", data / "feed.html")
+        for name, value in config_overrides.items():
+            mp.setattr(feed, name, value)
         feed.build_feed()
-        js_text = (data / "feed-data.js").read_text(encoding="utf-8")
+        return (data / "feed-data.js").read_text(encoding="utf-8")
+
+
+@pytest.fixture(scope="module")
+def feed_globals(tmp_path_factory):
+    """Собрать ленту один раз (build_feed дорогой) и вернуть распарсенный feed-data.js."""
+    js_text = _build_feed_data(tmp_path_factory.mktemp("feed"))
 
     vac_list = _const(js_text, "VACANCIES")
     return {
@@ -122,6 +129,9 @@ def feed_globals(tmp_path_factory):
     # наборы состояний отклика — раньше JS решал сам через startsWith('DISCARD'),
     # и это расходилось с Python по DISCARD_BY_APPLICANT (аудит 07.08.2026)
     "DISCARD_STATES_PY", "INVITED_STATES_PY",
+    # шаблоны писем ленты из resume_profile.json (08.08.2026): форк должен править письма
+    # профилем, а не src/feed/cover.js. Пустой список -> cover.js берёт свои дефолты.
+    "FEED_COVER_TEMPLATES_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
     # Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
@@ -140,6 +150,22 @@ def test_globals_guard_covers_every_injected_const(feed_globals):
         test_feed_data_defines_expected_global.pytestmark[0].args[1]  # type: ignore[attr-defined]
     )
     assert actual == guarded, f"не под стражем: {sorted(actual - guarded)}"
+
+
+def test_feed_cover_templates_injected_from_profile(tmp_path):
+    """Письма ленты правятся `resume_profile.json`, а не `src/feed/cover.js`: форк с другим
+    резюме не должен трогать исходник (08.08.2026). В JSON нельзя положить функцию, поэтому
+    едут СТРОКИ с подстановками, а оборачивает их `cover.js::coverTemplates()`."""
+    js = _build_feed_data(tmp_path, FEED_COVER_TEMPLATES=["Здравствуйте! Вакансия {role}{company}."])
+    assert _const(js, "FEED_COVER_TEMPLATES_PY") == ["Здравствуйте! Вакансия {role}{company}."]
+
+
+def test_feed_cover_templates_empty_without_profile(tmp_path):
+    # ключа в профиле нет -> пустой список -> cover.js берёт свои дефолты, поведение прежнее.
+    # Значение задаём явно: иначе тест читал бы профиль запускающего и падал бы у того,
+    # кто свои шаблоны как раз настроил.
+    js = _build_feed_data(tmp_path, FEED_COVER_TEMPLATES=[])
+    assert _const(js, "FEED_COVER_TEMPLATES_PY") == []
 
 
 def test_frozen_chat_kinds_injected_from_python(feed_globals):

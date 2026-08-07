@@ -13,6 +13,7 @@ from typing import Any
 from hrwork.config import (
     APPLY_BLACKLISTS,
     APPLY_CORE_WIDE,
+    APPLY_EXTRA_EXP_IDS,
     APPLY_OFFICE_CITIES,
     RESUME_CORE,
     RESUME_EXP_IDS,
@@ -60,7 +61,7 @@ APPLY_CORE        = set(RESUME_CORE)                     # tier1: строгое
 # работы при темпе ~62 отклика/сутки; с «3–6 лет» пул 1534. Порядок очереди не меняется:
 # `pick_candidates` сортирует по tier, а внутри — по грейду (младшие раньше, см. _EXP_ORDER),
 # поэтому старшая вилка разбирается последней и только когда junior-кандидаты кончились.
-APPLY_EXTRA_EXPS  = {"between3And6"}
+APPLY_EXTRA_EXPS  = set(APPLY_EXTRA_EXP_IDS)   # из профиля (`extra_exp_ids`), дефолт «3–6 лет»
 APPLY_EXPS        = {e for x in (*RESUME_EXP_IDS, *APPLY_EXTRA_EXPS)
                      if (e := Experience.from_code(x))}
 APPLY_SKIP_GHOSTS = True                                 # не откликаться на гост-вакансии (>60 дн)
