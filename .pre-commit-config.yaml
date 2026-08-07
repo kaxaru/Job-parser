@@ -33,12 +33,16 @@ repos:
         pass_filenames: false
         always_run: true
 
+      # ТРИГГЕР — не только .py, но и КОНФИГИ проверок. Иначе коммит, меняющий mypy.ini,
+      # самим mypy не проверяется: ровно так 07.08.2026 прошёл d431200 (правка platform),
+      # где все хуки показали «no files to check» — а он менял именно поведение проверки.
+      # requirements-dev тоже здесь: смена версии линтера меняет и его вердикт.
       - id: ruff-check
         name: ruff check --fix
         entry: python -m ruff check . --fix
         language: system
         pass_filenames: false
-        types_or: [python]
+        files: \.py$|^(ruff\.toml|mypy\.ini|pytest\.ini|requirements(-dev)?\.txt)$
 
       # ruff format ВЫКЛЮЧЕН СОЗНАТЕЛЬНО. Замер 07.08.2026: переформатировал бы 103 файла
       # из 115. Код здесь выровнен вручную — параметры `build_vacancy` в столбик по `=`,
@@ -57,14 +61,14 @@ repos:
         entry: python -m mypy --config-file mypy.ini
         language: system
         pass_filenames: false
-        types_or: [python]
+        files: \.py$|^(ruff\.toml|mypy\.ini|pytest\.ini|requirements(-dev)?\.txt)$
 
       - id: pytest
         name: pytest
         entry: python -m pytest -q
         language: system
         pass_filenames: false
-        types_or: [python]
+        files: \.py$|^(ruff\.toml|mypy\.ini|pytest\.ini|requirements(-dev)?\.txt)$
 
       # JS-часть CI: джобы js-unit и biome. Гоняются только когда менялись .js —
       # types_or тут работает как фильтр, хотя сами команды берут область из конфигов.
