@@ -50,7 +50,41 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
   -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable)
 ```
 
-Проверка — `schtasks /Query /TN hh_collect /V /FO LIST`. Сами `.bat` портабельны: корень
+Проверка — `schtasks /Query /TN hh_collect /V /FO LIST`.
+
+### Автоперезапуск при падении (все четыре задачи)
+
+`RestartCount = 2`, `RestartInterval = PT5M` — упавший прогон планировщик поднимает сам,
+через 5 минут, до двух раз. Ставится только через COM: `schtasks /Create` этого не умеет,
+а в XML это вложенный `RestartOnFailure/Count` + `/Interval`, не поля верхнего уровня
+(на чтении по неверному пути легко решить, что настройка не применилась).
+
+```powershell
+$s = New-Object -ComObject Schedule.Service; $s.Connect()
+$f = $s.GetFolder("\")
+foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
+    $d = $f.GetTask($n).Definition
+    $d.Settings.RestartCount = 2
+    $d.Settings.RestartInterval = "PT5M"
+    $f.RegisterTaskDefinition($n, $d, 6, $null, $null, 3) | Out-Null   # 6=CREATE_OR_UPDATE, 3=интерактивный токен
+}
+```
+
+Логон-тип **3** (интерактивный токен) обязателен: задачи ходят в браузерный профиль
+пользователя, под S4U они его не увидят.
+
+**Что это покрывает, а что нет.** Падение процесса — да, задача переотдаётся. Выключенная
+или спящая машина — нет, это зона `StartWhenAvailable` (уже включён: догоняет пропущенный
+запуск, когда система вернётся). Разбудить машину под слот не умеет ни то ни другое —
+для этого есть `WakeToRun`, он намеренно НЕ включён.
+
+Перезапуск не создаёт второй экземпляр поверх работающего: `MultipleInstancesPolicy`
+остаётся `IgnoreNew`, плюс со стороны приложения страхует `data/autoclick.lock`.
+
+Это осознанная альтернатива Celery + Redis (обсуждалось 07.08.2026): переотдача упавшей
+задачи — единственное, что брокер дал бы сверх нынешней схемы, и она встроена в планировщик.
+Брокер на той же машине не переживает её отключения, а Celery Beat вдобавок не умеет будить
+систему. Смысл переезжать появится, когда задачи понадобится раскидывать по машинам. Сами `.bat` портабельны: корень
 репо выводят из своего расположения (`cd /d "%~dp0.."`), а venv-python — из `%REPO%\..\.venv3`
 (venv рядом с репо; если создан ВНУТРИ репо по README — в `.bat` заменить `\..\.venv3` на
 `\.venv3`). Так что правки при переносе репо нужны только в командах `schtasks /Create` выше
