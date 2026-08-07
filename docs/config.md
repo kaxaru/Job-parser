@@ -20,29 +20,55 @@
 
 ## Источники
 
-- `SOURCES` — `hh,hirify,talanto,getmatch,arbeitnow,himalayas`. Порядок задаёт победителя при
-  кросс-портальном дедупе (`domain/dedup.py`): hh первый, потому что с него работает автоотклик.
-  Первые четыре — рынок РФ, последние два — глобальный (см. `docs/collect.md`).
+- `SOURCES` — **9 значений**: `hh,hirify,talanto,getmatch,arbeitnow,himalayas,web3,themuse,jobicy`.
+  Порядок задаёт победителя при кросс-портальном дедупе (`domain/dedup.py`): hh первый, потому
+  что с него работает автоотклик. Первые четыре — рынок РФ, остальные пять — глобальный
+  (см. `docs/collect.md`). Неизвестное имя -> warning + пропуск, а не падение.
+- `PORTAL_SITES` — домен портала для подписи в карточке ленты (`hh` -> `hh.ru`, `web3` ->
+  `web3.career`, …), 9 записей, по одной на источник. Живёт в Python и инжектится в
+  `feed-data.js` (`PORTAL_SITES_PY`) — **дублировать в JS нельзя**, так уже разъезжались
+  константы. Источник без записи здесь получает своё имя как есть, а не чужую подпись.
 - `HIRIFY_PARAMS` — querystring фильтра hirify: skills + специализации, без ограничений
   по грейду и формату (~18k вакансий).
 - `HIRIFY_ENRICH_MAX = 600` — потолок per-vacancy запросов за прогон.
 - `TALANTO_PARAMS` — querystring фильтра talanto (`limit=100&sort=newest`, без `period` —
   все активные ~40–50k).
 - `TALANTO_ENRICH_MAX = 600` — потолок per-vacancy запросов talanto за прогон.
+- `GETMATCH_PAGE_SIZE = 100`, `GETMATCH_PAGE_CONCURRENCY = 4`,
+  `GETMATCH_ENRICH_CONCURRENCY = 4`, `GETMATCH_ENRICH_MAX = 900` — getmatch.ru. Портал мелкий
+  (~740 активных вакансий), поэтому лимиты скромнее, а `enrich_max` с запасом перекрывает
+  весь объём за один прогон: сбор обязательно двухфазный, грейд и полное описание есть
+  только в карточке.
 - `ARBEITNOW_MAX_PAGES = 120`, `ARBEITNOW_PAGE_CONCURRENCY = 6` — обход arbeitnow (реально
   ~41 страница по 100; лимит только страховка, обход рвётся на первой пустой).
-- `HIMALAYAS_MAX_PAGES = 2000`, `HIMALAYAS_PAGE_CONCURRENCY = 12` — обход himalayas. Страница
-  жёстко 20, выдача кончается на ~4870-й; дефолт берёт свежие ~40k карточек за 8.7 мин.
-  **Поднимать до полных 4900 без переделки сбора нельзя:** источник копит все записи в памяти
-  до возврата, и на дефолтных 2000 страницах процесс занимал 731 МБ (замер 07.08.2026) —
-  на 4900 это ~1.8 ГБ, а прогон идёт вместе с hh и talanto. Полный охват сперва требует
-  постраничной отдачи вместо накопления списка.
-- `GLOBAL_SOURCES_IT_ONLY = 1` — отсев не-IT на входе arbeitnow/himalayas/web3 (это общие
-  job-борды: 66 % и 63 % не-IT). `0` — забирать всё, включая ритейл и логистику.
+- `HIMALAYAS_MAX_PAGES = 5000`, `HIMALAYAS_PAGE_CONCURRENCY = 6`,
+  `HIMALAYAS_BATCH_PAUSE = 0.4` — обход himalayas. Страница жёстко 20, выдача кончается на
+  ~4870-й, так что дефолт покрывает портал ЦЕЛИКОМ (обход рвётся на первой честно пустой
+  странице, лишние итерации не тратятся). Замер 07.08.2026: 26 027 вакансий, 4813 страниц,
+  41.9 мин. Прежние 2000 стояли из-за памяти — источник копил сырые карточки до конца обхода
+  (731 МБ); теперь он нормализует и отсеивает не-IT пачками, и в памяти остаются только
+  выжившие ~37 %. Конкурентность **снижена с 12 до 6** плюс пауза между пачками: портал
+  уходил в троттлинг примерно на 1900-м запросе подряд и начинал отдавать пустые страницы,
+  неотличимые от конца выдачи, — обход обрывался на 40 % и отчитывался как успешный.
+- `THEMUSE_MAX_PAGES = 99`, `THEMUSE_PAGE_CONCURRENCY = 6`, `THEMUSE_MAX_AGE_DAYS = 60`,
+  `THEMUSE_QUERIES` (9 комбинаций) — themuse.com. 99 — **жёсткий потолок портала**, а не наш
+  выбор: страница 100 отдаёт HTTP 400, и в коде он продублирован `themuse.py::PAGE_CEILING`
+  (берётся `min` из двух, поднять env-ручкой выше нельзя). Поэтому охват набирается
+  комбинациями `category × level`, каждая до 1980 записей. `THEMUSE_MAX_AGE_DAYS` — граница
+  гост-вакансии в домене (`freshness.GHOST_DAYS`): сортировки по дате у API нет, свежесть
+  режется на нашей стороне.
+- `JOBICY_COUNT = 100`, `JOBICY_REQUEST_CONCURRENCY = 4`, `JOBICY_INDUSTRIES` (11 значений) —
+  jobicy.com. Пагинации у API нет вовсе, есть только `count` с потолком 100, поэтому охват
+  набирается перебором индустрий. **Пустая строка в списке — не опечатка**: это запрос без
+  фильтра, общая свежая выдача, которая даёт то, что не попало ни в одну индустрию.
+- `GLOBAL_SOURCES_IT_ONLY = 1` — отсев не-IT на входе **пяти** глобальных источников:
+  arbeitnow, himalayas, web3, themuse, jobicy (это общие job-борды: 66 % и 63 % не-IT).
+  `0` — забирать всё, включая ритейл и логистику.
 - **`WEB3_TOKEN`** — токен web3.career (бесплатный, по email на `web3.career/web3-jobs-api`).
   Пусто -> источник пропускается, сбор не падает. **Секрет: только в `.env`.**
 - `WEB3_TAGS` — список тегов для перебора (у API нет пагинации, охват набирается тегами).
-  Дефолт — 40 тегов под профиль плюс грейдовые/форматные. Замер: 1835 вакансий за 66 с.
+  Дефолт — **40 тегов**: стек, инфра/данные, грейдовые (junior/entry-level/intern), форматный
+  `remote` и доменные (blockchain/defi/solidity/…). Замер: 1835 вакансий за 66 с.
 - `WEB3_TAG_CONCURRENCY = 6` — тегов параллельно.
 - `DESC_CACHE_MAX_AGE_DAYS = 14` — предохранитель от тихой правки описания без смены
   сигнала. `0` = чистый signal-based режим.
@@ -70,7 +96,10 @@
 - `NET_FROM_GROSS = 0.87` — вычет НДФЛ 13 %
 - `WORK_HOURS_PER_MONTH = 160` · `MONTHS_PER_YEAR = 12`
 - `HIRIFY_HOURLY_MAX_USD = 300` · `HIRIFY_YEARLY_MIN_USD = 25 000` — границы эвристики
-  определения периода
+  определения периода. Имена **исторические** (по первому потребителю, hirify), но пороги
+  ОБЩИЕ: их читает `domain/salary.py::SalaryPeriod.infer`, единый для hirify и web3.career.
+  Своих копий у адаптеров больше нет — до 07.08.2026 у web3 стоял свой порог 15 000, и один
+  и тот же вопрос имел два разных ответа
 
 ## Пороги выборки
 
@@ -86,8 +115,11 @@
 - `APPLY_SKIP_STREAK_MAX = 50` — сколько вакансий ПОДРЯД без кнопки отклика считать
   блокировкой HH, а не архивом; на пороге прогон останавливается. Замер 19 суток лога:
   в здоровые сутки максимальная серия 8 и 21, при блокировке — 97, 150, 268
-- `WATCHDOG_KILL_S = 8 мин` (`autoclick.py`, не env) — снос зависшего прогона. Дедлайн на
-  ОТДЕЛЬНЫЙ Playwright-вызов невозможен: sync-API привязан к своему потоку, см. docs/errors.md
+- `WATCHDOG_DUMP_S = 40 мин` / `WATCHDOG_KILL_S = 50 мин` (`autoclick.py`, не env) — дамп
+  стека и снос зависшего прогона. Дедлайн на ОТДЕЛЬНЫЙ Playwright-вызов невозможен: sync-API
+  привязан к своему потоку, см. `docs/errors.md`. Пороги подтверждены замером 128 прогонов:
+  здоровый занимает медиану 27 мин, p90 36, максимум 37.4 — снижение до 8 мин, которое
+  когда-то предлагалось, срезало бы штатные прогоны
 
 ## Профиль резюме
 
@@ -143,6 +175,38 @@
 Наружу уходит **один одобренный факт + вопрос** — не профиль/резюме/переписка. Детали —
 `security.md`, `chat.md`, RFC-002.
 
+## LLM-заполнение форм-анкет (`form_fill`, OpenRouter)
+
+LLM черновит ответ на поле анкеты **только из фактов резюме**; тул заполняет поля, но
+**submit жмёт человек** в видимом окне — RFC-003. Транспорт тот же `OPENROUTER_API_KEY` /
+`OPENROUTER_BASE_URL`, что у intent и rephrase.
+
+- `FORM_MODEL` (env; дефолт = `INTENT_MODEL`)
+- `FORM_TIMEOUT = 8` — сек
+- `FORM_MAX_TOKENS = 300` — генерация
+- `FORM_MAX_ANSWER_LEN = 1500` — жёсткий лимит длины ответа одного поля
+- `FORMS_ENABLED` (env `FORMS_LLM`) — **по умолчанию OFF**, truthy-set ЯВНЫЙ
+  (`1/true/yes/on`); `off`/`n` НЕ включают
+
+Исходное «не в кроне» из RFC-003 **отменено осознанно**: `cron/cron_apply.bat` выставляет
+`FORMS_LLM=1`, потому что без флага очередь анкет росла быстрее, чем вычерпывалась. Инвариант
+не тронут — `try_autofill` шлёт только при полноте заполнения. Детали — `apply.md`,
+`security.md`, `docs/rfc-003-form-fill.md`.
+
+## Официальный API hh.ru (OAuth)
+
+Второй путь рядом с браузерным. Проверено 28.07: `api.hh.ru` **не** закрыт DDoS-Guard —
+запрос доходит до HH (`Server-Timing: frontik`), а без токена приходит
+`{"errors":[{"value":"bad_authorization","type":"oauth"}]}`. То есть нужен OAuth-токен,
+а не обход защиты. Ключи — своего приложения с `dev.hh.ru`.
+
+- `HH_CLIENT_ID` / `HH_CLIENT_SECRET` — **секреты, только в `.env`**; пусто -> путь не работает
+- `HH_REDIRECT_URI = http://localhost:8765/callback` — куда HH возвращает код авторизации
+- `HH_API_UA = hr-work-applicant/1.0` — контакт в `HH-User-Agent`; **обязателен по правилам
+  API**: по нему HH связывается при проблемах
+- `HH_TOKEN_FILE = data/hh_token.json` — access/refresh, gitignored вместе с `data/`
+- `HH_ACCESS_TOKEN` — ручной override токена (секрет)
+
 ## Классификаторы
 
 - `SEARCH_QUERIES` — ~35 запросов: зонтичные + по языкам + по слоям + данные/ML + инфра/QA +
@@ -153,8 +217,11 @@
   dev-контекста рядом (иначе ловит «Яндекс Go»); `C#` без хвостового `\b` (после `#`
   границы слова нет).
 - `LANG_KEYS` — только языки, для зарплатного анализа
-- `ROLE_PATTERNS` — 17 ролей, **порядок важен** (первое совпадение). Ключи обязаны совпадать
-  со значениями `Role`, иначе `ValueError` на импорте `parsing.py`.
+- `ROLE_PATTERNS` — **16 ключей**, **порядок важен** (первое совпадение). Ключи обязаны
+  совпадать со значениями `Role`, иначе `ValueError` на импорте `parsing.py`. В самом `Role`
+  членов 17: `NON_IT` — доменный дефолт, регекса под него в карте нет (не-IT отсекает
+  `parsing._HARD_NON_IT` и фолбэк). Роли `Support` в карте нет намеренно — поддержка
+  отсекается раньше.
 - `EXP_LABELS` — подписи уровней опыта
 
 ## Палитра дашборда
@@ -168,17 +235,28 @@
 
 Из `.env` или окружения:
 
-**Секреты:** `HH_EMAIL`, `HH_PASSWORD` (автовход), `HH_ACCESS_TOKEN`,
+**Секреты:** `HH_EMAIL`, `HH_PASSWORD` (автовход), `HH_ACCESS_TOKEN`, `HH_CLIENT_ID`,
+`HH_CLIENT_SECRET`, `WEB3_TOKEN`, `OPEN_ROUTER_API_KEY`,
 `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` / `PGPASSWORD`.
 
-**Поведение:** `SOURCES`, `HIRIFY_PARAMS`, `HIRIFY_ENRICH_MAX`, `TALANTO_PARAMS`,
+**Источники:** `SOURCES`, `HIRIFY_PARAMS`, `HIRIFY_ENRICH_MAX`, `HIRIFY_PAGE_CONCURRENCY`,
+`HIRIFY_ENRICH_CONCURRENCY`, `TALANTO_PARAMS`, `TALANTO_ENRICH_MAX`,
+`TALANTO_PAGE_CONCURRENCY`, `TALANTO_ENRICH_CONCURRENCY`, `GETMATCH_PAGE_SIZE`,
+`GETMATCH_PAGE_CONCURRENCY`, `GETMATCH_ENRICH_CONCURRENCY`, `GETMATCH_ENRICH_MAX`,
 `ARBEITNOW_MAX_PAGES`, `ARBEITNOW_PAGE_CONCURRENCY`, `HIMALAYAS_MAX_PAGES`,
-`HIMALAYAS_PAGE_CONCURRENCY`, `GLOBAL_SOURCES_IT_ONLY`,
-`TALANTO_ENRICH_MAX`, `TALANTO_PAGE_CONCURRENCY`, `TALANTO_ENRICH_CONCURRENCY`,
-`DESC_CACHE_MAX_AGE_DAYS`, `COLLECT_MIN_RATIO`, `COLLECT_SANITY_MIN`, `CURL_MAX_TIME`,
-`HTTP_BACKEND`, `HIRIFY_PAGE_CONCURRENCY`, `HIRIFY_ENRICH_CONCURRENCY`, `HH_ENRICH_BATCH_MULT`,
-`HH_CONCURRENCY`, `CACHE_TTL_HOURS`, `SERVE_PORT`, `HH_DAILY_APPLY_CAP`,
-`HH_DISABLE_PROXIES`, `SEARCH_TABLE`.
+`HIMALAYAS_PAGE_CONCURRENCY`, `HIMALAYAS_BATCH_PAUSE`, `WEB3_TAGS`, `WEB3_TAG_CONCURRENCY`,
+`THEMUSE_MAX_PAGES`, `THEMUSE_PAGE_CONCURRENCY`, `THEMUSE_MAX_AGE_DAYS`, `THEMUSE_QUERIES`,
+`JOBICY_COUNT`, `JOBICY_INDUSTRIES`, `JOBICY_REQUEST_CONCURRENCY`, `GLOBAL_SOURCES_IT_ONLY`.
+
+**Поведение:** `DESC_CACHE_MAX_AGE_DAYS`, `COLLECT_MIN_RATIO`, `COLLECT_SANITY_MIN`,
+`CURL_MAX_TIME`, `HTTP_BACKEND`, `HH_ENRICH_BATCH_MULT`, `HH_CONCURRENCY`, `CACHE_TTL_HOURS`,
+`SERVE_PORT`, `HH_DAILY_APPLY_CAP`, `APPLY_SKIP_STREAK_MAX`, `HH_DISABLE_PROXIES`,
+`HH_REDIRECT_URI`, `HH_API_UA`, `SEARCH_TABLE`.
+
+**LLM (все три пути — opt-in, по умолчанию выключены):** `OPENROUTER_BASE_URL`,
+`INTENT_MODEL`, `INTENT_TIMEOUT`, `INTENT_LLM`, `REPHRASE_MODEL`, `REPHRASE_TIMEOUT`,
+`REPHRASE_MAX_TOKENS`, `REPHRASE_LLM`, `FORM_MODEL`, `FORM_TIMEOUT`, `FORM_MAX_TOKENS`,
+`FORM_MAX_ANSWER_LEN`, `FORMS_LLM`.
 
 `.env` в репозиторий не коммитится.
 
@@ -189,4 +267,5 @@ python -c "from hrwork.config import CACHE_TTL_HOURS, SOURCES; print(CACHE_TTL_H
 CACHE_TTL_HOURS=20 python -c "from hrwork.config import CACHE_TTL_HOURS; print(CACHE_TTL_HOURS)"
 ```
 
-Ожидаемо: `24 ['hh', 'hirify', 'talanto']`, затем `20`.
+Ожидаемо: `24 ['hh', 'hirify', 'talanto', 'getmatch', 'arbeitnow', 'himalayas', 'web3',
+'themuse', 'jobicy']`, затем `20`.

@@ -459,3 +459,34 @@ def test_motivation_without_vacancy_text_no_network(monkeypatch):
 def test_motivation_decline_returns_none(monkeypatch):
     _mock(monkeypatch, "DECLINE")
     assert F.answer_motivation("Чем интересна вакансия?", "описание", "ctx") is None
+
+
+# ── Детектор зарплатного вопроса — ЕДИНЫЙ с чатами ──
+# АУДИТ 07.08.2026: здесь жила ТРЕТЬЯ копия SALARY_Q (первые две уже были сведены), и
+# наборы разошлись в обе стороны. Английский вопрос про деньги в анкете уходил мимо
+# детерминированного пути к LLM, хотя ставка по грейду известна; «от каких сумм» не
+# ловилось в чатах. Тест сторожит, чтобы копия не завелась снова.
+@pytest.mark.parametrize("prompt", [
+    "What is your expected salary?",          # ловилось только в чатах
+    "Your compensation expectations?",
+    "What is your day rate?",
+    "От каких сумм рассматриваете предложения?",   # ловилось только в анкетах
+    "Финансовые пожелания?",
+    "На какую сумму рассматриваете?",
+    "Уровень зарплаты?",
+    "Ваши зарплатные ожидания?",
+])
+def test_salary_question_detected_the_same_way_as_in_chats(prompt):
+    from hrwork.application.apply.chat.chat_class import SALARY_Q
+    assert F.is_salary_q(prompt) is True
+    assert bool(SALARY_Q.search(prompt)) is True
+
+
+def test_salary_card_is_not_a_salary_question():
+    # способ выплаты, а не сумма — гард анкеты, у чатов его нет и не нужно
+    assert F.is_salary_q("Зарплатная карта какого банка?") is False
+
+
+def test_grade_self_assessment_is_not_a_salary_question():
+    # «на какой уровень» без привязки к деньгам — вопрос о грейде (живой кейс 27.07)
+    assert F.is_salary_q("На какой уровень ты себя оцениваешь как AI-инженер?") is False

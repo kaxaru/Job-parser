@@ -17,11 +17,13 @@ from __future__ import annotations
 import contextlib
 import random
 import time
+from collections import Counter
 from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
 from hrwork.application.apply import cover
+from hrwork.application.apply.candidates import OutOfScope, out_of_scope
 from hrwork.application.apply.chat import chat_answer
 from hrwork.application.apply.forms import form_fill, form_read
 from hrwork.application.apply.forms.form_status import FormSweepStatus
@@ -317,13 +319,27 @@ def clean_queue() -> dict[str, Any]:
     dead = [v for v in q
             if (s := FormSweepStatus.from_code(cache.get(v, {}).get("status"))) and s.is_dead]
     done = [v for v in q if v in applied or marks.get(v) in SETTLED_MARKS]
-    remove = set(dead) | set(done)
+    # Вне целевой специализации — ТЕМИ ЖЕ правилами, что и отбор кандидатов
+    # (`candidates.out_of_scope`), а не своим набором: очередь копила то, на что отклик всё
+    # равно не пошёл бы. Замер 07.08.2026: из 78 накопленных 32 были QA, аналитиками
+    # и руководителями — они лежали здесь неделями и попадали в каждый прогон.
+    scope: dict[str, OutOfScope] = {}
+    for v, meta in q.items():
+        why = out_of_scope(str((meta or {}).get("name") or ""))
+        if why is not None:
+            scope[v] = why
+    remove = set(dead) | set(done) | set(scope)
     for v in remove:
         store.remove_form(v)
     left = len(q) - len(remove)
-    log.info("Форм-очередь очищена: удалено {} (мёртвых {}, уже откликнутых {}), осталось {}",
-             len(remove), len(dead), len(done), left)
-    return {"removed": len(remove), "dead": len(dead), "applied": len(done), "left": left}
+    log.info("Форм-очередь очищена: удалено {} (мёртвых {}, уже откликнутых {}, "
+             "вне специализации {}), осталось {}",
+             len(remove), len(dead), len(done), len(scope), left)
+    if scope:
+        log.info("  вне специализации по причинам: {}",
+                 dict(Counter(r.label for r in scope.values())))
+    return {"removed": len(remove), "dead": len(dead), "applied": len(done),
+            "out_of_scope": len(scope), "left": left}
 
 
 def run(dry: bool = False, only: str = "", headless: bool = False,

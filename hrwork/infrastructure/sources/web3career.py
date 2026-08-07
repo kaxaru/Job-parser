@@ -38,8 +38,9 @@ from hrwork.config import (
     WEB3_TOKEN,
     log,
 )
+from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
-from hrwork.domain.salary import Salary
+from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
@@ -51,12 +52,6 @@ SITE = "https://web3.career"
 API = f"{SITE}/api/v1"
 PAGE_LIMIT = 100          # жёсткий потолок API: limit больше портал не отдаёт
 
-# Порог «это годовая вилка, а не месячная» — см. _salary. Значение выбрано с большим
-# запасом: месячных зарплат в 15 000 USD на этом рынке практически нет, а годовых ниже
-# 15 000 USD не бывает у инженерных ролей вовсе.
-ANNUAL_GUESS_MIN = 15_000
-MONTHS_PER_YEAR = 12
-HOURS_PER_MONTH = 160     # 40 ч/нед × 4 — та же оценка, что в himalayas.py
 
 
 @dataclass(frozen=True)
@@ -85,48 +80,38 @@ def _sig(it: dict[str, Any]) -> str:
 
 
 def _salary(it: dict[str, Any]) -> Salary | None:
-    """Вилка -> VO, приведённая к МЕСЯЧНОЙ.
+    """Вилка -> VO, приведённая к МЕСЯЧНОЙ доменной фабрикой.
 
-    Здесь единственная в проекте ЭВРИСТИКА по зарплате, и она вынужденная: `salary_unit`
-    заполнен лишь у ~5 % записей (замер 07.08.2026: HOUR у 2 и YEAR у 3 из 100), при том
-    что сами значения есть. Честно отбросить вилку без единицы, как сделано в himalayas,
-    означало бы потерять 95 % вилок портала.
-
-    Правило: единица известна -> берём её; неизвестна -> значение от ANNUAL_GUESS_MIN
-    считаем годовым, ниже — месячным.
+    `salary_unit` заполнен лишь у ~5 % записей (замер 07.08.2026: HOUR у 2 и YEAR у 3 из
+    100), при том что сами значения есть. Поэтому период отдаём как `None` — домен сам
+    определит его по величине (`SalaryPeriod.infer`). Раньше здесь стоял свой порог
+    (15 000) против 25 000 у hirify: один и тот же вопрос имел два разных ответа.
 
     ВАЛЮТА НЕ ВЫДУМЫВАЕТСЯ. Она отсутствует у ~94 % записей, и на крипто-рынке платят
     и в USD, и в стейблкоинах — проставить USD по умолчанию значило бы врать рублёвой
-    аналитике (Salary.to_rub сконвертирует по курсу то, что валютой не является).
+    аналитике (`Salary.to_rub` сконвертировал бы по курсу то, что валютой не является).
     Вилка без валюты сохраняется с currency=None: величина видна в карточке, а в срезы
     по деньгам такая запись не попадёт.
-    """
+
+    gross=False: портал не размечает налоги, и вычитать НДФЛ 13 % из зарубежной вилки
+    было бы враньём — там своя налоговая система (то же решение, что в himalayas)."""
     frm, to = it.get("salary_min_value"), it.get("salary_max_value")
-    if frm is None and to is None:
-        return None
-    unit = str(it.get("salary_unit") or "").strip().upper()
-    if unit == "YEAR":
-        div: float = MONTHS_PER_YEAR
-    elif unit == "MONTH":
-        div = 1.0
-    elif unit == "HOUR":
-        div = 1.0 / HOURS_PER_MONTH
-    else:
-        biggest = max((float(x) for x in (frm, to) if x is not None), default=0.0)
-        div = MONTHS_PER_YEAR if biggest >= ANNUAL_GUESS_MIN else 1.0
+    # Инференс запрашивается ЯВНО: домен не решает за адаптер, можно ли угадывать период —
+    # это знание о качестве данных конкретного портала. Здесь угадывать оправдано (поле
+    # заполнено у ~5 %), у himalayas — нет (оно есть почти везде, и пустое там аномалия).
+    period = SalaryPeriod.from_code(it.get("salary_unit")) or SalaryPeriod.infer(_probe(frm, to))
+    return Salary.monthly(frm, to, it.get("salary_currency"), period)
 
-    def _scale(x: Any) -> int | None:
-        try:
-            return int(float(x) / div)
-        except (TypeError, ValueError, ZeroDivisionError):
-            return None
 
-    f, t = _scale(frm), _scale(to)
-    if f is None and t is None:
-        return None
-    # gross=False: портал не размечает налоги, и вычитать НДФЛ 13 % из зарубежной вилки
-    # было бы враньём — там своя налоговая система (то же решение, что в himalayas).
-    return Salary(f, t, it.get("salary_currency"), gross=False)
+def _probe(frm: Any, to: Any) -> float | None:
+    """Величина для инференса периода — первая непустая граница вилки."""
+    for x in (frm, to):
+        if x is not None:
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return None
+    return None
 
 
 def _city(it: dict[str, Any]) -> str:
@@ -135,7 +120,7 @@ def _city(it: dict[str, Any]) -> str:
         val = str(it.get(key) or "").strip()
         if val:
             return val.title() if val.islower() else val
-    return "Remote"
+    return REMOTE_CITY
 
 
 def _normalize(it: dict[str, Any]) -> VacancyRecord:

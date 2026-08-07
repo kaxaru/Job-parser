@@ -57,10 +57,12 @@ def _clean_city(loc: str | None) -> str:
 # Мягкие ACL-маппинги кодов talanto -> VO (неизвестное -> None, дефолт ставит вызывающий —
 # контракт «мягкого парсера» из domain.md).
 _SCHED = {"remote": Schedule.REMOTE, "hybrid": Schedule.HYBRID, "office": Schedule.OFFICE}
-_LEVEL = {"intern": Experience.NONE, "junior": Experience.NONE,
-          "mid": Experience.BETWEEN_1_3, "middle": Experience.BETWEEN_1_3,
-          "senior": Experience.BETWEEN_3_6, "lead": Experience.MORE_6,
-          "principal": Experience.MORE_6, "head": Experience.MORE_6}
+# Таблицы грейдов здесь НЕТ — её ведёт домен (Experience.from_grades). Своя копия
+# РАСХОДИЛАСЬ с ним: «junior» она клала в «Без опыта», тогда как hirify/getmatch/himalayas/
+# jobicy/themuse через домен дают «1–3 года» (найдено аудитом 07.08.2026). Один и тот же
+# грейд обязан значить одно и то же на всех порталах — по нему идут и отбор под отклик,
+# и срез salary_by_experience. Заодно точное равенство не понимало «Mid-level» и «Senior/Lead»,
+# а вхождение подстроки в домене понимает.
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -110,7 +112,7 @@ def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None, *,
         city=_clean_city(it.get("location")),
         city_id="",
         salary=salary,
-        experience=_LEVEL.get((it.get("level") or "").lower()),
+        experience=Experience.from_grades([it.get("level")]),
         schedule=_SCHED.get((it.get("remote_type") or "").lower()) or Schedule.OFFICE,
         detect_text=name + " " + snippet,       # skills в detect_text -> штатный детект стека
         employer=it.get("company") or "",

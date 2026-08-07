@@ -9,7 +9,7 @@ import pytest
 
 from hrwork.application.apply import autoclick
 from hrwork.application.apply.autoclick import pick_candidates
-from hrwork.application.apply.candidates import ApplyTier
+from hrwork.application.apply.candidates import ApplyTier, OutOfScope, out_of_scope
 from hrwork.application.apply.runtime import lock, quota
 from hrwork.application.apply.runtime.quota import applied_today
 from hrwork.infrastructure.storage import JsonVacancyRepository
@@ -215,6 +215,80 @@ def test_keeps_fresh_and_undated():
 ])
 def test_blacklist_senior_grades(name):
     assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+# ── Руководящие должности: всё выше lead (задано 07.08.2026) ──
+@pytest.mark.parametrize("name", [
+    "Руководитель группы разработки",
+    "Руководитель отдела транспортной сети и инфраструктуры",
+    "Начальник управления разработки",
+    "Технический директор / CTO (Chief Technology Officer)",
+    "Head of Engineering",
+    "Director of Platform",
+    "VP of Engineering",
+    "Delivery Manager / Presale Manager (Big Data)",
+    "Engineering Manager",
+    "Solution Architect",
+    "Архитектор решений",
+    "Заместитель руководителя департамента разработки ПО",
+])
+def test_management_roles_are_out_of_scope(name):
+    assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
+
+
+# Управленческое слово, стоящее ПОСЛЕ инженерного, роли не задаёт: реальный случай из пула —
+# «директор» в названии продукта, а вакансия разработчика.
+@pytest.mark.parametrize("name", [
+    "Python-разработчик (AI-агент Операционный директор)",
+    "Backend-разработчик в команду директора по данным",
+    "Python developer, platform architect team",
+])
+def test_engineer_noun_before_management_word_keeps_the_vacancy(name):
+    assert len(pick_candidates([_raw(name=name)], marks={}, limit=10)) == 1
+
+
+# ── out_of_scope: единый предикат отбора по тайтлу (его же зовёт forms.clean_queue) ──
+# Причина — VO (OutOfScope), а не строка: она уходит в логи и сводки, набор значений конечен.
+@pytest.mark.parametrize("name, expected", [
+    ("Senior Python разработчик",          OutOfScope.SENIOR),
+    ("Руководитель группы разработки",     OutOfScope.MANAGEMENT),
+    ("Риск-аналитик (проект ПВР)",         OutOfScope.NON_ENGINEERING),
+    ("QA Automation Engineer (Python)",    OutOfScope.QA),
+    ("Аналитик данных",                    OutOfScope.ANALYST),
+    ("Data Scientist",                     OutOfScope.ML),
+    ("DevOps-инженер",                     OutOfScope.DEVOPS),
+    ("SRE/DevOps Engineer",                OutOfScope.DEVOPS),
+    ("Системный администратор",            OutOfScope.DEVOPS),
+    ("Java разработчик",                   OutOfScope.OTHER_LANG),
+    ("Python-разработчик",                 None),
+    ("Data Engineer/Data Analyst",         None),   # инженерный маркер перевешивает
+    ("ML-инженер (LLM / RAG)",             None),
+])
+def test_out_of_scope_names_the_reason(name, expected):
+    assert out_of_scope(name) is expected
+
+
+def test_out_of_scope_order_qa_wins_over_the_engineering_exemption():
+    # «QA Engineer (LLM-платформа)» — тестирование на целевом продукте, а не целевая роль
+    assert out_of_scope("QA Engineer (LLM-платформа)") is OutOfScope.QA
+
+
+# Код в тайтле снимает devops-запрет: интересует разработка, а не эксплуатация, но эти
+# четыре гибрида из живого пула — именно разработка.
+@pytest.mark.parametrize("name", [
+    "LLM Platform Engineer",
+    "Инженер-программист по безопасной разработке / Middle DevSecOps",
+    "Разработчик в инфраструктуру симулятора",
+    "Python-разработчик (DevOps-практики)",
+])
+def test_code_marker_beats_the_devops_blacklist(name):
+    assert out_of_scope(name) is None
+
+
+def test_out_of_scope_labels_are_stable():
+    # подпись уходит в лог сводки чистки очереди — фиксируем литералом
+    assert OutOfScope.MANAGEMENT.label == "руководящая"
+    assert OutOfScope.QA.label == "QA"
 
 
 def test_blacklist_does_not_hit_html_xml():

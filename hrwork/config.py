@@ -77,7 +77,8 @@ log.add(
 # hirify — доп. портал (JSON-API, только просмотр/аналитика).
 SOURCES = [s.strip() for s in os.getenv(
     'SOURCES',
-    'hh,hirify,talanto,getmatch,arbeitnow,himalayas,web3').split(',') if s.strip()]
+    'hh,hirify,talanto,getmatch,arbeitnow,himalayas,web3,themuse,jobicy',
+).split(',') if s.strip()]
 # Домен портала для подписи в карточке ленты. Живёт в Python и инжектится в feed-data.js
 # (PORTAL_SITES_PY) — дублировать в JS нельзя, так уже разъезжались константы. Источник
 # без записи здесь получает своё имя как есть, а не чужую подпись.
@@ -89,6 +90,8 @@ PORTAL_SITES = {
     'arbeitnow': 'arbeitnow.com',
     'himalayas': 'himalayas.app',
     'web3':      'web3.career',
+    'themuse':   'themuse.com',
+    'jobicy':    'jobicy.com',
 }
 # Фильтр hirify (querystring API). Широкий: интересующие skills+специализации, БЕЗ
 # ограничений по грейду/формату/английскому/типу удалёнки (все значения). ~18k вакансий.
@@ -137,10 +140,16 @@ ARBEITNOW_MAX_PAGES = int(os.getenv('ARBEITNOW_MAX_PAGES', '120'))            # 
 ARBEITNOW_PAGE_CONCURRENCY = int(os.getenv('ARBEITNOW_PAGE_CONCURRENCY', '6'))  # страниц в пачке
 # himalayas.app — global remote. Страница жёстко 20 (портал игнорирует limit>20).
 # Замер 07.08.2026: выдача кончается на offset ~97 300, то есть ~4870 страниц и ~50 суток
-# вглубь. Полный обход занял бы ~34 мин и удвоил бы кеш, поэтому по умолчанию берём свежие
-# 2000 страниц (~40k вакансий, ~20 суток) — поднять до полного: HIMALAYAS_MAX_PAGES=4900.
-HIMALAYAS_MAX_PAGES = int(os.getenv('HIMALAYAS_MAX_PAGES', '2000'))
-HIMALAYAS_PAGE_CONCURRENCY = int(os.getenv('HIMALAYAS_PAGE_CONCURRENCY', '12'))
+# вглубь. Дефолт покрывает её ЦЕЛИКОМ (обход рвётся на первой пустой странице, так что
+# лишние итерации не тратятся). Раньше здесь стояло 2000 из-за памяти — источник копил
+# сырые карточки до конца обхода; теперь он нормализует и отсеивает не-IT пачками
+# (см. himalayas.py::collect), и в памяти остаются только выжившие ~37 %.
+HIMALAYAS_MAX_PAGES = int(os.getenv('HIMALAYAS_MAX_PAGES', '5000'))
+# Конкурентность СНИЖЕНА с 12 до 6, плюс пауза между пачками: портал уходил в троттлинг
+# примерно на 1900-м запросе подряд и начинал отдавать пустые страницы, неотличимые от
+# конца выдачи, — обход обрывался на 40 % и отчитывался как успешный (07.08.2026).
+HIMALAYAS_PAGE_CONCURRENCY = int(os.getenv('HIMALAYAS_PAGE_CONCURRENCY', '6'))
+HIMALAYAS_BATCH_PAUSE = float(os.getenv('HIMALAYAS_BATCH_PAUSE', '0.4'))   # сек между пачками
 # arbeitnow и himalayas — ОБЩИЕ job-борды, а не IT-порталы: замер 07.08.2026 дал 66 % и 63 %
 # не-IT (ритейл, продажи, логистика, медицина), причём доля ровная по всей глубине выдачи.
 # У профильных источников она 5–37 % (hirify 5, getmatch 9, talanto 28, hh 37), там фильтровать
@@ -165,6 +174,37 @@ WEB3_TAGS = [t.strip() for t in os.getenv('WEB3_TAGS', ','.join((
     'solidity', 'evm', 'layer-2', 'cryptography', 'security', 'gaming',
 ))).split(',') if t.strip()]
 WEB3_TAG_CONCURRENCY = int(os.getenv('WEB3_TAG_CONCURRENCY', '6'))   # тегов параллельно
+# jobicy.com — только удалёнка, ключ не нужен. Пагинации у API нет (есть лишь `count`),
+# поэтому охват набирается перебором ИНДУСТРИЙ, как теги у web3. Пустая строка в списке —
+# запрос без фильтра (общая свежая выдача), она даёт то, что не попало ни в одну индустрию.
+JOBICY_COUNT = int(os.getenv('JOBICY_COUNT', '100'))   # потолок API — 100, больше игнорирует
+JOBICY_REQUEST_CONCURRENCY = int(os.getenv('JOBICY_REQUEST_CONCURRENCY', '4'))
+JOBICY_INDUSTRIES = [i.strip() for i in os.getenv('JOBICY_INDUSTRIES', ','.join((
+    '', 'engineering', 'dev', 'data-science', 'devops-sysadmin', 'business',
+    'product', 'design', 'technical-support', 'management', 'finance-legal',
+))).split(',') if i.strip() or i == '']
+# themuse.com — самый крупный из глобальных (407k в общей выдаче), ключ не нужен.
+# ПОТОЛОК 99 страниц по 20 на запрос (страница 100 -> HTTP 400), поэтому охват набирается
+# КОМБИНАЦИЯМИ category × level: каждая до 1980 записей. Серверные фильтры сужают сильно
+# (SE 100 877, SE+Entry 30 348), но глубже 1980 по одной комбинации не достать.
+# Сортировки по дате у API НЕТ — свежесть режется на нашей стороне, см. THEMUSE_MAX_AGE_DAYS.
+THEMUSE_MAX_PAGES = int(os.getenv('THEMUSE_MAX_PAGES', '99'))        # жёсткий потолок портала
+THEMUSE_PAGE_CONCURRENCY = int(os.getenv('THEMUSE_PAGE_CONCURRENCY', '6'))
+# Порог свежести: 60 дн = граница гост-вакансии в домене (freshness.GHOST_DAYS). Старше —
+# отклик всё равно бессмыслен, а в выдаче портала попадаются публикации годичной давности.
+THEMUSE_MAX_AGE_DAYS = int(os.getenv('THEMUSE_MAX_AGE_DAYS', '60'))
+# Комбинации фильтров. Уровни выше senior не берём — они всё равно в блеклисте отбора.
+THEMUSE_QUERIES = [q.strip() for q in os.getenv('THEMUSE_QUERIES', ';'.join((
+    'category=Software%20Engineering&level=Entry%20Level',
+    'category=Software%20Engineering&level=Mid%20Level',
+    'category=Data%20and%20Analytics&level=Entry%20Level',
+    'category=Data%20and%20Analytics&level=Mid%20Level',
+    'category=Data%20Science&level=Entry%20Level',
+    'category=Data%20Science&level=Mid%20Level',
+    'category=IT&level=Entry%20Level',
+    'category=IT&level=Mid%20Level',
+    'location=Flexible%20%2F%20Remote',
+))).split(';') if q.strip()]
 HH_ENRICH_BATCH_MULT = int(os.getenv('HH_ENRICH_BATCH_MULT', '4'))          # batch = CONCURRENCY * MULT
 
 # ─── Нормализация зарплат ─────────────────────────────────────────────────────

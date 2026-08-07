@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-1281%20py%20%2B%20106%20js-success)](docs/testing.md)
-[![Ruff](https://img.shields.io/badge/lint-ruff%20%2B%20biome-informational)](ruff.toml)
+[![Tests](https://img.shields.io/badge/tests-1628%20py%20%2B%20129%20js-success)](docs/testing.md)
+[![Ruff](https://img.shields.io/badge/lint-ruff%20%2B%20biome%20%2B%20mypy%20strict-informational)](ruff.toml)
 
-Агрегатор IT-вакансий (HH.ru + hirify.me + talanto.work): сбор -> аналитика -> интерактивный
-дашборд и лента-CRM с фильтрами под резюме и автооткликами через Playwright.
+Агрегатор IT-вакансий с **9 порталов** (hh.ru, hirify.me, talanto.work, getmatch.ru,
+arbeitnow.com, himalayas.app, web3.career, themuse.com, jobicy.com): сбор -> аналитика ->
+интерактивный дашборд и лента-CRM с фильтрами под резюме и автооткликами через Playwright.
 
 Локальная однопользовательская система на Windows. Хранилище — JSON-файлы;
 PostgreSQL нужен только опциональному полнотекстовому поиску.
@@ -25,7 +26,7 @@ ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / 
   <img alt="Лента вакансий" src="docs/img/feed-dark.png">
 </picture>
 
-Дашборд: 14 вкладок Plotly со срезами по каждому порталу.
+Дашборд: 15 вкладок Plotly со срезами по каждому порталу.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="docs/img/dashboard-light.png">
@@ -38,13 +39,17 @@ ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / 
 
 ## Возможности
 
-- **Сбор** — HH.ru (34 города × ~35 запросов, публичные HTML-страницы: API закрыт
-  DDoS-Guard), hirify.me и talanto.work (JSON-API). Порталы собираются параллельно, дедуп по id.
+- **Сбор** — 9 порталов (`config.SOURCES`): HH.ru (34 города × ~35 запросов, публичные
+  HTML-страницы: API закрыт DDoS-Guard) плюс JSON-API hirify.me, talanto.work, getmatch.ru,
+  arbeitnow.com, himalayas.app, web3.career, themuse.com, jobicy.com. Порталы собираются
+  параллельно, дедуп по id внутри портала и кросс-портальный (`domain/dedup.py`).
+  В кеше 109 798 вакансий (`data/vacancies_raw.json`, ~494 МБ; замер 07.08.2026).
 - **Аналитика** — зарплаты по языкам / опыту / городам, топ-стеки, доля удалёнки -> CSV.
 - **Свежесть вакансий** — возраст по `creationTime` vs `publicationTime`: отделяет свежие
   (<=30 дн) от гост-вакансий (>60 дн, месяцами переоткрываемых). Бейдж «👻 82д · переопубл.»
   в ленте, отсев гостов в автоклике.
-- **Дашборд** — 14 вкладок Plotly + срезы по каждому порталу (`data/dashboard.html`).
+- **Дашборд** — 15 вкладок Plotly + срезы по каждому порталу (`data/dashboard.html`),
+  включая воронку автоотказов.
 - **Лента-CRM** — все вакансии карточками: фильтр «по резюме», бейджи совпадения и свежести,
   **реальный статус отклика с HH** (отказ / приглашение / интервью), сопроводительные письма,
   поиск, режим «Мои отклики за период» (`data/feed.html`).
@@ -59,7 +64,7 @@ ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / 
 
 ```bash
 pip install -r requirements.txt           # рантайм
-pip install -r requirements-dev.txt       # + pytest, ruff, mypy
+pip install -r requirements-dev.txt       # + pytest, ruff, mypy, pre-commit
 python -m playwright install chromium     # для автокликов
 ```
 
@@ -139,8 +144,13 @@ python hh.py dashboard              # -> data/dashboard.html
 python hh.py feed                   # -> data/feed.html
 python hh.py serve [--port N]       # сервер: лента + отметки + /api/apply + поиск
 python hh.py autoclick [флаги]      # Playwright: поднятие резюме + автоотклики
+python hh.py chat [флаги]           # автоответы в переписке (без --send — только показать)
+python hh.py forms [флаги]          # форм-очередь: --dry-run / --sweep / --clean / дренаж
+python hh.py hhapi --login|--probe  # официальный API hh.ru: OAuth и проверка прав
 python hh.py [all] [--force]        # collect + analyze
 ```
+
+Всего 11 режимов (`hh.py::Mode`), диспетчеризация по таблице `_HANDLERS`.
 
 > ⚠ `--force` обходит санити-гейт, защищающий кеш от затирания деградированным срезом.
 > Только руками и только когда точно известно, что спад реальный — см.
@@ -200,7 +210,8 @@ python hh.py serve                                # http://127.0.0.1:8000/search
   [`docs/security.md`](docs/security.md).
 - **Серверный поиск (PostgreSQL FTS)** — см. раздел [«Серверный поиск»](#серверный-поиск-postgresql-full-text)
   выше: `docker compose up -d hh-postgres` + `search_demo/load.py`. Нужен только `/api/search`.
-- **Крон (планировщик Windows)** — 5 задач (сбор, отклики, чаты, синк, поднятие резюме).
+- **Крон (планировщик Windows)** — 4 активные задачи (`hh_collect`, `hh_apply`, `hh_chat`,
+  `hh_sync`); пятая, `hh_bump` (поднятие резюме), заведена, но **отключена**.
   На чистой машине их надо зарегистрировать: команды `schtasks /Create` и расписание —
   [`docs/operations.md`](docs/operations.md). После сбора крон опционально пересобирает
   поиск/дашборд/DWH (best-effort, требует поднятого Docker).
@@ -242,22 +253,27 @@ python hh.py serve                                # http://127.0.0.1:8000/search
 
 ```
 hr_work/
-├─ hh.py                 CLI: collect/enrich/analyze/dashboard/feed/serve/autoclick
+├─ hh.py                 CLI, 11 режимов: all/collect/enrich/analyze/dashboard/feed/
+│                        serve/autoclick/chat/forms/hhapi
 ├─ hrwork/
 │  ├─ config.py          все константы и env
 │  ├─ domain/            ядро: Vacancy, VO, парсинг и классификация
-│  │  └─ models · salary · experience · schedule · role · freshness · parsing
+│  │  └─ models · salary · experience · schedule · role · freshness · parsing · dedup
 │  ├─ application/
 │  │  ├─ analyzer.py     агрегация статистики
+│  │  ├─ funnel.py       воронка автоотказов (латентность, срез по компаниям)
 │  │  └─ apply/          автоотклики (раскрой по контурам)
 │  │     ├─ autoclick · candidates · cover · outcome · session   ядро отклика
 │  │     ├─ chat/        chat · chat_class · chat_answer · chat_reply · chat_intent · chat_rephrase
 │  │     ├─ forms/       forms · form_fill · form_read · form_status
 │  │     └─ runtime/     store · lock · quota · bump_state
 │  ├─ infrastructure/
-│  │  ├─ sources/        hh · hirify · talanto · base (реестр порталов)
+│  │  ├─ sources/        base (реестр) · hh · hh_api · hirify · talanto · getmatch ·
+│  │  │                  arbeitnow · himalayas · web3career · themuse · jobicy
+│  │  │                  __init__.py импортирует каждый модуль — этим он и регистрируется
 │  │  ├─ net/            http · proxy · rates
 │  │  ├─ storage/        repository · jsonio · files · marks · followup
+│  │  ├─ llm/            openrouter (транспорт opt-in LLM-фич)
 │  │  └─ search.py       Postgres FTS для /api/search
 │  └─ presentation/
 │     ├─ server.py       локальный HTTP-сервер
@@ -268,8 +284,12 @@ hr_work/
 │  ├─ dashboard.js       статика дашборда (копируется как есть)
 │  └─ search.html        страница поиска
 ├─ templates/            Jinja: feed.css/html, dashboard.css/html (.j2)
-├─ tests/                ~705 pytest + 84 node:test
-├─ scripts/              chat_stats · check_proxies · peek · visualize
+├─ tests/                1628 pytest (backend/) + 129 node:test (feed/)
+├─ tools/                инфраструктура сборки, версионируется целиком: check_venv.py
+│                        (гейт интерпретатора, первый хук pre-commit)
+├─ scripts/              ЛОКАЛЬНАЯ отладочная песочница: в репо только chat_stats ·
+│                        chat_review, остальные 4 (check_proxies · peek · visualize ·
+│                        dbg_search) — в .gitignore
 ├─ docs/                 документация
 │  └─ history/           архив закрытых аудитов (локальный, в .gitignore)
 ├─ cron/                 обёртки для планировщика задач Windows (*.bat + run_hidden.vbs)
@@ -280,6 +300,8 @@ hr_work/
 ├─ dwh_demo/             портфолио-подпроект (свой README, ruff, тесты)
 ├─ resume_profile.json   профиль: ядро стека, опыт, факты для ответов в чатах
 ├─ proxie.txt            ШАБЛОН прокси (реальные — proxie.bak.txt, в .gitignore)
+├─ .pre-commit-config.yaml   те же проверки, что в CI, до пуша (venv-гейт -> ruff ->
+│                            mypy strict -> pytest -> npm test -> biome)
 ├─ ruff.toml · biome.json · package.json · pytest.ini · mypy.ini · conftest.py
 └─ requirements.txt · requirements-dev.txt
 ```
@@ -287,16 +309,31 @@ hr_work/
 ## Разработка
 
 ```bash
-pytest -q                    # Python
-npm test                     # JS: node --test tests/feed/**/*.test.js
+pytest -q                    # Python: 1628 тестов (6 opt-in skip)
+npm test                     # JS: node --test tests/feed/**/*.test.js — 129 тестов
 python -m ruff check .       # линтер Python (dwh_demo линтится отдельно)
-python -m mypy               # строгая проверка типов (hrwork + hh.py)
+python -m mypy               # строгая проверка типов (hrwork + hh.py), ноль ошибок
 npm run lint                 # biome, src/**
 npm run build                # esbuild -> data/feed.js (или просто python hh.py feed)
 ```
 
 `python hh.py feed` пересобирает бандл сам (нужен `esbuild` в PATH). У `dwh_demo/` свой
 `ruff.toml` и `pytest.ini` — оба конфига применяются к своим файлам.
+
+### Pre-commit
+
+Всё то же самое, но до пуша — конфиг `.pre-commit-config.yaml`:
+
+```bash
+pre-commit install                   # один раз на клон (сам пакет — в requirements-dev.txt)
+pre-commit run --all-files           # прогнать по всему репо
+```
+
+Порядок хуков: гейт venv (`tools/check_venv.py`) -> ruff -> mypy strict -> pytest ->
+npm test -> biome. `language: system` — инструменты берутся из **активированного** окружения,
+а не из отдельных venv'ов фреймворка, поэтому коммитить надо из активного `.venv3`.
+Пропуск: `SKIP=pytest git commit ...` (один хук) или `git commit --no-verify` (все).
+Подробности и причины — [`docs/testing.md`](docs/testing.md).
 
 Правка фронта: `src/feed/*.js` -> `python hh.py feed`. Проверка: `npm run lint` +
 `npm test` + `node --check data/feed.js`.
@@ -316,6 +353,10 @@ npm run build                # esbuild -> data/feed.js (или просто pyth
 
 **Веса бейджа «% совпадения»** — `src/feed/resume.js`: `RESUME_WEIGHTS`, `EXP_SCORE`
 (стек 60 + опыт 25 + удалёнка 15), `RESUME_REQUIRE_REMOTE`.
+
+**Кнопка «по резюме»** — там же, `resume.js::matchesResume`: жёсткий фильтр из ДВУХ условий,
+стек + удалёнка. Грейд в нём не участвует (см. [`docs/feed.md`](docs/feed.md)) — на скоринг
+он по-прежнему влияет.
 
 **Тексты писем** — `src/feed/cover.js`: `COVER_TEMPLATES`, `RESUME_TECH_SET`, `TECH_LABEL`.
 

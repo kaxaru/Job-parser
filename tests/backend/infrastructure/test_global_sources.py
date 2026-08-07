@@ -146,9 +146,13 @@ def test_himalayas_location_restrictions_become_city():
     assert v.city == "United States, Canada"
 
 
-def test_himalayas_no_restrictions_means_worldwide():
-    # пустой список = нанимают откуда угодно, лучший случай — подписываем явно
-    assert himalayas._normalize(_him(locationRestrictions=[])).vacancy.city == "Worldwide"
+def test_himalayas_no_restrictions_uses_the_shared_remote_label():
+    """Пустой список = нанимают откуда угодно. Подпись — доменная REMOTE_CITY, одна на все
+    источники: своя строка «Worldwide» давала ВТОРОЙ бакет в фасете городов ленты рядом с
+    «Remote» от семи остальных порталов (замер 07.08.2026: 11 978 против 219)."""
+    from hrwork.domain.models import REMOTE_CITY
+    assert himalayas._normalize(_him(locationRestrictions=[])).vacancy.city == REMOTE_CITY
+    assert REMOTE_CITY == "Remote"
 
 
 def test_himalayas_is_always_remote():

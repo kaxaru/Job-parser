@@ -15,17 +15,14 @@ from typing import Any
 from hrwork.config import (
     HIRIFY_ENRICH_CONCURRENCY,
     HIRIFY_ENRICH_MAX,
-    HIRIFY_HOURLY_MAX_USD,
     HIRIFY_PAGE_CONCURRENCY,
     HIRIFY_PARAMS,
-    HIRIFY_YEARLY_MIN_USD,
-    MONTHS_PER_YEAR,
-    WORK_HOURS_PER_MONTH,
     log,
 )
 from hrwork.domain.experience import Experience
+from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
-from hrwork.domain.salary import Salary
+from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.http import fetch_bytes
@@ -51,26 +48,14 @@ class HirifyCfg:
 CFG = HirifyCfg()
 
 
-def _infer_period(usd_mid: float | None) -> str:
-    """Период зарплаты по USD-величине (в JSON поля нет). junior/middle: <$300 -> час,
-    >$25k -> год, иначе месяц. Приблизительно (спорный $15–25k -> месяц)."""
-    v = usd_mid or 0
-    if 0 < v < HIRIFY_HOURLY_MAX_USD:
-        return "hour"
-    if v > HIRIFY_YEARLY_MIN_USD:
-        return "year"
-    return "month"
-
-
-def _to_monthly(amount: float | None, period: str) -> int | None:
-    """Сумму в ИСХОДНОЙ валюте -> месячная: час×160 (раб.часов/мес), год/12, месяц как есть."""
-    if amount is None:
+def _usd_mid(s: dict[str, Any] | None) -> float | None:
+    """USD-серединка вилки — вход для инференса периода (`SalaryPeriod.infer`).
+    Периода в схеме hirify нет вовсе, поэтому его определяют по величине."""
+    raw = (s or {}).get("salary_in_usd")
+    try:
+        return float(raw) if raw is not None else None
+    except (TypeError, ValueError):
         return None
-    if period == "hour":
-        return round(amount * WORK_HOURS_PER_MONTH)
-    if period == "year":
-        return round(amount / MONTHS_PER_YEAR)
-    return round(amount)     # Salary.frm/to объявлены int — ACL приводит тип здесь
 
 
 def _clean_company(title: Any) -> str:
@@ -89,7 +74,7 @@ def _meta_header(it: dict[str, Any]) -> str:
     collect, и уходит на диск целиком. Схему не раздуваем ради одной шапки; сложность
     инкапсулирована в одном месте. Санитайзер feed (allowlist) шапку пропускает (<p>+текст)."""
     regions = it.get("regions") or []
-    countries = ", ".join(r.get("name_en", "") for r in regions if r.get("name_en")) or "Remote"
+    countries = ", ".join(r.get("name_en", "") for r in regions if r.get("name_en")) or REMOTE_CITY
     parts = [f"🌍 {countries}"]
     eng = (it.get("english_level") or "").upper()
     if eng:
@@ -118,12 +103,14 @@ def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None, *,
     # валюте); дальше JS конвертит валюту. Так HH(RUR/мес) и hirify сравнимы на одной оси.
     # Контракт «нет вилки -> None» (как Salary.from_raw): словарь с одной валютой без
     # min/max не должен рождать truthy Salary(None, None, …)-шелуху.
-    if s and (s.get("min") is not None or s.get("max") is not None):
-        period = _infer_period(s.get("salary_in_usd"))
-        salary = Salary(_to_monthly(s.get("min"), period), _to_monthly(s.get("max"), period),
-                        s.get("currency"), gross=False)     # hirify отдаёт net
-    else:
-        salary = None
+    # Пересчёт и порог инференса — в домене (Salary.monthly / SalaryPeriod.infer): период
+    # определяется одинаково для hirify, himalayas и web3.career. Раньше правило жило здесь,
+    # и новые адаптеры завели свои копии с разными порогами (07.08.2026).
+    salary = Salary.monthly(
+        (s or {}).get("min"), (s or {}).get("max"), (s or {}).get("currency"),
+        SalaryPeriod.infer(_usd_mid(s)),
+        gross=False,                                        # hirify отдаёт net
+    ) if s else None
     regions = it.get("regions") or []
     tags  = [t.get("name", "") for t in (it.get("tags") or [])]
     specs = [sp.get("name_en", "") for sp in (it.get("specializations") or [])]
@@ -142,7 +129,7 @@ def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None, *,
     vac = build_vacancy(
         vid=f"hirify_{it.get('id')}",           # неймспейс — не сталкивается с числовыми id HH
         name=name,
-        city=(regions[0].get("name_en") if regions else None) or "Remote",
+        city=(regions[0].get("name_en") if regions else None) or REMOTE_CITY,
         city_id="",
         salary=salary,
         experience=Experience.from_hirify_grades(it.get("grades")),   # VO напрямую, без HH-кода

@@ -28,6 +28,7 @@ from hrwork.config import (
     GLOBAL_SOURCES_IT_ONLY,
     log,
 )
+from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
@@ -78,7 +79,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
     vac = build_vacancy(
         vid=f"arbeitnow_{slug}",                 # неймспейс — не сталкивается с id других порталов
         name=name,
-        city=str(it.get("location") or "") or "Remote",
+        city=str(it.get("location") or "") or REMOTE_CITY,
         city_id="",
         salary=None,                             # вилки в API нет — см. шапку модуля
         experience=None,                         # грейда в API нет — см. шапку модуля
@@ -134,11 +135,13 @@ class ArbeitnowSource(Source):
         # и при этом не долбить портал полусотней разом.
         items: list[dict[str, Any]] = list(first)
         page = 2
+        read = 1                                 # реально прочитано страниц (для лога)
         while page <= CFG.max_pages:
             batch = list(range(page, min(page + CFG.page_conc, CFG.max_pages + 1)))
             chunks = await asyncio.gather(*(self._get_page(p) for p in batch))
             got = [x for c in chunks for x in c]
             items.extend(got)
+            read += len(batch)
             if any(not c for c in chunks):       # в пачке встретилась пустая — список кончился
                 break
             page = batch[-1] + 1
@@ -153,6 +156,8 @@ class ArbeitnowSource(Source):
         # Портал общий, не IT-шный: две трети выдачи — ритейл/логистика/медицина.
         # См. config.GLOBAL_SOURCES_IT_ONLY — там причина и способ выключить.
         out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
-        log.info("arbeitnow: собрано {} (страниц {}, дублей {}, не-IT отсеяно {})",
-                 len(out), page - 1, len(items) - len(uniq), len(recs) - len(out))
+        # `read`, а не `page - 1`: записи последней пачки добавляются ДО выхода из цикла,
+        # поэтому счётчик по `page` занижал итог (в логе 37 при реально прочитанных 43).
+        log.info("arbeitnow: собрано {} (страниц {}, карточек {}, дублей {}, не-IT отсеяно {})",
+                 len(out), read, len(items), len(items) - len(uniq), len(recs) - len(out))
         return out

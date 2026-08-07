@@ -41,9 +41,19 @@ def test_normalize_schedule_mapping(remote_type, hh_code):
     assert _normalize(it).vacancy.schedule.hh_code == hh_code
 
 
+# Грейд маппит ДОМЕН (Experience.from_grades), у адаптера своей таблицы больше нет.
+# АУДИТ 07.08.2026: копия в talanto расходилась с доменом — «junior» она клала в
+# «Без опыта», тогда как на hirify/getmatch/himalayas/jobicy/themuse тот же junior давал
+# «1–3 года». Прежнее ожидание ("junior", "noExperience") фиксировало этот баг как
+# требование. Правильное значение берётся из домена, а не из бывшего поведения адаптера.
 @pytest.mark.parametrize("level, exp", [
-    ("junior", "noExperience"), ("mid", "between1And3"),
+    ("junior", "between1And3"),                            # было noExperience — расхождение
+    ("intern", "noExperience"), ("trainee", "noExperience"),
+    ("mid", "between1And3"), ("middle", "between1And3"),
     ("senior", "between3And6"), ("lead", "moreThan6"),
+    ("principal", "moreThan6"), ("head", "moreThan6"),
+    ("Mid-level", "between1And3"),                         # точное равенство это не ловило
+    ("Senior/Lead", "between3And6"),                       # вилка -> младший из двух
     (None, None), ("weird", None),                         # мягкий контракт: неизвестное -> None
 ])
 def test_normalize_level_mapping(level, exp):

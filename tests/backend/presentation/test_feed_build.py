@@ -115,10 +115,28 @@ def feed_globals(tmp_path_factory):
     "VACANCIES", "SAL_MAX", "SAVED_MARKS", "FX_RATES", "FX_ALIAS",
     "STATE_LABELS_PY", "RESUME_CORE_PY", "RESUME_EXPS_PY", "MARK_VALUES_PY",
     "CHAT_FROZEN_PY",
+    # PORTAL_SITES_PY добавлен 01.08.2026 и в этот список НЕ попал — страж отставал от
+    # кода почти неделю (найдено аудитом 07.08). Он и есть мост подписей порталов в JS,
+    # без которого talanto и getmatch подписывались как «hh.ru».
+    "PORTAL_SITES_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
     # Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
     assert f"const {name} = " in feed_globals["text"]
+
+
+def test_globals_guard_covers_every_injected_const(feed_globals):
+    """Список выше не должен отставать от `feed.py::build_feed`.
+
+    Именно это и произошло с `PORTAL_SITES_PY`: глобал появился в коде, а страж его не знал,
+    и «каждый глобал обязан присутствовать» проверялось для десяти из одиннадцати. Считаем
+    фактические `const` в бандле и сверяем с числом случаев параметризации."""
+    import re
+    actual = set(re.findall(r"^const ([A-Z_]+) = ", feed_globals["text"], re.M))
+    guarded = set(
+        test_feed_data_defines_expected_global.pytestmark[0].args[1]  # type: ignore[attr-defined]
+    )
+    assert actual == guarded, f"не под стражем: {sorted(actual - guarded)}"
 
 
 def test_frozen_chat_kinds_injected_from_python(feed_globals):

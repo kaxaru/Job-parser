@@ -49,13 +49,17 @@
 ## Запуск
 
 ```
-pytest                                      # 705 тестов бэкенда (+6 opt-in skip)
+pytest                                      # 1628 тестов бэкенда: 1622 pass + 6 opt-in skip
 pytest tests/backend/domain                 # один слой
-npm test                                    # 84 теста фронта (node:test)
+npm test                                    # 129 тестов фронта в 36 сюитах (node:test)
 npm run lint                                # biome
 ruff check .
 mypy                                        # строгая проверка типов (mypy.ini)
 ```
+
+Числа в этом файле — с прогона 07.08.2026 (`pytest --collect-only -q`). Все опубликованные
+здесь разбивки идут ИЗ ОДНОГО прогона и в сумме дают общее число: 671 + 615 + 207 + 131 + 4
+= 1628. Если сумма перестала сходиться — устарел этот файл, а не арифметика.
 
 **mypy — strict, ноль ошибок.** Область: пакет `hrwork` + `hh.py` (`dwh_demo` исключён —
 у него свой стек и свои конфиги). Внешние библиотеки без стабов (playwright, plotly,
@@ -115,15 +119,20 @@ npm test -> biome lint.
 
 ```
 tests/
-├─ backend/
-│  ├─ domain/            63  VO, классификация, парсинг, страж пресина
-│  ├─ application/      425  отбор кандидатов, чаты, intent/rephrase, формы-анкеты
-│  │                        (form_fill/forms/form_read, RFC-003), аналитика, фасады
-│  ├─ infrastructure/    84  источники (hh/hirify/talanto), сеть, хранилище, поиск, LLM-транспорт
-│  ├─ presentation/     129  сервер, графики, дашборд, фид, санитайзер
-│  └─ test_collect_guard.py  4  оркестрация hh.py: санити-гейт сбора
-└─ feed/                 84  фронт, гоняется node:test — НЕ pytest
+├─ backend/                   1628
+│  ├─ domain/                  671  VO, классификация, парсинг, дедуп, период зарплаты,
+│  │                                страж пресина
+│  ├─ application/             615  отбор кандидатов, чаты, intent/rephrase, формы-анкеты
+│  │                                (RFC-003), воронка автоотказов, аналитика, фасады
+│  ├─ infrastructure/          207  девять источников, сеть, хранилище, поиск, LLM-транспорт
+│  ├─ presentation/            131  сервер, графики, дашборд, фид, санитайзер
+│  └─ test_collect_guard.py      4  оркестрация hh.py: санити-гейт сбора
+└─ feed/                       129  фронт в 36 сюитах, гоняется node:test — НЕ pytest
 ```
+
+Перекос в сторону `domain/` кажущийся: 510 из 671 — параметризованный страж пресина
+(`test_prescreen.py`: 127 фрагментов словаря × 4 обёртки + 2 корпусных теста). Без него
+слой весит 161 тест.
 
 `testpaths = tests/backend` сужен намеренно: иначе pytest пытается собирать
 `tests/feed/*.js`. Фронт запускается своим раннером через `npm test`.
@@ -159,44 +168,85 @@ Playwright-путь покрыт **вокруг браузера**: `pick_candid
 
 ## Python-тесты
 
-**`backend/domain/`** — 60
+Числа в скобках — собранные случаи (с учётом параметризации), не функции.
 
-- `test_parsing.py` (37) — разбор сырых данных HH -> `Vacancy`, не-IT фильтр
+**`backend/domain/`** — 671
+
+- `test_prescreen.py` (510, один `slow`) — эквивалентность подстрочного пресина эталонному
+  regex; 127 фрагментов словаря × 4 обёртки
+- `test_parsing.py` (70) — разбор сырых данных HH -> `Vacancy`, не-IT фильтр
+- `test_salary_period.py` (30) — VO `SalaryPeriod` и `Salary.monthly`: разбор диалектов
+  порталов, инференс по величине, пересчёт час/год -> месяц. Инвариант домена: вся вилка
+  внутри системы месячная
+- `test_role.py` (24) — VO `Role` (17 членов) + страж дрейфа с `config.ROLE_PATTERNS`
+  (16 ключей: `NON_IT` — служебный член без паттерна)
+- `test_dedup.py` (21) — кросс-портальный дедуп: ключ склейки (`dedup_key`, `norm_title`,
+  `norm_employer`) и выбор победителя
 - `test_domain_vo.py` (10) — `Schedule` / `Experience` / `Salary`
 - `test_freshness.py` (6) — возраст, разрыв переоткрытия, классификация
-- `test_role.py` (4) — VO `Role` + страж дрейфа с `config.ROLE_PATTERNS`
-- `test_prescreen.py` (3, один `slow`) — эквивалентность подстрочного пресина
 
-**`backend/application/`** — 304
+**`backend/application/`** — 615
 
-- `test_autoclick.py` (68) — отбор кандидатов, тиры, квота, lock; без браузера
+- `test_autoclick.py` (156) — отбор кандидатов, тиры, `OutOfScope`/`_SCOPE_RULES`, квота,
+  lock; без браузера
+- `test_form_fill.py` (110) — LLM-заполнение форм (RFC-003): выход санитайзится/`DECLINE`,
+  select строго из опций, зарплата и гражданство не уходят провайдеру
+- `test_chat_answer.py` (64) — шаблонные ответы + intent-роутер; движок не выдумывает фактов
+- `test_chat_rephrase.py` (49) — LLM-переформулировка: валидатор режет ново-токенный факт,
+  любой сбой -> источник; страж-регресс «без tty -> источник» в `test_chat_reply`;
+  opt-in live (`slow`)
+- `test_chat_reply.py` (44) — сборка/отправка автоответов, anti-loop, classify inject,
+  rephrase human-gate
+- `test_forms.py` (42) — формы как часть отклика: origin-гард, resolve
+  (словарь -> suggest -> LLM), `try_autofill` (полнота -> «Откликнуться»; пробел/пусто -> НЕ шлёт)
+- `test_chat_class.py` (39) — тип сообщения + кто написал
+- `test_chat_intent.py` (19) — LLM-классификатор: битый/чужой ответ -> None, opt-in live (`slow`)
 - `test_analyzer.py` (16) — агрегация на in-memory вакансиях
 - `test_chat.py` (16) — чат-API: кластеры, маппинг chatId, отправка
-- `test_chat_answer.py` — шаблонные ответы + intent-роутер; движок не выдумывает фактов
-- `test_chat_reply.py` — сборка/отправка автоответов, anti-loop, classify inject, rephrase human-gate
-- `test_chat_class.py` — тип сообщения + кто написал
-- `test_chat_intent.py` — LLM-классификатор: битый/чужой ответ -> None, opt-in live (`slow`)
-- `test_chat_rephrase.py` — LLM-переформулировка: валидатор режет ново-токенный факт, любой
-  сбой -> источник; страж-регресс «без tty -> источник» в `test_chat_reply`; opt-in live (`slow`)
-- `test_store.py` — фасад `ApplicationStore`
-- `test_cover.py` — сопроводительное: шаблон + фолбэк LLM -> шаблон
+- `test_funnel.py` (13) — воронка автоотказов: исход ТОЛЬКО по статусу HH, бакеты латентности,
+  схлопывание дублей журнала в ранний ts
+- `test_form_status.py` (13) — мёртвая анкета замораживает вакансию до переоткрытия
+- `test_captcha_guard.py` (8) — капча аккаунта HH останавливает прогон, а не притворяется
+  архивной вакансией (инцидент 28.07: 35 карточек перемолото до watchdog)
+- `test_letter_required.py` (7) — обязательное сопроводительное не превращает живую вакансию
+  в «архив» (инцидент 03.08.2026: `disabled`-кнопка давала молчаливый SKIP)
+- `test_store.py` (6) — фасад `ApplicationStore`
+- `test_form_read.py` (5) — извлечение полей формы на утином мок-`page`
+- `test_cover.py` (4) — сопроводительное: шаблон + фолбэк LLM -> шаблон
+- `test_form_answers_dictionary.py` (4) — регексы словаря `resume_profile.json::form_answers`;
+  пропускается целиком, если словарь пуст
 
-**`backend/infrastructure/`**
+**`backend/infrastructure/`** — 207
 
-- `test_hirify.py` — ACL hirify -> `VacancyRecord`, инференс периода зарплаты
-- `test_marks.py` — отметки, `MARKS_FILE` подменяется на `tmp_path`
-- `test_followup.py` — форм-очередь, идемпотентность
-- `test_html_client.py` — сбой сети при enrich не затирает описания
-- `test_rates.py` — FX: алиасы, TTL/кеш, фолбэк при сбое
-- `llm/test_openrouter.py` — транспорт OpenRouter: любая ошибка/не-200/пусто -> None (mock httpx)
+Больше половины слоя — ACL девяти порталов: маппинг внешней схемы в домен, сеть не трогается.
 
-**`backend/presentation/`** — 124
+- `test_talanto.py` (31) — ACL talanto -> `VacancyRecord`, `_meta_header`, `_sig`
+- `test_themuse_jobicy.py` (27) — themuse и jobicy: у обоих грейд есть полем, шкалы разные;
+  проверяется их выравнивание в одну корзину
+- `test_getmatch.py` (24) — ACL getmatch, `_normalize` / `_sig`
+- `test_search.py` (24) — сборка SQL поиска без БД: фильтры, режимы, класс свежести
+- `test_global_sources.py` (23) — arbeitnow и himalayas: общие job-борды, отсев не-IT на входе
+- `test_web3career.py` (20) — эвристика зарплаты: `salary_unit` заполнен у ~5 % записей,
+  поэтому адаптер ЯВНО вызывает `SalaryPeriod.infer` там, где himalayas вилку отбрасывает.
+  Второй инвариант — валюта не выдумывается (на крипто-рынке платят и в стейблкоинах)
+- `test_hirify.py` (14) — ACL hirify, инференс периода зарплаты
+- `test_hh_api.py` (13) — официальный API hh.ru: OAuth-ссылка, срок жизни токена, обновление
+  протухшего РОВНО один раз
+- `test_followup.py` (9) — форм-очередь, идемпотентность
+- `test_marks.py` (7) — отметки, `MARKS_FILE` подменяется на `tmp_path`
+- `llm/test_openrouter.py` (6) — транспорт OpenRouter: любая ошибка/не-200/пусто -> None
+  (mock httpx)
+- `test_html_client.py` (5) — сбой сети при enrich не затирает описания
+- `test_rates.py` (4) — FX: алиасы, TTL/кеш, фолбэк при сбое
 
-- `test_sanitize.py` (7) — санитайзер описаний, XSS
-- `test_server.py` (35) — маршрутизация, gzip-кэш (304/ETag), лимит тела (413/400)
+**`backend/presentation/`** — 131
+
+- `test_feed_build.py` (47) — payload `feed-data.js`: JS-глобалы, round-trip полей карточки,
+  `SAL_MAX`/FX
+- `test_server.py` (36) — маршрутизация, gzip-кэш (304/ETag), лимит тела (413/400)
 - `test_charts.py` (27) — фигуры из CSV-отчётов: `_num`, stacked-pct, города/источники/heatmap/компании
-- `test_feed_build.py` (41) — payload `feed-data.js`: 8 JS-глобалов, round-trip полей карточки, `SAL_MAX`/FX
 - `test_dashboard.py` (14) — сборка HTML: панели чартов, вкладки источников, деградация на пустом входе
+- `test_sanitize.py` (7) — санитайзер описаний, XSS
 
 **`backend/`** — 4 · `test_collect_guard.py` — санити-гейт сбора
 
@@ -217,7 +267,9 @@ def test_skips_non_engineering_roles(name):
 неизвестно, сломан один вход или все. Параметризация даёт отдельный тест на случай,
 имя которого сразу называет вход — `test_skips_non_engineering_roles[Риск-аналитик…]`.
 
-Перевод семи циклов в параметризацию дал 209 -> 246 тестов при том же покрытии.
+Замер того перевода (исторический, набор с тех пор вырос до 1628): семь циклов дали
+209 -> 246 тестов при том же покрытии. Тот же эффект в масштабе виден на `test_prescreen.py` —
+127 фрагментов × 4 обёртки = 508 именованных случаев вместо одного цикла, падающего на первом.
 
 Когда у входов **разные ожидаемые значения**, они идут в параметризацию парой
 `(вход, ожидаемое)` — литералом, по главному правилу, а не вычислением из кода:
@@ -237,18 +289,36 @@ API) — цикл внутри `it` запрещён по той же причи
 
 ## JS-тесты
 
-`node --test`, ~76 проверок: `model.test.js` (61) — фильтрация, сортировка, валюты;
-`resume.test.js` (8) — скоринг совпадения с резюме; `cover.test.js` (4); `marks.test.js` (3).
+`node --test`, **129 тестов в 36 сюитах**:
+
+- `model.test.js` (106 в 32 сюитах) — фильтрация, сортировка, валюты, `cardTone`
+- `resume.test.js` (16 в 2 сюитах) — жёсткий фильтр `matchesResume` и скоринг `resumeMatch`
+- `cover.test.js` (4) — шаблоны сопроводительных
+- `marks.test.js` (3) — отметки и `pushServer`
+
+`resume.test.js` вырос с 8 до 16 после того, как из `matchesResume` убрали грейд (07.08.2026):
+на каждое значение грейда — включая `''`, `null` и `undefined` — заведён отдельный `it`
+«не влияет на видимость», плюс два теста на то, что снятие условия не отменило требований
+стека и удалёнки. Это ровно тот случай, ради которого запрещён цикл: пустое и отсутствующее
+значение ведут себя по-разному, и падение обязано называть виновника.
 
 ## Тесты-стражи
 
 Отдельный жанр: они защищают не поведение функции, а **согласованность между двумя местами**.
 
-- `test_role.py` — ярлыки `Role` совпадают с ключами `config.ROLE_PATTERNS`. При расхождении
-  импорт `parsing.py` упал бы в проде; тест ловит раньше.
-- `test_prescreen.py` — оптимизация даёт тот же результат, что чистый regex. Проверено:
-  0 расхождений на 34k вакансий, 137 c -> 8 c.
+- `test_role.py` — каждый ключ `config.ROLE_PATTERNS` (16) имеет член `Role` (17: `NON_IT`
+  служебный, паттерна у него нет). При расхождении импорт `parsing.py` упал бы в проде;
+  тест ловит раньше.
+- `test_prescreen.py` — оптимизация даёт тот же результат, что чистый regex. Замер на момент
+  ввода: 0 расхождений на 34k вакансий, 137 c -> 8 c.
+- `test_feed_build.py` — константы, продублированные между Python и JS, реально доезжают
+  в `feed-data.js`; ожидаемое — литерал (`CHAT_FROZEN_PY == ["ack", "bot_interview"]`),
+  а не `list(FROZEN_CODES)`, иначе тест повторил бы реализацию.
 - `test_collect_guard.py` — санити-гейт не даёт затереть кеш деградированным срезом.
+
+Известный пробел этого жанра: список глобалов в `test_feed_build.py` перечислен литералом
+и на 07.08.2026 содержит 10 имён, тогда как `build_feed` эмитит 11 — `PORTAL_SITES_PY`
+в параметризацию не добавили. Страж согласованности, отставший от кода, — тоже расхождение.
 
 Такие тесты обязательны везде, где константа продублирована или введена оптимизация.
 
@@ -292,6 +362,11 @@ def test_specific_practice_over_known_tech_is_silent():
 - **Иные формы фигур `charts.py`** (`chart_salary_lang`/`_exp`, `heatmap_city_lang`,
   `companies_remote`) — не покрыты; все чистые, тестируются тем же CSV-в-`tmp_path`, оставлены
   без gold-plating.
+- **Вкладка «Автоотказы / воронка» на уровне presentation** — покрыта только её АГРЕГАЦИЯ
+  (`test_funnel.py`, 13 тестов на `application/funnel.py`). Ни `charts.py::chart_company_funnel`,
+  ни запись `13_company_funnel.csv` из `build_dashboard` тестами не тронуты, хотя порядок
+  здесь неочевиден: CSV пишется строго ПОСЛЕ `run_reports`, иначе его снесёт
+  `ReportWriter.cleanup()`. Регрессия на этот порядок напрашивается.
 - **Playwright-путь** (`autoclick.apply_one`, `_goto`, watchdog) — не покрыт и покрыт
   не будет; проверяется живым прогоном с `--apply-limit 1`.
 

@@ -79,11 +79,14 @@ def test_known_unit_is_used(unit, minimum, maximum, expected_from, expected_to):
     assert (s.frm, s.to) == (expected_from, expected_to)
 
 
+# Инференс периода запрашивается адаптером ЯВНО и считается доменом (SalaryPeriod.infer,
+# порог $25 000 — общий для hirify/web3). Раньше здесь был свой порог 15 000: один и тот
+# же вопрос имел два разных ответа в зависимости от портала.
 @pytest.mark.parametrize("minimum, maximum, expected_from, expected_to", [
-    (150_000, 180_000, 12_500, 15_000),   # >= порога -> годовая, делим на 12
-    (40_000, 50_000, 3_333, 4_166),       # >= порога -> годовая
+    (150_000, 180_000, 12_500, 15_000),   # > порога -> годовая, делим на 12
+    (40_000, 50_000, 3_333, 4_167),       # > порога -> годовая (округление, не усечение)
     (9_000, 12_000, 9_000, 12_000),       # < порога -> уже месячная, не трогаем
-    (None, 14_999, None, 14_999),         # граница снизу: 14 999 -> месячная, вилка «до»
+    (None, 24_999, None, 24_999),         # ровно под порогом -> месячная, вилка «до»
 ])
 def test_missing_unit_is_guessed_by_magnitude(minimum, maximum, expected_from, expected_to):
     s = web3career._normalize(_job(salary_unit=None, salary_min_value=minimum,
@@ -91,11 +94,13 @@ def test_missing_unit_is_guessed_by_magnitude(minimum, maximum, expected_from, e
     assert (s.frm, s.to) == (expected_from, expected_to)
 
 
-def test_guess_threshold_is_inclusive():
-    # ровно ANNUAL_GUESS_MIN уже считается годовой
-    s = web3career._normalize(_job(salary_min_value=web3career.ANNUAL_GUESS_MIN,
+def test_guess_uses_the_shared_domain_threshold():
+    # порог один на все порталы — живёт в SalaryPeriod.infer, не в адаптере
+    from hrwork.domain.salary import SalaryPeriod
+    assert SalaryPeriod.infer(30_000) is SalaryPeriod.YEAR
+    s = web3career._normalize(_job(salary_min_value=30_000,
                                    salary_max_value=None)).vacancy.salary
-    assert s.frm == web3career.ANNUAL_GUESS_MIN // 12
+    assert s.frm == 2500
 
 
 def test_currency_is_never_invented():

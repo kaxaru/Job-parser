@@ -233,6 +233,7 @@ export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
 const PORTAL_SITES = (typeof PORTAL_SITES_PY !== 'undefined' && PORTAL_SITES_PY) || {
   hh: 'hh.ru', hirify: 'hirify.me', talanto: 'talanto.work', getmatch: 'getmatch.ru',
   arbeitnow: 'arbeitnow.com', himalayas: 'himalayas.app', web3: 'web3.career',
+  themuse: 'themuse.com', jobicy: 'jobicy.com',
 };
 export function portalSite(source) {
   const s = source || 'hh';

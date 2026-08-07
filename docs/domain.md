@@ -6,7 +6,7 @@
 ## Назначение
 
 Единый язык предметной области «вакансия» и правила, которые не зависят от источника данных.
-HH, hirify и talanto отдают разные форматы; домен знает только один — свой.
+Девять порталов отдают девять разных форматов; домен знает только один — свой.
 
 ## Сущность `Vacancy`
 
@@ -70,26 +70,88 @@ v.is_ghost()             # False
 
 Frozen VO: `frm`, `to`, `currency`, `gross`.
 
+**Инвариант слоя: вся вилка в домене — МЕСЯЧНАЯ.** По ней считаются медианы, срезы аналитики
+и сортировка ленты, поэтому годовые 130 000 USD рядом с месячными рублями ломают всё сразу.
+Приведение живёт в домене, а не в адаптерах: до 07.08.2026 его дублировали hirify
+(`_to_monthly` + `_infer_period`), himalayas и web3.career, причём порог «это годовая?»
+успел разойтись — $25 000 у hirify против 15 000 у web3.
+
 - `from_raw(dict | None) -> Salary | None` — `None`, если **обе** границы `None`.
   Проверка через `is None`, не truthiness: вилка `from=0` валидна.
+- `monthly(frm, to, currency, period, *, gross=False) -> Salary | None` — фабрика для ACL:
+  вилка ИЗВЕСТНОГО периода -> месячная. **`period=None` -> `None`, вилку не берём.**
+  Домен не решает за адаптер, можно ли угадать период: это знание о качестве данных
+  КОНКРЕТНОГО портала (у himalayas `salaryPeriod` есть почти везде — пустое там аномалия;
+  у web3.career поле заполнено у ~5 %, у hirify его нет вовсе — там отбросить значило бы
+  потерять почти все вилки). Кому нужен инференс — передаёт `SalaryPeriod.infer(...)`
+  **явно**, и это видно в месте вызова. Валюта сохраняется как есть.
 - `.mid -> int | None` — среднее либо единственная граница.
 - `.net()` — gross -> net через `NET_FROM_GROSS = 0.87`; идемпотентен.
 - `.net_triple()` -> `(frm, to, mid)`.
 
+### `SalaryPeriod` — `domain/salary.py::SalaryPeriod`
+
+`HOUR` / `MONTH` / `YEAR`. Набор конечен и от него зависит пересчёт, поэтому строка
+`"year"`/`"hour"` здесь была бы тем же дефектом, что `tier: int` до `ApplyTier`.
+
+- `from_code(str | None) -> SalaryPeriod | None` — **мягкий** парсер внешнего значения
+  (`salaryPeriod` himalayas, `salary_unit` web3.career, свои коды hirify). Одна таблица
+  диалектов на все порталы: `hour/hourly/per_hour/час`, `month/monthly/per_month/мес/месяц`,
+  `year/yearly/annual/annually/per_year/год`. Пусто/незнакомое -> `None`; выдумывать нельзя —
+  ошибка в периоде это ошибка **в 12 раз**, хуже пустого поля.
+- `infer(usd_mid) -> SalaryPeriod` — период ПО ВЕЛИЧИНЕ, когда портал его не назвал.
+  Эвристика и она осознанная: `< HIRIFY_HOURLY_MAX_USD` ($300) — час, `> HIRIFY_YEARLY_MIN_USD`
+  ($25 000) — год, между — месяц. Возвращает VO, а не `None`: инференс всегда даёт ответ,
+  вопрос лишь в том, звать ли его (решает адаптер).
+- `to_monthly(amount) -> int | None` — сумма в ИСХОДНОЙ валюте -> месячная:
+  час × `WORK_HOURS_PER_MONTH` (160), год / `MONTHS_PER_YEAR` (12), месяц как есть.
+
+Имена порогов исторические (по первому потребителю, hirify), но действуют они на все порталы.
+
 ### `Experience` — `domain/experience.py::Experience`
 
 Enum, значения = HH-коды (`noExperience` / `between1And3` / `between3And6` / `moreThan6`).
-`from_hirify_grades()` берёт **самый младший** грейд из списка.
+
+- `from_code(str | None)` — мягкий парсер сохранённого `experience.id` / HH `workExperience`.
+- **`from_grades(names) -> Experience | None`** — ярлыки грейда **с любого портала** ->
+  уровень. Единственная точка, где ярлык превращается в уровень; адаптеру остаётся лишь
+  ДОСТАТЬ список ярлыков из своей схемы. Словарь `_GRADE_TO_EXP` — **общий**: hirify/getmatch
+  говорят trainee/junior/middle/senior/lead, himalayas — Entry-level/Mid-level/Senior/Manager/
+  Director/Executive, jobicy — Entry-Level/Junior/Midweight/Senior/Director, themuse —
+  internship/entry/mid/senior/management, talanto — свои principal/head. Пока каждый адаптер
+  держал свою таблицу (до 07.08.2026), один и тот же «senior» рисковал попасть в разные
+  корзины, а по грейду идут и отбор под отклик, и срезы аналитики.
+  - берётся **самый младший** из распознанных: вакансия с вилкой грейдов («Entry-Level,
+    Junior», `levels: [mid, senior]`) открыта и для младшего, а очередь откликов сортируется
+    от младших;
+  - сравнение **по вхождению подстроки** — порталы пишут «Mid Level», «mid-level»,
+    «Midweight», но это один грейд;
+  - порядок таблицы = от младшего к старшему, побеждает первое совпадение (отсюда `entry`
+    стоит до `lead`).
+
+  **Ограничение, которое надо помнить при пополнении:** ключи, являющиеся подстроками друг
+  друга (`mid` сидит и в `middle`, и в `midweight`), **обязаны вести в ОДИН уровень** — иначе
+  результат зависел бы от позиции в таблице. Сейчас все три -> `BETWEEN_1_3`. Добавляя ключ,
+  проверь, не является ли он подстрокой соседа с другим уровнем.
+- `from_hirify_grades(grades)` — обёртка над `from_grades` для схемы hirify (`[{name}]`).
+- `from_getmatch(seniority, years)` — грейд getmatch, при его отсутствии — по числу лет.
+  Приоритет у ГРЕЙДА, хотя лет-поле выглядит точнее: замер 01.08.2026 на 14 карточках дал
+  senior с `years=3`, что по годам ушло бы в `BETWEEN_1_3`.
 
 ### `Schedule` — `domain/schedule.py::Schedule`
 
-`REMOTE` / `HYBRID` / `OFFICE`. `from_hh_formats` и `from_hirify_wf` схлопывают список
-форматов по приоритету REMOTE > HYBRID > OFFICE.
+`REMOTE` / `HYBRID` / `OFFICE`. `from_hh_formats`, `from_hirify_wf` и `from_getmatch`
+схлопывают список форматов по одному приоритету REMOTE > HYBRID > OFFICE.
+
+У `from_getmatch` одна доменная тонкость: `relocation_company` — это переезд ради работы
+**в офисе**, поэтому OFFICE, а не удалёнка; иначе такие вакансии проходили бы удалённый
+фильтр отбора под отклик.
 
 ### `Role` — `domain/role.py::Role`
 
-17 ролей; значения обязаны совпадать с ключами `config.ROLE_PATTERNS`.
-`.is_it` = `self is not Role.NON_IT`.
+17 членов, из которых **16 обязаны совпадать с ключами `config.ROLE_PATTERNS`** (дрейф ловит
+`test_role`: `ROLE_PATTERNS ⊆ Role.labels`). Семнадцатый — `NON_IT`: доменный дефолт, регекса
+под него в карте нет. `.is_it` = `self is not Role.NON_IT`.
 
 ### `FreshnessClass` — `domain/freshness.py::FreshnessClass`
 
@@ -106,8 +168,9 @@ Enum владеет **всеми** проекциями: `.code`, `.label`, `.co
 **Мягкий парсер** — для внешних данных, которым нельзя доверять:
 
 ```python
-Experience.from_code(code) -> Experience | None   # неизвестное -> None
-Schedule.from_code(code)   -> Schedule | None
+Experience.from_code(code)   -> Experience | None    # неизвестное -> None
+Schedule.from_code(code)     -> Schedule | None
+SalaryPeriod.from_code(code) -> SalaryPeriod | None
 ```
 
 Дефолт применяет вызывающий: `Schedule.from_code(...) or Schedule.OFFICE`

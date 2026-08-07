@@ -609,13 +609,18 @@ def _send_cover_via_chat(page: Any, cand: Candidate, text: str) -> bool:
 
 
 def _journal_name(data: dict[str, Any], vid: str, name_map: dict[str, Any]) -> str:
-    """Имя вакансии для журнала: из локального сбора, иначе из resources чата, иначе id."""
+    """Имя вакансии для журнала: из локального сбора, иначе из resources чата, иначе id.
+
+    Фолбэк на id обязателен: `applied_log.jsonl` — append-only, и запись с пустым `name`
+    задним числом не чинится. Вакансия навсегда осталась бы безымянной в «моих откликах»
+    и в воронке. До 07.08.2026 функция обещала этот фолбэк докстрингом, но возвращала
+    пустую строку, когда вакансии не было и в resources чата."""
     nm: str | None = name_map.get(vid)
     if nm:
         return nm
     vac = ((data.get("resources") or {}).get("vacancies") or {}).get(vid) or {}
     nm_res: str = vac.get("name") or ""
-    return nm_res
+    return nm_res or str(vid)
 
 
 SYNC_FRESH_DAYS = 7          # сообщения старше -> чат считается устоявшимся

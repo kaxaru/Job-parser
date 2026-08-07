@@ -5,8 +5,9 @@
 Playwright, поэтому логику можно менять и тестировать без риска для реальных откликов."""
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Any
 
 from hrwork.config import (
@@ -74,6 +75,38 @@ APPLY_SENIOR_BLACKLIST = re.compile(
     r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b|\bprincipal\b|\bstaff\b",
     re.I)
 
+# ── РУКОВОДЯЩИЕ должности: всё, что выше Lead ──────────────────────────────────────────
+# Задано пользователем 07.08.2026: интересны только стандартные инженерные позиции до
+# senior включительно. Грейдовый список выше ловит senior/lead, здесь — управленческая
+# ветка: руководитель группы/отдела/направления, Head of, Director, VP, C-level, Manager.
+# Замер на живом пуле (646 кандидатов): 36 таких тайтлов проходили.
+#
+# `architect` тоже здесь: в лестницах грейдов он идёт вровень со staff/principal, которые
+# уже отсекаются выше, — держать его отдельно было бы непоследовательно.
+APPLY_MANAGEMENT_BLACKLIST = re.compile(
+    r"руководител|начальник|директор|заведующ|заместител"
+    r"|\bhead\s+of\b|\bhead\b|\bdirector\b|\bvp\b|vice\s+president|\bchief\b"
+    r"|\bcto\b|\bceo\b|\bcoo\b|\bcio\b|\bcpo\b|\bexecutive\b|\bfounder\b"
+    r"|\bmanager\b|\bmanagement\b|\bsupervisor\b|\barchitect\b|архитектор",
+    re.I)
+# Инженерные существительные — если такое стоит в тайтле РАНЬШЕ управленческого слова,
+# роль инженерная, а управленческое слово относится к чему-то ещё. Реальный случай из пула:
+# «Python-разработчик (AI-агент Операционный директор)» — вакансия разработчика, «директор»
+# в НАЗВАНИИ ПРОДУКТА. Та же логика, что у APPLY_ROLE_BLACKLIST: целимся в роль, не в домен.
+_ENGINEER_NOUN = re.compile(
+    r"разработчик|программист|инженер|\bdeveloper\b|\bengineer\b|\bdev\b|\bsre\b|\bdevops\b",
+    re.I)
+
+
+def _is_management(name: str) -> bool:
+    """Управленческая ли роль. False, если инженерное существительное стоит РАНЬШЕ
+    управленческого слова, — тогда управленческое относится не к роли (см. _ENGINEER_NOUN)."""
+    m = APPLY_MANAGEMENT_BLACKLIST.search(name)
+    if not m:
+        return False
+    eng = _ENGINEER_NOUN.search(name)
+    return not (eng and eng.start() < m.start())
+
 # ── Целевая специализация: backend + data/LLM engineering ──────────────────────────────
 # Задана пользователем 07.08.2026. Всё, что в неё не входит, из откликов исключается:
 # QA, аналитики (любые — и data/BI, и системные/бизнес/продуктовые), ML/DS.
@@ -103,6 +136,21 @@ APPLY_ANALYST_BLACKLIST = re.compile(r"аналитик|analyst|\bbi\b", re.I)
 APPLY_ML_BLACKLIST = re.compile(
     r"\bml\b|\bml[\s\-/]?ops\b|\bmlops\b|\bmle\b|machine\s+learning|машинн\w*\s+обучени"
     r"|data\s+scientist|дата.?са[йи]ентист|deep\s+learning|computer\s+vision|\bnlp\b",
+    re.I)
+# DevOps / SRE / инфраструктура — эксплуатация, а не разработка (задано 07.08.2026:
+# «больше интересует писать код»). Замер на живом пуле: 127 таких тайтлов из 583, причём
+# 123 — чистая инфраструктура и лишь 4 гибрида, где рядом стоит код.
+APPLY_DEVOPS_BLACKLIST = re.compile(
+    r"\bdevops\b|\bdevsecops\b|\bsre\b|site\s+reliability|\bplatform\s+engineer\b"
+    r"|систем\w*\s+администратор|сисадмин|\bsysadmin\b|инфраструктур",
+    re.I)
+# Маркер «здесь пишут код» — снимает devops-запрет. Отдельно от APPLY_TARGET_ENGINEERING:
+# тот про целевой домен (LLM/DWH/ETL), а этот про сам характер работы. Реальные гибриды
+# из пула: «Инженер-программист по безопасной разработке / Middle DevSecOps»,
+# «Разработчик в инфраструктуру симулятора», «LLM Platform Engineer».
+_CODE_MARKER = re.compile(
+    r"\bpython\b|\bbackend\b|бэкенд|бекенд|\bdeveloper\b|разработчик|программист"
+    r"|\bfullstack\b|\bfull.stack\b|\bllm\b|data\s+engineer",
     re.I)
 # «Ищу только python»: даже если Python есть в требованиях (как «плюс»), вакансию с
 # ДРУГИМ основным языком в ТАЙТЛЕ не берём — иначе «Java-разработчик (+Python)» проскочит.
@@ -148,6 +196,70 @@ def _apply_tier(v: Vacancy, is_remote_any: bool) -> ApplyTier | None:
     return None
 
 
+class OutOfScope(Enum):
+    """Почему вакансия не проходит отбор ПО ТАЙТЛУ — VO, а не строка-литерал.
+
+    Причина уходит в логи и в сводку чистки очереди, то есть это доменное понятие с
+    конечным набором значений; голая строка здесь была бы тем же дефектом, что `tier: int`
+    с магическим `0` до появления `ApplyTier`. Значение = подпись для человека."""
+    SENIOR = "senior/lead"
+    MANAGEMENT = "руководящая"
+    NON_ENGINEERING = "не инженерная роль"
+    QA = "QA"
+    ANALYST = "аналитик"
+    ML = "ML/DS"
+    DEVOPS = "DevOps/SRE"
+    OTHER_LANG = "другой язык"
+
+    @property
+    def label(self) -> str:
+        return self.value
+
+
+def _no_target_marker(name: str) -> bool:
+    """Нет инженерного маркера (LLM/RAG/Data Engineer/DWH/ETL) — исключение не применяется."""
+    return not APPLY_TARGET_ENGINEERING.search(name)
+
+
+# Правила отбора по тайтлу — ТАБЛИЦА, а не лестница `if`. Порядок значим и виден целиком:
+# QA проверяется до аналитики и ML, потому что на него исключение для инженерных гибридов
+# не распространяется («QA Engineer (LLM-платформа)» — это тестирование). Новое правило =
+# строка здесь плюс член OutOfScope, ветвление трогать не нужно.
+_SCOPE_RULES: tuple[tuple[OutOfScope, Callable[[str], bool]], ...] = (
+    (OutOfScope.SENIOR,          lambda n: bool(APPLY_SENIOR_BLACKLIST.search(n))),
+    (OutOfScope.MANAGEMENT,      _is_management),
+    (OutOfScope.NON_ENGINEERING, lambda n: bool(APPLY_ROLE_BLACKLIST.search(n))),
+    (OutOfScope.QA,              lambda n: bool(APPLY_QA_BLACKLIST.search(n))),
+    (OutOfScope.ANALYST,         lambda n: _no_target_marker(n)
+                                 and bool(APPLY_ANALYST_BLACKLIST.search(n))),
+    (OutOfScope.ML,              lambda n: _no_target_marker(n)
+                                 and bool(APPLY_ML_BLACKLIST.search(n))),
+    # Код в тайтле снимает devops-запрет: «LLM Platform Engineer» и «Инженер-программист
+    # по безопасной разработке / Middle DevSecOps» — это разработка, а не эксплуатация.
+    (OutOfScope.DEVOPS,          lambda n: not _CODE_MARKER.search(n)
+                                 and bool(APPLY_DEVOPS_BLACKLIST.search(n))),
+    (OutOfScope.OTHER_LANG,      lambda n: "python" not in n.lower()
+                                 and bool(APPLY_LANG_BLACKLIST.search(n))),
+)
+
+
+def out_of_scope(name: str) -> OutOfScope | None:
+    """Причина, по которой вакансия с таким ТАЙТЛОМ вне целевой специализации (или None).
+
+    Единый источник правды для всех путей отклика: и для отбора кандидатов
+    (`pick_candidates`), и для чистки форм-очереди (`forms.clean_queue`). Раньше очередь
+    анкет жила по своим правилам и копила то, на что отклик всё равно не пошёл бы:
+    на 07.08.2026 из 78 накопленных 32 были QA, аналитиками и руководителями.
+
+    Только по тайтлу — намеренно: в форм-очереди кроме имени и ссылки ничего нет, а
+    поднимать ради чистки весь кеш вакансий (395 МБ) незачем. Проверки, которым нужна
+    доменная `Vacancy` (роль, грейд, свежесть, стек), остаются в `pick_candidates`."""
+    for reason, hit in _SCOPE_RULES:
+        if hit(name):
+            return reason
+    return None
+
+
 def pick_candidates(records: list[Any], marks: dict[str, str], limit: int,
                     form_ids: set[str] | frozenset[str] = frozenset()) -> list["Candidate"]:
     """Вакансии под отклик (list[VacancyRecord]), МНОГОУРОВНЕВО (см. _apply_tier): опыт <3 лет,
@@ -169,21 +281,14 @@ def pick_candidates(records: list[Any], marks: dict[str, str], limit: int,
             continue                                    # не-IT (поддержка/ритейл/крауд-разметка) — мимо
         if v.experience not in APPLY_EXPS:
             continue                                    # None (не указан) тоже не проходит
-        if APPLY_SENIOR_BLACKLIST.search(v.name):
-            continue                                    # senior/lead — не наш грейд
-        if APPLY_ROLE_BLACKLIST.search(v.name):
-            continue                                    # риск/портфельный/планирование ресурсов — не инженерная роль
-        # QA — безусловно, до исключения: «QA Engineer (LLM-платформа)» это тестирование.
-        if APPLY_QA_BLACKLIST.search(v.name) or v.role is Role.QA:
+        if out_of_scope(v.name):
+            continue                                    # грейд/руководящая/QA/аналитик/ML/язык
+        # Роль-детектор ловит то, чего нет в тайтле; на исключение для инженерных
+        # гибридов («Data Engineer/Data Analyst») это правило не распространяется.
+        if v.role is Role.QA:
             continue
-        # Аналитика и ML — с исключением: инженерный маркер в тайтле перевешивает.
-        if not APPLY_TARGET_ENGINEERING.search(v.name):
-            if APPLY_ANALYST_BLACKLIST.search(v.name) or APPLY_ML_BLACKLIST.search(v.name):
-                continue                                # аналитик / ML — мимо
-            if v.role is Role.ANALYST:
-                continue                                # роль поймала то, чего нет в тайтле
-        if "python" not in v.name.lower() and APPLY_LANG_BLACKLIST.search(v.name):
-            continue                                    # другой язык в тайтле (Java/C#/…) — мимо
+        if v.role is Role.ANALYST and not APPLY_TARGET_ENGINEERING.search(v.name):
+            continue
         if APPLY_SKIP_GHOSTS and v.is_ghost():
             continue                                    # висит >60 дн — отклик бессмыслен
         snippet = rec.requirement

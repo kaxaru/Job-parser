@@ -29,6 +29,7 @@ from hrwork.config import (
     log,
 )
 from hrwork.domain.experience import Experience
+from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
@@ -76,7 +77,7 @@ def _city(it: dict[str, Any]) -> str:
     for li in it.get("location_items") or []:
         if li.get("label"):
             return str(li["label"])
-    return "Remote"
+    return REMOTE_CITY
 
 
 def _formats(it: dict[str, Any]) -> list[str]:

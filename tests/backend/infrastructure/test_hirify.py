@@ -84,20 +84,16 @@ def test_normalize_placeholder_company_cleaned():
     assert _normalize({**ITEM, "company_title": "%hirify_global%"}).vacancy.employer == ""
 
 
-def test_infer_period_by_usd_magnitude():
-    from hrwork.infrastructure.sources.hirify import _infer_period
-    assert _infer_period(12) == "hour"          # $12 -> почасовая
-    assert _infer_period(3000) == "month"
-    assert _infer_period(70000) == "year"
-    assert _infer_period(None) == "month"        # нет USD-величины -> месяц по умолчанию
-
-
-def test_to_monthly_normalization():
-    from hrwork.infrastructure.sources.hirify import _to_monthly
-    assert _to_monthly(12, "hour") == 1920       # ×160 раб.часов
-    assert _to_monthly(72000, "year") == 6000    # /12
-    assert _to_monthly(3000, "month") == 3000
-    assert _to_monthly(None, "year") is None
+# Инференс периода и пересчёт в месячную переехали в домен (SalaryPeriod) — их тесты
+# теперь в tests/backend/domain/test_salary_period.py. Здесь остаётся то, что относится
+# к САМОМУ адаптеру: что он достаёт USD-величину и передаёт её домену.
+def test_hirify_reads_usd_mid_for_period_inference():
+    from hrwork.infrastructure.sources.hirify import _usd_mid
+    assert _usd_mid({"salary_in_usd": 72000}) == 72000.0
+    assert _usd_mid({"salary_in_usd": None}) is None
+    assert _usd_mid({}) is None
+    assert _usd_mid(None) is None
+    assert _usd_mid({"salary_in_usd": "мусор"}) is None
 
 
 def test_normalize_period_year_to_monthly():

@@ -17,27 +17,25 @@ describe('matchesResume — жёсткий фильтр «по резюме» (�
   it('без удалёнки → false (RESUME_REQUIRE_REMOTE=true)', () => {
     assert.equal(matchesResume(vac({ remote_any: false })), false);
   });
-  it('опыт вне RESUME_EXPS → false', () => {
-    assert.equal(matchesResume(vac({ exp: '6+ лет' })), false);
-  });
   it('нет технологий из RESUME_CORE → false', () => {
     assert.equal(matchesResume(vac({ techs: ['Java', 'Go'] })), false);
   });
 
-  /* ИНЦИДЕНТ 07.08.2026: у arbeitnow и web3 грейда в API нет вовсе — 1326 и 1740 карточек
-     с пустым exp, — и фильтр выбрасывал оба портала целиком, хотя resumeMatch тот же
-     неизвестный опыт считает нейтральным (12 баллов). Отсекаем неподходящий грейд,
-     а не отсутствие данных о нём. */
-  for (const empty of ['', null, undefined]) {
-    it(`неизвестный опыт (${JSON.stringify(empty)}) → true, а не отсев`, () => {
-      assert.equal(matchesResume(vac({ exp: empty })), true);
+  /* Грейд из ЖЁСТКОГО фильтра убран (07.08.2026). Он резал вслепую: у arbeitnow и web3
+     грейда в API нет вовсе (1326 и 1740 карточек с пустым exp — оба портала отсекались
+     целиком), у talanto/hirify/getmatch заполнен не везде — там терялось ещё 1328.
+     Видимость карточки грейд больше не определяет; на приоритет он влияет через
+     resumeMatch (до 25 баллов). */
+  for (const exp of ['6+ лет', '3–6 лет', 'Без опыта', '1–3 года', '', null, undefined]) {
+    it(`грейд ${JSON.stringify(exp)} не влияет на видимость`, () => {
+      assert.equal(matchesResume(vac({ exp })), true);
     });
   }
-  it('неизвестный опыт не отменяет остальные условия — без Python всё равно false', () => {
-    assert.equal(matchesResume(vac({ exp: '', techs: ['Java'] })), false);
+  it('снятие грейда не отменяет требование стека', () => {
+    assert.equal(matchesResume(vac({ exp: '6+ лет', techs: ['Java'] })), false);
   });
-  it('неизвестный опыт не отменяет требование удалёнки', () => {
-    assert.equal(matchesResume(vac({ exp: '', remote_any: false })), false);
+  it('снятие грейда не отменяет требование удалёнки', () => {
+    assert.equal(matchesResume(vac({ exp: '6+ лет', remote_any: false })), false);
   });
 });
 

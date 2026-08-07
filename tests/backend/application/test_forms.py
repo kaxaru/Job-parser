@@ -286,7 +286,29 @@ def test_clean_queue_removes_dead_and_applied(monkeypatch):
     monkeypatch.setattr(forms.store, "remove_form", lambda v: removed.append(v))
     r = forms.clean_queue()
     assert set(removed) == {"2", "3", "4"}                    # мёртвые (2,3) + откликнутая (4)
-    assert r == {"removed": 3, "dead": 2, "applied": 1, "left": 1}   # осталась только живая «1»
+    assert r == {"removed": 3, "dead": 2, "applied": 1,       # осталась только живая «1»
+                 "out_of_scope": 0, "left": 1}
+
+
+# Очередь чистится ТЕМИ ЖЕ правилами, что и отбор кандидатов (candidates.out_of_scope):
+# до 07.08.2026 у неё был свой набор, и она копила то, на что отклик не пошёл бы —
+# из 78 накопленных 32 оказались QA, аналитиками и руководителями.
+def test_clean_queue_drops_titles_outside_the_target_scope(monkeypatch):
+    removed = []
+    monkeypatch.setattr(forms.store, "forms", lambda: {
+        "1": {"name": "Python-разработчик"},                  # целевая — остаётся
+        "2": {"name": "QA Automation Engineer (Python)"},
+        "3": {"name": "Руководитель группы разработки"},
+        "4": {"name": "Аналитик данных"},
+        "5": {"name": "Senior Python разработчик"},
+    })
+    monkeypatch.setattr(forms.store, "form_cache", dict)
+    monkeypatch.setattr(forms.store, "applied_ids", set)
+    monkeypatch.setattr(forms.store, "marks", dict)
+    monkeypatch.setattr(forms.store, "remove_form", lambda v: removed.append(v))
+    r = forms.clean_queue()
+    assert set(removed) == {"2", "3", "4", "5"}
+    assert (r["out_of_scope"], r["dead"], r["applied"], r["left"]) == (4, 0, 0, 1)
 
 
 def test_clean_queue_removes_user_rejected(monkeypatch):
