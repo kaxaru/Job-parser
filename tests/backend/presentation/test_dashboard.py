@@ -2,6 +2,8 @@
 
 build_dashboard читает репозиторий и пишет в data/ — оба перенаправлены в tmp, FX-курсы
 и репозиторий подменены, поэтому тест гермётичен (без сети/БД и без записи в реальный data/).
+Подменять надо ОБА держателя репозитория — `dashboard` и `funnel`: пропущенный второй читал
+настоящий кеш вакансий, и модуль отъедал 123 с из 125 с всего бэкенд-прогона (08.08.2026).
 Проверяем собранную СТРУКТУРУ HTML: присутствие графиков-панелей, итоги (вакансий/городов),
 вкладки источников для мультипортального входа и деградацию на пустом входе.
 """
@@ -9,6 +11,7 @@ import datetime
 
 import pytest
 
+from hrwork.application import funnel
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
@@ -74,6 +77,14 @@ def _build(mp, out_dir, records):
     mp.setattr(dashboard, "DATA_DIR", data)
     mp.setattr(dashboard, "DASHBOARD_OUT", data / "dashboard.html")
     mp.setattr(dashboard, "vacancy_repository", lambda: _Repo(records))
+    # Воронку тоже изолируем: `funnel` держит СВОЮ ссылку на vacancy_repository, и подмена
+    # только в `dashboard` её не трогала — сборка читала настоящий data/vacancies_raw.json
+    # (104 890 вакансий, 38 из 39 с прогона) плюс живые статусы и чаты. Тест был не
+    # гермётичен вопреки докстрингу и зависел от локальных данных запускающего (08.08.2026).
+    mp.setattr(funnel, "vacancy_repository", lambda: _Repo(records))
+    mp.setattr(funnel.store, "statuses", dict)
+    mp.setattr(funnel.store, "chat_messages", dict)
+    mp.setattr(funnel.store, "applied_log", list)
     dashboard.build_dashboard()
     return (data / "dashboard.html").read_text(encoding="utf-8")
 
@@ -111,14 +122,21 @@ def test_dashboard_reports_dynamic_totals(needle, multi_source_html):
     assert needle in multi_source_html
 
 
-def test_empty_input_dashboard_degrades_gracefully(tmp_path, monkeypatch):
+@pytest.fixture(scope="module")
+def empty_html(tmp_path_factory):
+    """Дашборд на пустом входе — тоже ОДИН раз на модуль: тесты ниже смотрят один HTML,
+    а раньше каждый строил свой."""
+    out = tmp_path_factory.mktemp("dash_empty")
+    with pytest.MonkeyPatch.context() as mp:
+        return _build(mp, out, [])
+
+
+def test_empty_input_dashboard_degrades_gracefully(empty_html):
     # Пустой вход не роняет сборку: HTML пишется, итоги — нули, базовый график присутствует.
-    html = _build(monkeypatch, tmp_path, [])
-    assert "0 вакансий" in html
-    assert 'id="pane-all-cities"' in html          # cities-график рендерится даже на пустом CSV
+    assert "0 вакансий" in empty_html
+    assert 'id="pane-all-cities"' in empty_html    # cities-график рендерится даже на пустом CSV
 
 
-def test_empty_input_dashboard_has_no_source_tabs(tmp_path, monkeypatch):
+def test_empty_input_dashboard_has_no_source_tabs(empty_html):
     # Один (нулевой) источник -> навигация источников не рисуется.
-    html = _build(monkeypatch, tmp_path, [])
-    assert 'class="src-tabs"' not in html
+    assert 'class="src-tabs"' not in empty_html
