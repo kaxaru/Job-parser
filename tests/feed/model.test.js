@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import {
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
   countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
+  isDiscard, isInvited,
   journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
 } from '../../src/feed/model.js';
 
@@ -636,5 +637,43 @@ describe('portalSite — подпись портала в карточке', () 
 
   it('неизвестный портал отдаёт своё имя, а не чужую подпись', () => {
     assert.equal(portalSite('новый_портал'), 'новый_портал');
+  });
+});
+
+
+/* ИНЦИДЕНТ 07.08.2026 (латентный, найден аудитом): отказ определялся как
+   `s.startsWith('DISCARD')`, а Python исключает `DISCARD_BY_APPLICANT` из DISCARD_STATES
+   намеренно — это НАШ отказ, а не работодателя. Карточка красилась красным «Отказ», хотя
+   подпись рядом говорила «Вы отказались», а воронка ту же вакансию клала в «без исхода».
+   Наборы теперь инжектятся из Python; здесь проверяется фолбэк. */
+describe('isDiscard / isInvited — наборы состояний едины с Python', () => {
+  for (const s of ['DISCARD', 'DISCARD_BY_EMPLOYER', 'DISCARD_VACANCY_CLOSED']) {
+    it(`${s} — отказ работодателя`, () => {
+      assert.equal(isDiscard(s), true);
+    });
+  }
+
+  it('DISCARD_BY_APPLICANT — НЕ отказ работодателя, это наш собственный', () => {
+    assert.equal(isDiscard('DISCARD_BY_APPLICANT'), false);
+  });
+
+  it('префикс DISCARD сам по себе больше ничего не решает', () => {
+    assert.equal(isDiscard('DISCARD_SOMETHING_NEW'), false);
+  });
+
+  for (const s of ['INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT', 'HIRED', 'CONSIDER']) {
+    it(`${s} — приглашение`, () => {
+      assert.equal(isInvited(s), true);
+    });
+  }
+
+  it('RESPONSE — ни отказ, ни приглашение', () => {
+    assert.equal(isDiscard('RESPONSE'), false);
+    assert.equal(isInvited('RESPONSE'), false);
+  });
+
+  it('мусор на входе не роняет', () => {
+    assert.equal(isDiscard(null), false);
+    assert.equal(isInvited(undefined), false);
   });
 });

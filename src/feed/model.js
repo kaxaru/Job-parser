@@ -240,10 +240,26 @@ export function portalSite(source) {
   return PORTAL_SITES[s] || s;
 }
 
-/* «Приглашение» — работодатель проявил активность (не просто RESPONSE и не отказ). */
-const INVITED = new Set(['INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT', 'HIRED', 'CONSIDER']);
+/* Наборы состояний отклика. Единый источник — Python (chat.DISCARD_STATES / INVITED_STATES),
+   инжектится как DISCARD_STATES_PY / INVITED_STATES_PY; хардкод ниже — фолбэк для офлайна
+   и тестов.
 
-export const isDiscard = s => typeof s === 'string' && s.startsWith('DISCARD');
+   Раньше отказ определялся как `s.startsWith('DISCARD')`, и это НЕ то же самое, что в
+   Python: `DISCARD_BY_APPLICANT` — НАШ отказ, а не работодателя, и Python исключает его из
+   DISCARD_STATES намеренно. Карточка красилась красным «Отказ», хотя подпись рядом честно
+   говорила «Вы отказались», а воронка ту же вакансию относила в «без исхода» (найдено
+   аудитом 07.08.2026; дефект был латентным — таких откликов тогда ещё не набралось).
+   «Приглашение» — работодатель проявил активность (не просто RESPONSE и не отказ). */
+const DISCARD = new Set(
+  (typeof DISCARD_STATES_PY !== 'undefined' && DISCARD_STATES_PY)
+  || ['DISCARD', 'DISCARD_BY_EMPLOYER', 'DISCARD_VACANCY_CLOSED'],
+);
+const INVITED = new Set(
+  (typeof INVITED_STATES_PY !== 'undefined' && INVITED_STATES_PY)
+  || ['INVITATION', 'PHONE_INTERVIEW', 'INTERVIEW', 'ASSESSMENT', 'HIRED', 'CONSIDER'],
+);
+
+export const isDiscard = s => DISCARD.has(s);
 export const isInvited = s => INVITED.has(s);
 
 /* Отклик попадает в календарный диапазон [from, to] (границы — 'YYYY-MM-DD', пустые =

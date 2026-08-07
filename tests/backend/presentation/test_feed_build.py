@@ -119,6 +119,9 @@ def feed_globals(tmp_path_factory):
     # кода почти неделю (найдено аудитом 07.08). Он и есть мост подписей порталов в JS,
     # без которого talanto и getmatch подписывались как «hh.ru».
     "PORTAL_SITES_PY",
+    # наборы состояний отклика — раньше JS решал сам через startsWith('DISCARD'),
+    # и это расходилось с Python по DISCARD_BY_APPLICANT (аудит 07.08.2026)
+    "DISCARD_STATES_PY", "INVITED_STATES_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
     # Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.

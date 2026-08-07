@@ -15,12 +15,11 @@
 """
 import re
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
 from hrwork.application.apply.chat.chat_class import PLACE_Q, SALARY_Q
 from hrwork.config import BASE_DIR
-from hrwork.domain.experience import Experience
+from hrwork.domain.grade import Grade
 from hrwork.infrastructure.storage import read_json_or
 
 PROFILE_FILE = BASE_DIR / "resume_profile.json"
@@ -113,43 +112,6 @@ _NEVER = re.compile(
     r"готовы (?:ли )?(?:снизить|рассмотреть меньше|подвинуться)|ваш минимум|минимальн\w*\s+сумм"
     r"|торг|ниже рынка"
     r"|lower (?:your )?expectation|negotiable|come down on", re.I)
-
-class Grade(Enum):
-    """Грейд вакансии — VO, не строка (как ApplyTier vs int-сентинел). `.code` — ключ
-    в resume_profile.json::salary_by_grade и суффикс rule; wire-формат меняться не должен."""
-    JUNIOR = "junior"
-    MIDDLE = "middle"
-    SENIOR = "senior"
-
-    @property
-    def code(self) -> str:
-        return self.value
-
-    @classmethod
-    def from_vacancy(cls, name: str, experience_code: str) -> "Grade | None":
-        """Грейд по тайтлу, иначе по полю опыта; None — не определить (мягкий парсер:
-        дефолта нет намеренно, «средняя вилка наугад» хуже молчания)."""
-        for grade, rx in _GRADE_TITLE_RX:
-            if rx.search(name or ""):
-                return grade
-        exp = Experience.from_code(experience_code)
-        return _GRADE_BY_EXP.get(exp) if exp else None
-
-
-# Тайтл сильнее структурного поля: «Senior …» при опыте 1-3 — всё равно senior.
-_GRADE_TITLE_RX = (
-    (Grade.SENIOR, re.compile(r"\bsenior\b|сеньор|старш|ведущ|\blead\b|\bsr\b|\bstaff\b|принципал", re.I)),
-    (Grade.MIDDLE, re.compile(r"\bmiddle\b|\bmid\b|мидл|средн", re.I)),
-    (Grade.JUNIOR, re.compile(r"\bjunior\b|джуниор|младш|стаж[её]р|\bjr\b|ученик", re.I)),
-)
-# Поле experience заполнено у ВСЕХ вакансий, в отличие от тайтла (грейда нет в 74%).
-# 1-3 года отнесены к JUNIOR — осознанное решение владельца профиля (20.07).
-_GRADE_BY_EXP = {
-    Experience.NONE: Grade.JUNIOR,
-    Experience.BETWEEN_1_3: Grade.JUNIOR,
-    Experience.BETWEEN_3_6: Grade.MIDDLE,
-    Experience.MORE_6: Grade.SENIOR,
-}
 
 
 @dataclass(frozen=True)

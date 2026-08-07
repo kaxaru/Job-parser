@@ -14,7 +14,6 @@ from __future__ import annotations
 import contextlib
 import datetime
 import re
-from enum import Enum
 from typing import Any
 
 from hrwork.application.apply.chat.chat_answer import load_profile
@@ -28,6 +27,7 @@ from hrwork.config import (
     FORM_TIMEOUT,
     log,
 )
+from hrwork.domain.grade import Grade
 from hrwork.infrastructure.llm import chat_json
 
 _MAX_PROMPT = 1000        # усечение текста поля — сужение поверхности инъекции
@@ -242,8 +242,6 @@ def match_answer(prompt: str, options: tuple[str, ...]) -> tuple[str, str | None
 # ловилось только в чатах, «от каких сумм»/«финансовые пожелания» — только тут. Ветки
 # слиты в chat_class 07.08.2026; заводить копию снова — значит повторить тот же дрейф.
 _SALARY_Q = SALARY_Q
-_GRADE_SEN = re.compile(r"senior|сеньор|ведущ|\blead\b|тимлид|тим-?лид|principal|архитектор", re.I)
-_GRADE_JUN = re.compile(r"стаж[её]р|интерн|\bintern|junior|джуниор|младш|trainee", re.I)
 _SAL_TOKEN = re.compile(r"(\d[\d\s]*\d|\d)\s*(к\b|k\b|тыс\w*|т\.?\s*р\.?|000)?", re.I)
 
 
@@ -259,22 +257,22 @@ def is_salary_q(prompt: str) -> bool:
     return bool(_SALARY_Q.search(p))
 
 
-class Grade(Enum):
-    """Грейд кандидата — значения = ключи profile.answers.salary_by_grade
-    (единый язык вместо сырых строк 'junior'/'middle'/'senior')."""
-    JUNIOR = "junior"
-    MIDDLE = "middle"
-    SENIOR = "senior"
-
-
 def detect_grade(name: str) -> Grade:
-    """Грейд по названию вакансии: SENIOR|JUNIOR иначе MIDDLE (для ставки и «оцените грейд»)."""
-    n = name or ""
-    if _GRADE_SEN.search(n):
-        return Grade.SENIOR
-    if _GRADE_JUN.search(n):
-        return Grade.JUNIOR
-    return Grade.MIDDLE
+    """Грейд по названию вакансии; не определился -> MIDDLE.
+
+    Словарь тайтлов — доменный (`Grade.from_title`), общий с чатами: до 07.08.2026 здесь
+    была своя копия, и лексиконы разошлись — «Тимлид» и «архитектор» знала только эта,
+    «старший», «Sr», «Staff», «принципал» только чатовая. Один и тот же тайтл давал разный
+    грейд в зависимости от того, кто спрашивает, а от грейда зависит НАЗЫВАЕМАЯ
+    РАБОТОДАТЕЛЮ СУММА.
+
+    ДЕФОЛТ ЗДЕСЬ ДРУГОЙ, ЧЕМ В ЧАТАХ, и это осознанно. `chat_answer` при неизвестном грейде
+    молчит (None): в переписке промолчать дешевле, чем назвать вилку наугад. В анкете поле
+    обязано быть заполнено — иначе по инварианту полноты вся вакансия уходит человеку.
+    MIDDLE берётся не с потолка: это СОБСТВЕННАЯ средняя ставка владельца профиля из
+    `salary_by_grade`, а не рыночная оценка. Замер: грейда нет в тайтле у 74 % вакансий,
+    так что «молчать» здесь означало бы отправлять человеку три четверти анкет."""
+    return Grade.from_title(name) or Grade.MIDDLE
 
 
 def _grade_floor_rub(grade: Grade) -> int | None:

@@ -217,6 +217,14 @@ def build_feed() -> None:
         f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
         # подпись портала в карточке (config.PORTAL_SITES) — единый источник с Python
         f"const PORTAL_SITES_PY = {json.dumps(PORTAL_SITES, ensure_ascii=False)};\n"
+        # Наборы состояний отклика (chat.DISCARD_STATES / INVITED_STATES). Раньше JS решал
+        # сам: `isDiscard = s.startsWith('DISCARD')`, и это НЕ то же самое — Python намеренно
+        # исключает `DISCARD_BY_APPLICANT` из отказов, потому что это НАШ отказ, а не
+        # работодателя. Карточка красилась красным «Отказ», а воронка ту же вакансию
+        # относила в «без исхода» (найдено аудитом 07.08.2026; на тот момент таких откликов
+        # ещё не было — дефект латентный). `INVITED` в JS был дословной копией набора.
+        f"const DISCARD_STATES_PY = {json.dumps(sorted(chat.DISCARD_STATES))};\n"
+        f"const INVITED_STATES_PY = {json.dumps(sorted(chat.INVITED_STATES))};\n"
     )
     (DATA_DIR / "feed-data.js").write_text(data_js, encoding="utf-8")
     log.info("feed-data.js сохранён  ({:.1f} МБ)", len(data_js.encode("utf-8")) / 1e6)
