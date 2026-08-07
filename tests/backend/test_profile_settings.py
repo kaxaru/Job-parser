@@ -116,15 +116,22 @@ def test_every_example_key_is_actually_read():
     assert keys == wired, f"в примере лишние/недостающие ключи: {sorted(keys ^ wired)}"
 
 
-def test_example_answers_keys_are_actually_read():
-    """То же для вложенного блока `answers` — именно там появился мёртвый ключ."""
+def test_example_answers_keys_match_what_the_engine_reads():
+    """То же для вложенного блока `answers`, и в ОБЕ стороны (равенство множеств).
+
+    Слева — то, что увидит следующий пользователь, справа — то, что читает движок ответов.
+    Расхождение бывает обеих мастей и обе молчаливые: мёртвый ключ в примере
+    (`answers.form_answers`) и ключ, который код читает, а пример не показывает
+    (`years_frontend_text` — зонтичный ответ про фронт; оба найдены 08.08.2026)."""
     example = json.loads(_EXAMPLE.read_text(encoding="utf-8"))
     keys = {k for k in example["answers"] if not k.startswith("_")}
+    # chat_answer.py::_fact / _past_stack / _answer_frontend, form_fill.py::_CTX_KEYS и _age
     wired = {
-        "stack", "stack_past", "years_text", "years_python_text", "format_text",
-        "english_text", "education_text", "citizenship_text", "salary_by_grade",
-        "office_city", "office_city_en", "years_text_en", "years_python_text_en",
+        "stack", "stack_past", "years_text", "years_python_text", "years_frontend_text",
+        "format_text", "english_text", "education_text", "citizenship_text",
+        "salary_by_grade", "office_city", "practices", "answer_negative", "birth_date",
+        # английские версии фактов: `_fact` для en ищет <key>_en, нет перевода -> молчим
+        "office_city_en", "years_text_en", "years_python_text_en", "years_frontend_text_en",
         "format_text_en", "english_text_en", "education_text_en", "citizenship_text_en",
-        "answer_negative", "practices", "birth_date",
     }
     assert keys == wired, f"в примере лишние/недостающие ключи: {sorted(keys ^ wired)}"
