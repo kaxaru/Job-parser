@@ -102,9 +102,8 @@ docker compose down -v             # полный сброс, включая т�
 - [`config.md`](docs/config.md) — переменные окружения
 - [`testing.md`](docs/testing.md) — тесты и критерии приёмки
 
-Шаблоны спеки и RFC — общие с родительским проектом:
-[`../docs/spec-template.md`](../docs/spec-template.md),
-[`../docs/rfc-template.md`](../docs/rfc-template.md).
+Шаблоны спеки и RFC — общие с родительским проектом: `../docs/template/spec-template.md`
+и `../docs/template/rfc-template.md`. Каталог локальный, в `.gitignore` — в клоне его нет.
 
 ## Структура
 

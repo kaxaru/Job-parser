@@ -33,9 +33,8 @@
 **Изменилось поведение или контракт -> правится соответствующий файл `docs/` в том же
 заходе.**
 
-Спеки и RFC — по общим шаблонам родительского проекта:
-[`../docs/spec-template.md`](../docs/spec-template.md),
-[`../docs/rfc-template.md`](../docs/rfc-template.md).
+Спеки и RFC — по общим шаблонам родительского проекта: `../docs/template/spec-template.md`
+и `../docs/template/rfc-template.md`. Каталог локальный, в `.gitignore` — в клоне его нет.
 
 ## Конвенции
 

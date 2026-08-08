@@ -327,6 +327,23 @@ def test_sal_max_ignores_single_outlier(tmp_path):
     assert _const(_build_feed_data(tmp_path, records=records), "SAL_MAX") == 100_000
 
 
+def test_sal_max_trims_the_top_tenth_of_the_range(tmp_path):
+    """Верх шкалы отрезает верхнюю десятину вилок (`SALARY_PCTL = 90`).
+
+    Сто вилок 10 000, 20 000 ... 1 000 000 ₽. Девяностый перцентиль по nearest-rank —
+    девяностая по возрастанию, то есть 900 000; шаг 10 000 её уже кратен, округлять нечего.
+    Проверяем именно СЕМАНТИКУ обрезки хвоста, а не значение константы: до 08.08.2026 брался
+    максимум (дал бы 1 000 000), а p99 отдал бы 990 000 — рабочий диапазон тонул в хвосте
+    глобальной удалёнки при медиане по срезу 314 947 ₽."""
+    records = [
+        _record(f"n{i}", name="Backend", city="Москва", employer="Acme", source="hh",
+                mid=10_000 * i, currency="RUR", exp="between1And3", schedule="remote",
+                techs=["Python"], role=Role.BACKEND, url="https://hh.ru/vacancy/1")
+        for i in range(1, 101)
+    ]
+    assert _const(_build_feed_data(tmp_path, records=records), "SAL_MAX") == 900_000
+
+
 def test_sal_max_without_any_salary_falls_back_to_default(tmp_path):
     # Вилок нет ни у одной карточки -> шкала не схлопывается в ноль, а берёт дефолтный верх.
     records = [_record("free", name="Backend", city="Москва", employer="Acme", source="hh",
