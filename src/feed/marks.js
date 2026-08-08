@@ -44,12 +44,17 @@ export async function pullServer() {
 
 /** Отклик в фоне через локальный сервер (serve-режим): сервер сам жмёт «Откликнуться»
     в Playwright и шлёт письмо в чат. Возвращает {status, letter}. Бросает на HTTP-ошибке.
-    Медленно (браузер + DDoS-Guard) — вызывающий показывает индикатор. */
-export async function applyVacancy(id, url, cover, name) {
+    Медленно (браузер + DDoS-Guard) — вызывающий показывает индикатор.
+
+    `employer` уезжает в журнал откликов вместе с названием и фиксируется В МОМЕНТ КЛИКА:
+    к моменту дренажа очереди вакансия уходит из выдачи, и карточка-призрак (syntheticCard)
+    не находится поиском по компании (инцидент 01.08.2026). Значение — как в кеше, БЕЗ
+    префикса «ИП»: его дорисовывает интерфейс HH. Необязателен — сервер терпит его отсутствие. */
+export async function applyVacancy(id, url, cover, name, employer = '') {
   const r = await fetch('api/apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, url, cover, name }),
+    body: JSON.stringify({ id, url, cover, name, employer }),
   });
   if (!r.ok) throw new Error(`apply: HTTP ${r.status}`);
   return r.json();
@@ -96,12 +101,19 @@ let _descPromise = null;
 export function loadDescriptions() {
   if (window.__DESC) return Promise.resolve(window.__DESC);
   if (_descPromise) return _descPromise;
-  _descPromise = new Promise((resolve, reject) => {
+  const p = new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = 'feed-desc.js';
     s.onload = () => resolve(window.__DESC || {});
     s.onerror = () => reject(new Error('feed-desc.js не загружен'));
     document.head.appendChild(s);
   });
-  return _descPromise;
+  /* Кешируем ТОЛЬКО успех: отвергнутый промис, оставленный в _descPromise, блокировал
+     описания до перезагрузки страницы — один обрыв сети при первом открытии модалки, и
+     дальше каждая карточка показывала «Не удалось загрузить описание» (08.08.2026).
+     Сбрасываем ссылку, если она всё ещё указывает на этот промис: параллельная попытка,
+     успевшая записать свой, не должна быть затёрта. */
+  p.catch(() => { if (_descPromise === p) _descPromise = null; });
+  _descPromise = p;
+  return p;
 }

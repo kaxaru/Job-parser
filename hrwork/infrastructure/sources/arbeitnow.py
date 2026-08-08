@@ -34,7 +34,7 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://www.arbeitnow.com"
@@ -49,6 +49,10 @@ class ArbeitnowCfg:
     retry_attempts: int = 3
     backoff_start: float = 1.0
     backoff_max: float = 8.0
+    # Перепроверка пустой страницы — семантика himalayas.py::_get_page, см. _get_page ниже.
+    empty_retries: int = 3
+    empty_retry_delay: float = 2.0
+    empty_retry_max: float = 8.0
 
 
 CFG = ArbeitnowCfg()
@@ -66,6 +70,19 @@ def _sig(it: dict[str, Any]) -> str:
     """Маркер изменения карточки. Своего updated_at у портала нет, поэтому берём дату
     публикации: правка вакансии на arbeitnow создаёт новый slug, а не двигает старый."""
     return str(it.get("created_at") or "")
+
+
+def _warn_if_hole(pages: list[int], chunks: list[list[dict[str, Any]]]) -> None:
+    """Обход прерывается на первой пустой странице. Если ПОСЛЕ неё в той же пачке страница
+    отдала данные, пустая была ДЫРОЙ, а не концом выдачи: список не кончился, а обход всё
+    равно остановлен, и хвост за пачкой не собран. Молчать про это нельзя — именно молчание
+    превратило троттлинг himalayas в «успешный» сбор 40 % портала (07.08.2026)."""
+    empty = [p for p, c in zip(pages, chunks) if not c]
+    last_full = max((p for p, c in zip(pages, chunks) if c), default=0)
+    if empty and empty[0] < last_full:
+        log.warning("arbeitnow: обход оборван на ПУСТОЙ странице {}, но страница {} той же "
+                    "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана",
+                    empty[0], last_full)
 
 
 def _normalize(it: dict[str, Any]) -> VacancyRecord:
@@ -108,7 +125,9 @@ class ArbeitnowSource(Source):
     def __init__(self, **_: Any) -> None:
         pass                                     # прокси/сессия не нужны — публичный API
 
-    async def _get_page(self, page: int) -> list[dict[str, Any]]:
+    async def _fetch_once(self, page: int) -> list[dict[str, Any]]:
+        """Одна страница с ретраями ТРАНСПОРТА (сбой curl / битый JSON). Пустой список
+        от отвечающего портала здесь не ретраится — это делает `_get_page`."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
         delay = CFG.backoff_start
         for _attempt in range(CFG.retry_attempts):
@@ -124,6 +143,29 @@ class ArbeitnowSource(Source):
             delay = min(delay * 2, CFG.backoff_max)
         return []
 
+    async def _get_page(self, page: int) -> list[dict[str, Any]]:
+        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — та же семантика, что в
+        `himalayas.py::_get_page` (3 попытки с паузами 2/4/8 с).
+
+        Урок инцидента 07.08.2026 (himalayas: 12 043 из 26 216 легли в кеш под видом полного
+        среза): портал под троттлингом отдаёт HTTP 200 с пустым списком, внешне неотличимый
+        от «выдача кончилась», а ретраи транспорта на это не срабатывают — ответ-то пришёл.
+        Обход выходил по первой такой странице и отчитывался успехом. Пришли данные со
+        второй-четвёртой попытки — это был троттлинг; пусто после всех — конец выдачи."""
+        data = await self._fetch_once(page)
+        if data:
+            return data
+        delay = CFG.empty_retry_delay
+        for attempt in range(CFG.empty_retries):
+            await asyncio.sleep(delay)
+            data = await self._fetch_once(page)
+            if data:
+                log.debug("arbeitnow page={}: пусто было троттлингом, ответ с попытки {}",
+                          page, attempt + 2)
+                return data
+            delay = min(delay * 2, CFG.empty_retry_max)
+        return []
+
     async def collect(self) -> list[VacancyRecord]:
         first = await self._get_page(1)
         if not first:
@@ -136,13 +178,16 @@ class ArbeitnowSource(Source):
         items: list[dict[str, Any]] = list(first)
         page = 2
         read = 1                                 # реально прочитано страниц (для лога)
+        exhausted = False
         while page <= CFG.max_pages:
             batch = list(range(page, min(page + CFG.page_conc, CFG.max_pages + 1)))
             chunks = await asyncio.gather(*(self._get_page(p) for p in batch))
             got = [x for c in chunks for x in c]
             items.extend(got)
             read += len(batch)
-            if any(not c for c in chunks):       # в пачке встретилась пустая — список кончился
+            if any(not c for c in chunks):       # пусто ПОСЛЕ перепроверок — список кончился
+                exhausted = True
+                _warn_if_hole(batch, chunks)
                 break
             page = batch[-1] + 1
 
@@ -152,7 +197,9 @@ class ArbeitnowSource(Source):
         for it in items:
             if it.get("slug"):
                 uniq.setdefault(str(it["slug"]), it)
-        recs = [_normalize(it) for it in uniq.values()]
+        # Нормализация с изоляцией НА ЭЛЕМЕНТЕ: кривая карточка не должна ронять источник
+        # целиком — иначе санити-гейт видит нулевой срез и морозит кеш всех порталов.
+        recs = normalize_each(uniq.values(), _normalize, source="arbeitnow")
         # Портал общий, не IT-шный: две трети выдачи — ритейл/логистика/медицина.
         # См. config.GLOBAL_SOURCES_IT_ONLY — там причина и способ выключить.
         out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
@@ -160,4 +207,10 @@ class ArbeitnowSource(Source):
         # поэтому счётчик по `page` занижал итог (в логе 37 при реально прочитанных 43).
         log.info("arbeitnow: собрано {} (страниц {}, карточек {}, дублей {}, не-IT отсеяно {})",
                  len(out), read, len(items), len(items) - len(uniq), len(recs) - len(out))
+        if not exhausted:
+            # Как в himalayas.py: усечение по лимиту выглядит как успешный сбор, и именно
+            # молчание превратило там 40 % портала в «полный срез». Портал отдаёт ~41 страницу,
+            # так что упереться в лимит = у портала что-то изменилось, а не штатный конец.
+            log.warning("arbeitnow: обход УПЁРСЯ В ЛИМИТ {} страниц, выдача НЕ исчерпана — "
+                        "часть вакансий не собрана. Поднять: ARBEITNOW_MAX_PAGES", CFG.max_pages)
         return out

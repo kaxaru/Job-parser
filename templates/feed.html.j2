@@ -84,12 +84,12 @@
     <div class="salary-wrap">
       <div class="salary-row">
         <span class="lbl">от</span>
-        <input type="range" id="sal-min" min="0" max="{{ sal_max }}" step="10000" value="0">
+        <input type="range" id="sal-min" min="0" max="{{ sal_max }}" step="{{ sal_step }}" value="0">
         <span class="sal-val" id="sal-min-val">0</span>
       </div>
       <div class="salary-row">
         <span class="lbl">до</span>
-        <input type="range" id="sal-max" min="0" max="{{ sal_max }}" step="10000" value="{{ sal_max }}">
+        <input type="range" id="sal-max" min="0" max="{{ sal_max }}" step="{{ sal_step }}" value="{{ sal_max }}">
         <span class="sal-val" id="sal-max-val">{{ sal_max }}</span>
       </div>
     </div>
@@ -121,28 +121,29 @@
   </div>
   {% endif %}
 
-  <!-- Schedule -->
+  <!-- Schedule. «Удалённо» = remote + гибрид (Schedule.is_remote_like), тот же ответ,
+       что дают отчёты и графики; «Офис» — всё остальное. -->
   <div class="filter-group">
     <span class="filter-label">Формат</span>
     <div class="sched-btns">
       <button class="sched-btn active" data-sched="all">Все</button>
-      <button class="sched-btn" data-sched="remote">Удалённо</button>
-      <button class="sched-btn" data-sched="office">Офис</button>
+      <button class="sched-btn" data-sched="remote"
+              title="Удалённо и гибрид — так же считают отчёты и графики">Удалённо</button>
+      <button class="sched-btn" data-sched="office"
+              title="Всё, что не удалёнка и не гибрид">Офис</button>
     </div>
   </div>
 
-  <!-- Experience -->
+  <!-- Experience: чипы рендерятся из config.EXP_LABELS (единый источник подписей),
+       value = доменный код грейда (Experience.hh_id) — фильтр сравнивает его с exp_id
+       карточки, поэтому переименование подписи не ломает ни чипы, ни скоринг. -->
   <div class="filter-group">
     <span class="filter-label">Опыт</span>
     <div class="lang-grid">
-      <input type="checkbox" class="lang-cb exp-cb" id="exp-0" value="Без опыта">
-      <label class="lang-label" for="exp-0">Без опыта</label>
-      <input type="checkbox" class="lang-cb exp-cb" id="exp-1" value="1–3 года">
-      <label class="lang-label" for="exp-1">1–3 года</label>
-      <input type="checkbox" class="lang-cb exp-cb" id="exp-2" value="3–6 лет">
-      <label class="lang-label" for="exp-2">3–6 лет</label>
-      <input type="checkbox" class="lang-cb exp-cb" id="exp-3" value="6+ лет">
-      <label class="lang-label" for="exp-3">6+ лет</label>
+      {% for code, label in exps %}
+      <input type="checkbox" class="lang-cb exp-cb" id="exp-{{ loop.index0 }}" value="{{ code }}">
+      <label class="lang-label" for="exp-{{ loop.index0 }}">{{ label }}</label>
+      {% endfor %}
     </div>
   </div>
 

@@ -3,9 +3,11 @@
 Публичный API реэкспортируется здесь — потребители пишут `from hrwork.infrastructure.storage import load_raw`.
 """
 from .files import (
+    cache_hit_matches,
     cache_hit_usable,
     cache_valid,
     load_desc_cache,
+    load_pre_dedup_counts,
     load_raw,
     now_iso,
     save_meta,
@@ -27,10 +29,12 @@ __all__ = [
     "VacancyRecord",
     "VacancyRepository",
     "atomic_write_json",
+    "cache_hit_matches",
     "cache_hit_usable",
     "cache_valid",
     "load_desc_cache",
     "load_marks",
+    "load_pre_dedup_counts",
     "load_raw",
     "now_iso",
     "read_json_or",

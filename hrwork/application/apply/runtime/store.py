@@ -12,7 +12,7 @@ applied_log / response_status / form_vacancies / apply_pending) и трём мо
 """
 from typing import Any
 
-from hrwork.application.apply.outcome import ApplyChannel
+from hrwork.application.apply.outcome import ApplyChannel, VacancyMark
 from hrwork.application.apply.runtime import bump_state, quota
 from hrwork.infrastructure.storage import followup, load_marks, save_marks
 
@@ -37,7 +37,10 @@ class ApplicationStore:
 
     @classmethod
     def mark_applied(cls, vid: str) -> None:
-        cls.merge_marks({str(vid): "applied"})
+        # Код метки — из VO, а не литералом: `marks.py::load_marks` молча выбрасывает значение
+        # не из `MARK_VALUES`, поэтому опечатка здесь не упала бы, а «забыла» отклик — и крон
+        # откликнулся бы на ту же вакансию повторно.
+        cls.merge_marks({str(vid): VacancyMark.APPLIED.code})
 
     # ── Дневная квота откликов (apply_quota.json) ──
     @staticmethod
@@ -51,6 +54,11 @@ class ApplicationStore:
     @staticmethod
     def bump_quota(n: int) -> int:
         return quota.bump_quota(n)
+
+    @staticmethod
+    def reconcile_quota(journaled_today: int) -> int:
+        """Поднять сегодняшний счётчик до факта из журнала (только вверх, см. quota.py)."""
+        return quota.reconcile_quota(journaled_today)
 
     # ── Кулдаун поднятия резюме (bump_state.json; лимит HH — раз в 4ч) ──
     @staticmethod
@@ -105,8 +113,9 @@ class ApplicationStore:
         followup.save_chat_messages(data)
 
     @staticmethod
-    def add_form(vid: str, name: str, url: str, ts: str = "") -> None:
-        followup.add_form_vacancy(vid, name, url, ts=ts)
+    def add_form(vid: str, name: str, url: str, ts: str = "") -> bool:
+        """True — анкета легла в очередь впервые, False — уже лежала (для счётчика прогона)."""
+        return followup.add_form_vacancy(vid, name, url, ts=ts)
 
     @staticmethod
     def remove_form(vid: str) -> None:
@@ -128,12 +137,17 @@ class ApplicationStore:
 
     # ── Очередь ожидания: лента -> крон, когда браузер занят (apply_pending.json) ──
     @staticmethod
-    def enqueue(vid: str, url: str, name: str, cover: str) -> int:
-        return followup.enqueue_pending(vid, url, name, cover)
+    def enqueue(vid: str, url: str, name: str, cover: str, employer: str = "") -> int:
+        return followup.enqueue_pending(vid, url, name, cover, employer=employer)
 
     @staticmethod
     def pop_pending() -> dict[str, Any] | None:
         return followup.pop_pending_one()
+
+    @staticmethod
+    def requeue_pending(rec: dict[str, Any]) -> int:
+        """Вернуть в очередь запись, снятую `pop_pending`, но не обработанную."""
+        return followup.requeue_pending(rec)
 
     @staticmethod
     def pending() -> list[dict[str, Any]]:

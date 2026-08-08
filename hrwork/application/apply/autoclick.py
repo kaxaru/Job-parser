@@ -486,22 +486,42 @@ def _fill_letter_if_required(page: Any, cand: Candidate,
     Заполняем ТОЛЬКО когда кнопка disabled — там, где HH пускает и так, поведение прежнее
     (письмо по-прежнему уходит в СЛОТ сопроводительного через chatik, см. _send_cover_via_chat).
     Текст строится ЛЕНИВО: сюда доходят только живые вакансии, где отклик реально идёт,
-    поэтому режим 'llm' не тратит запрос на архив и пропуски."""
-    with contextlib.suppress(Exception):
+    поэтому режим 'llm' не тратит запрос на архив и пропуски.
+
+    ГРАНИЦА SUPPRESS. Подавляются ТОЛЬКО обращения к DOM (чужое: страница живёт своей жизнью,
+    контекст рушится). Построение письма вынесено наружу СОЗНАТЕЛЬНО (аудит 08.08.2026): пока
+    `cover.build_cover` лежал под тем же suppress, НАШ AttributeError/TypeError давал молчаливый
+    False -> обязательное письмо не вписано -> кнопка осталась disabled -> «отклик НЕ подтверждён
+    за 10с», и выглядело это как проблема HH. Тот же класс уже стоил трёх недель (docs/errors.md,
+    03–04.08.2026). Теперь наша ошибка летит наверх: её видно строкой «<название> (<id>): <ошибка>»
+    из `_apply_batch` и возвратом записи в очередь из `_drain_pending`.
+
+    Восстановление: наружу ничего не коммитится — поле либо заполнено, либо нет; повтор
+    безопасен (второй fill пишет то же значение). Наблюдаемость: строка «письмо обязательно —
+    вписал…» на успехе и WARNING «поле не заполнилось» на отказе DOM."""
+    need = False
+    with contextlib.suppress(Exception):        # ЧУЖОЕ: чтение DOM
         btn = page.locator(_RESPONSE_SUBMIT).first
-        if not btn.count() or not btn.is_disabled(timeout=1_000):
-            return False                        # кнопка активна — письмо не требуется
         letter = page.locator(_RESPONSE_LETTER).first
-        if not letter.count():
-            return False                        # disabled не из-за письма — не наш случай
-        # пробельный текст — не письмо: он не снимет disabled, но затрёт поле
-        text = (cover_text or "").strip() or cover.build_cover(cand, cover_mode).strip()
-        if not text:
-            return False
-        letter.fill(text, timeout=3_000)
+        # письмо требуется, только если кнопка disabled И поле письма на странице есть:
+        # активная кнопка — не наш случай, disabled без поля — тоже
+        need = bool(btn.count() and btn.is_disabled(timeout=1_000) and letter.count())
+    if not need:
+        return False
+    # НАШЕ: текст письма. Пробельный текст письмом не считаем — disabled он не снимет, а поле затрёт.
+    text = (cover_text or "").strip() or cover.build_cover(cand, cover_mode).strip()
+    if not text:
+        return False
+    filled = False
+    with contextlib.suppress(Exception):        # ЧУЖОЕ: запись в DOM
+        page.locator(_RESPONSE_LETTER).first.fill(text, timeout=3_000)
+        filled = True
+    if filled:
         log.info("{}: письмо обязательно — вписал в форму отклика ({} симв.)", cand.id, len(text))
-        return True
-    return False
+    else:
+        log.warning("{}: письмо обязательно, но поле не заполнилось — отклик, вероятно, не уйдёт",
+                    cand.id)
+    return filled
 
 
 def apply_one(page: Any, cand: Candidate, cover_text: str = "",
@@ -529,7 +549,10 @@ def apply_one(page: Any, cand: Candidate, cover_text: str = "",
         return ApplyOutcome.SKIP
     is_survey = bool(re.search(r"тест|опрос", btn.inner_text().lower()))
     if is_survey and not FORMS_ENABLED:                 # OFF (крон-дефолт) — как раньше, в очередь
-        log.debug("{}: отклик с опросником — в форм-очередь", cand.id)
+        # INFO, а не DEBUG: ветка срабатывает именно на кроне (FORMS_ENABLED там может быть
+        # выключен), и на DEBUG исход FORM не попадал в крон-лог вовсе — массовое включение
+        # опросников на HH было неотличимо от «просто мало откликов» (аудит 08.08.2026).
+        log.info("{}: отклик с опросником — в форм-очередь", cand.id)
         return ApplyOutcome.FORM
     btn.click()
     # модалка «вакансия в другом городе/стране»
@@ -624,6 +647,11 @@ def _journal_name(data: dict[str, Any], vid: str, name_map: dict[str, Any]) -> s
 
 
 SYNC_FRESH_DAYS = 7          # сообщения старше -> чат считается устоявшимся
+# Чекпойнт синка: как часто сбрасывать накопленное на диск. Полный прогон — ~1300 чатов и
+# десятки минут, а watchdog на этот путь не распространяется (браузера нет). До 08.08.2026
+# save_statuses/save_chat_messages стояли ПОСЛЕ цикла: kill на 800-м чате терял всю скачанную
+# переписку целиком. 100 -> максимум 13 записей файла за прогон (2.4 МБ, атомарно).
+SYNC_CHECKPOINT_EVERY = 100
 
 
 def _sync_from_cache(c: dict[str, Any], cached_msgs: dict[str, Any], cached_statuses: dict[str, Any],
@@ -659,6 +687,15 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
     (--sync-full) — качать всё. Запись в обоих режимах — MERGE поверх кеша, не replace:
     сетевая ошибка одного чата или limit не должны стирать ранее известное (fix.md №4).
 
+    ПОЛИТИКА ВОССТАНОВЛЕНИЯ: статусы и переписка сбрасываются на диск КАЖДЫЕ
+    SYNC_CHECKPOINT_EVERY чатов, а не одним куском в конце. Единица «выполнено целиком» —
+    чекпойнт: запись атомарна и merge-семантична, поэтому убитый на 800-м из 1300 прогон
+    сохраняет всё до последнего чекпойнта, а недокачанные чаты следующий прогон возьмёт
+    заново (повтор идемпотентен). Журнал пишется поштучно и переживает kill сам.
+    Чат без сообщений НЕ журналируется вовсе: без реальной даты запись в append-only журнал
+    зафиксировала бы сегодняшнее число навсегда. Наблюдаемость — строки «чекпойнт i/N» и
+    «N чатов без сообщений … журналирование отложено».
+
     Работает поверх состояния сессии (data/hh_state.json), которое сохраняет любой браузерный
     прогон. Chromium НЕ поднимается и `autoclick.lock` НЕ берётся — синк независим от откликов
     и не встаёт вместе с ними (раньше зависший браузер морозил статусы неделями).
@@ -673,7 +710,7 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
     name_map = {rec.id: rec.vacancy.name for rec in repo}
     employer_map = {rec.id: (rec.vacancy.employer or "") for rec in repo}
     seen = store.applied_ids()
-    added = failed = 0
+    added = failed = deferred = 0
     with req:
         # потолок страниц — от числа известных откликов (по 20 чатов на страницу): один раз
         # магический дефолт 30 уже резал корпус на ~600 при 1287 реальных (fix.md №10)
@@ -721,17 +758,38 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
             if st:
                 statuses[vid] = st
             if vid not in seen:                    # новый отклик -> в журнал с реальной датой
-                store.log_applied(vid, _journal_name(data, vid, name_map),
-                                  f"https://hh.ru/vacancy/{vid}", via=ApplyChannel.HH,
-                                  ts=chat.response_time(data),
-                                  employer=employer_map.get(vid, ""))
-                seen.add(vid)
-                added += 1
+                ts = chat.response_time(data)
+                if not ts:
+                    # Чат без сообщений -> даты отклика НЕТ. Раньше сюда подставлялось now()
+                    # (append_applied), и старый ручной отклик навсегда журналился сегодняшним
+                    # числом: журнал append-only, задним числом дата не чинится, а воронка
+                    # `funnel.py` считает по ней латентность. Откладываем: сообщения появятся —
+                    # следующий синк дожурналирует с настоящей датой.
+                    deferred += 1
+                else:
+                    store.log_applied(vid, _journal_name(data, vid, name_map),
+                                      f"https://hh.ru/vacancy/{vid}", via=ApplyChannel.HH,
+                                      ts=ts, employer=employer_map.get(vid, ""))
+                    seen.add(vid)
+                    added += 1
             if i % 50 == 0:
                 log.info("  …{}/{}", i, len(chats))
+            if i % SYNC_CHECKPOINT_EVERY == 0:
+                # ЧЕКПОЙНТ. Обе записи атомарны (tmp + os.replace) и являются MERGE поверх кеша,
+                # поэтому чекпойнт — законченное состояние, а не полуфабрикат: kill сразу после
+                # него теряет максимум SYNC_CHECKPOINT_EVERY последних чатов, и следующий прогон
+                # их просто перекачает (повтор идемпотентен). Журнал пишется поштучно и от
+                # чекпойнта не зависит.
+                store.save_statuses(statuses)
+                store.save_chat_messages(msgs_out)
+                log.info("  чекпойнт {}/{}: статусов {}, переписок {}",
+                         i, len(chats), len(statuses), len(msgs_out))
             time.sleep(random.uniform(0.1, 0.3))   # мягко, но быстрее браузерного пути
     if failed:
         log.warning("Синк: {} чатов не получены (сетевые сбои) — остались кешевыми", failed)
+    if deferred:
+        log.warning("Синк: {} чатов без сообщений — дата отклика неизвестна, журналирование "
+                    "отложено до появления переписки (сегодняшнюю дату не подставляем)", deferred)
     counts: dict[str, int] = {}
     for st in statuses.values():
         counts[st] = counts.get(st, 0) + 1
@@ -747,10 +805,84 @@ def sync_statuses(headless: bool = True, limit: int | None = None, full: bool = 
         store.merge_marks(fresh)
         log.info("Синк: отмечено в marks как откликнутые: +{} (в marks стало {})",
                  len(fresh), len(known) + len(fresh))
+    # Синк — единственный путь, который узнаёт об отклике, не дошедшем до дневного счётчика
+    # (watchdog между кликом и bump_quota, подтверждение HH позже 10с, отклик руками на hh.ru).
+    # Дожурналировали -> сразу выравниваем квоту по журналу, иначе недосчёт живёт до полуночи
+    # и бот шлёт cap+N (аудит 08.08.2026, находка 39).
+    _reconciled_today()
     log.success("Синк: статусов {}, новых в журнал {}, из кеша (старше {} дн) {} -> {}",
                 len(statuses), added, SYNC_FRESH_DAYS, from_cache,
                 {chat.STATE_LABELS.get(k, k): v for k, v in counts.items()})
     return statuses
+
+
+# ── Реконсиляция дневной квоты: окно «клик -> учёт» (аудит 08.08.2026, находка 39) ──
+# Между кликом «Откликнуться» и `bump_quota` есть щель: watchdog может снести дерево, а HH —
+# подтвердить отклик на 11-й секунде, когда `apply_one` уже вернул SKIP. Отклик при этом УШЁЛ,
+# marks и журнал потом дочиняет синк из чатов, а квоту не чинил НИКТО — за день бот слал cap+N.
+# Двойного отклика не возникает (кнопка HH отдаёт ветку ALREADY), но лимит HH превышался.
+# Источник правды для выравнивания — append-only журнал: он единственный переживает kill и
+# пополняется синком с РЕАЛЬНОЙ датой отклика, в том числе для сделанных руками на hh.ru.
+
+def _journal_applied_today(today: str = "") -> int:
+    """Сколько РАЗНЫХ вакансий журнал знает как откликнутые сегодня (дедуп по id: синк мог
+    дожурналировать ту же вакансию вторым каналом).
+
+    Дата берётся из самой записи, вместе с её смещением (наши — локальное, из чатов — +03:00).
+    Расхождение смещений может уронить в «вчера» отклик, сделанный в первый час суток, —
+    ошибка только В МЕНЬШУЮ сторону, то есть в сторону прежнего поведения; завысить счётчик
+    и придушить дневной темп она не может. Ручные отклики (via='hh') считаются намеренно:
+    лимит HH — на аккаунт, а не на бота."""
+    day = today or datetime.date.today().isoformat()
+    return len({str(e.get("id")) for e in store.applied_log()
+                if str(e.get("ts") or "")[:10] == day})
+
+
+def _reconciled_today() -> int:
+    """Дневной счётчик, выровненный по журналу (только вверх). Наблюдаемость: расхождение
+    печатается WARNING'ом «Квота расходится с журналом» — по нему поломка видна в эксплуатации,
+    а не по вопросу пользователя «почему сегодня 35, а не 103»."""
+    used = store.applied_today()
+    journaled = _journal_applied_today()
+    if journaled <= used:
+        return used
+    total = store.reconcile_quota(journaled)
+    log.warning("Квота расходится с журналом: счётчик {}, в журнале за сегодня {} — выровнял "
+                "до {} (отклик ушёл, а учёт не дошёл: watchdog/подтверждение позже 10с)",
+                used, journaled, total)
+    return total
+
+
+# Анкета — не отклик и не пропуск, поэтому в отношении «скип/отклик» её не видно вовсе.
+# Сценарий из аудита: HH массово включает опросники, прогон даёт 3 отклика и 20 анкет,
+# «пропусков 0», отношение в норме — и падение темпа не видно неделями. Порог по смыслу
+# тот же, что у пропусков: анкет вдвое больше откликов -> сводка уходит в WARNING.
+SKIP_RATIO_WARN = 5.0
+FORM_RATIO_WARN = 2.0
+
+
+def _run_summary(applied: int, skipped: int, forms: int, reconciled: int) -> tuple[str, str]:
+    """Уровень и текст итоговой строки прогона: ('warning'|'info', строка).
+    Вынесено из `_apply_batch` чистой функцией — это ЕДИНСТВЕННЫЙ сигнал деградации,
+    и он обязан проверяться тестом без браузера."""
+    ratio = f"{skipped / applied:.1f}" if applied else "все"
+    line = (f"Итог прогона: откликов {applied}, анкет {forms}, пропусков {skipped} "
+            f"(скип/отклик {ratio}), уже откликались {reconciled}")
+    hot = (not applied
+           or skipped / max(applied, 1) >= SKIP_RATIO_WARN
+           or forms / max(applied, 1) >= FORM_RATIO_WARN)
+    return ("warning" if hot else "info"), line
+
+
+# Имя и работодатель вакансии по id — кеш процесса, наполняет тот, кто УЖЕ загрузил репозиторий
+# (крон-батч). Ради одной строки журнала 480-МБ кеш вакансий заново НЕ читаем: та же причина,
+# по которой `forms.clean_queue` судит только по тайтлу (docs/apply.md).
+_VACANCY_META: dict[str, tuple[str, str]] = {}
+
+
+def _remember_vacancy_meta(records: list[Any]) -> None:
+    """Запомнить (имя, работодатель) по id из уже загруженных записей репозитория."""
+    _VACANCY_META.update({r.id: (r.vacancy.name, r.vacancy.employer or "") for r in records})
 
 
 def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
@@ -759,7 +891,7 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     (~200/сутки). Эффективный лимит запуска = min(apply_limit, дневной_остаток) — так
     N мелких запусков за день суммарно не превышают cap (идемпотентно: счётчик в
     apply_quota.json, дубли режет marks.json). Письмо: шаблон или LLM (cover_mode)."""
-    used = store.applied_today()
+    used = _reconciled_today()
     remaining = max(0, daily_cap - used)
     eff = min(apply_limit or APPLY_LIMIT_DEFAULT, remaining)
     if eff <= 0:
@@ -774,6 +906,7 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     # мёртвая форма означает снятую вакансию, но если её ПЕРЕОТКРЫЛИ после свипа — форма
     # могла ожить, и вакансия возвращается в оборот сама (form_status.skippable_form_ids).
     records = vacancy_repository().load()
+    _remember_vacancy_meta(records)    # дренаж очереди журналирует работодателя без второй загрузки
     published = {r.id: r.vacancy.published_at for r in records}
     forms = skippable_form_ids(store.forms(), store.form_cache(), published)
     pool = pick_candidates(records, store.marks(), eff * POOL_MULT, form_ids=forms)
@@ -784,6 +917,7 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     applied: dict[str, str] = {}       # НОВЫЕ отклики (идут в квоту)
     reconciled: dict[str, str] = {}    # уже откликались ранее (только синхронизация marks)
     skipped = 0                        # всего пропусков за прогон (для сводки в конце)
+    forms_n = 0                        # анкет отложено за прогон (в сводку: не отклик и не пропуск)
     streak = 0                         # ПОДРЯД идущих пропусков — детектор блокировки
     for cand in pool:
         if len(applied) >= eff:        # набрали нужное число НОВЫХ откликов — стоп
@@ -809,7 +943,10 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
             reconciled[cand.id] = VacancyMark.APPLIED.code
             log.info("Уже откликались — синхронизирую marks: {}", cand.name)
         elif status is ApplyOutcome.FORM:
-            store.add_form(cand.id, cand.name, cand.url)
+            forms_n += 1               # считаем ИСХОД прогона, а не рост очереди: повторная
+            added = store.add_form(cand.id, cand.name, cand.url)   # анкета тоже съела карточку
+            log.info("Анкета: {} -> {} {}", cand.name,
+                     "в форм-очередь" if added else "уже в форм-очереди", cand.url)
         elif status is ApplyOutcome.CAPTCHA:
             # дальше идти бессмысленно и вредно: каждая следующая карточка — ещё один
             # бот-сигнал. Проверка снимается только человеком, в профиле автоматики.
@@ -856,11 +993,10 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     # Сводка прогона — ЕДИНСТВЕННЫЙ сигнал, по которому деградация видна В ЭКСПЛУАТАЦИИ.
     # Отношение пропусков к откликам росло с 0.3 до 36 за две недели, и заметил это
     # пользователь, а не лог: строк «Пропуск» много, но никто их не считал.
-    # Ориентир: <=1.5 — норма, >=5 — разбираться.
-    ratio = f"{skipped / len(applied):.1f}" if applied else "все"
-    level = log.warning if (not applied or skipped / max(len(applied), 1) >= 5) else log.info
-    level("Итог прогона: откликов {}, пропусков {} (скип/отклик {}), уже откликались {}",
-          len(applied), skipped, ratio, len(reconciled))
+    # Ориентир: скип/отклик <=1.5 — норма, >=5 — разбираться; анкет вдвое больше откликов —
+    # тоже разбираться (см. _run_summary).
+    level, line = _run_summary(len(applied), skipped, forms_n, len(reconciled))
+    (log.warning if level == "warning" else log.info)(line)
     return len(applied)
 
 
@@ -909,10 +1045,21 @@ def run(apply_limit: int | None = None, daily_cap: int = DAILY_CAP_DEFAULT,
 
 
 def _apply_one_vacancy(page: Any, vid: str, url: str, cover_text: str,
-                       name: str = "") -> dict[str, Any]:
+                       name: str = "", employer: str = "") -> dict[str, Any]:
     """Отклик + письмо для ОДНОЙ вакансии на уже открытой странице (переиспользуемо
-    воркером и разовым apply_vacancy). Пишет marks/quota/форм-очередь."""
-    cand = Candidate(id=vid, name=name or vid, url=url or f"https://hh.ru/vacancy/{vid}")
+    воркером и разовым apply_vacancy). Пишет marks/quota/форм-очередь.
+
+    В ЖУРНАЛ УХОДЯТ `cand.name` И `cand.employer`, а не сырые аргументы (инцидент 01.08.2026,
+    вторая половина — закрытая для forms-пути и оставшаяся открытой для feed-пути). Лента шлёт
+    только id/url/название, поэтому раньше каждая запись feed-пути получала `employer=""`, а при
+    пустом `name` — ещё и безымянную строку: журнал append-only, задним числом это не чинится.
+    Вакансия уходит из выдачи, карточка-призрак в ленте синтезируется из журнала, и без
+    работодателя она не находится ни поиском по компании, ни воронкой `funnel.py`.
+    Работодатель берётся из аргумента, иначе из кеша `_VACANCY_META` (его наполняет крон-батч)."""
+    known_name, known_employer = _VACANCY_META.get(str(vid), ("", ""))
+    cand = Candidate(id=vid, name=name or known_name or vid,
+                     url=url or f"https://hh.ru/vacancy/{vid}",
+                     employer=employer or known_employer)
     result = {"status": "error", "letter": False}
     st = apply_one(page, cand, cover_text=cover_text)
     result["status"] = st.code                   # wire-строка (тот же код) для ответа /api/apply
@@ -920,36 +1067,85 @@ def _apply_one_vacancy(page: Any, vid: str, url: str, cover_text: str,
         store.mark_applied(vid)
         total = store.bump_quota(1)
         log.success("Отклик из ленты: {} (сегодня {})", vid, total)
-        store.log_applied(vid, name, cand.url, via=ApplyChannel.FEED,
+        store.log_applied(vid, cand.name, cand.url, via=ApplyChannel.FEED,
                           employer=cand.employer)
+        if not cand.employer:
+            # не смертельно, но карточка-призрак не найдётся по компании — видно в логе
+            log.info("{}: работодатель неизвестен — в журнале останется пустым", vid)
         if cover_text:
             result["letter"] = _send_cover_via_chat(page, cand, cover_text)
     elif st is ApplyOutcome.ALREADY:
         store.mark_applied(vid)
     elif st is ApplyOutcome.FORM:
-        store.add_form(vid, name, cand.url)      # name из ленты — очередь читаема
+        store.add_form(vid, cand.name, cand.url)   # имя из ленты/кеша — очередь читаема
     return result
 
 
 def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> int:
     """Дренаж очереди ожидания (apply_pending.json): вакансии, что лента добавила, пока
     браузер был занят. Владелец браузера (крон после батча / воркер) дожимает их —
-    так клик «в фоне» при занятом кроне становится 26-й вакансией. Уважает дневной лимит."""
-    n = 0
+    так клик «в фоне» при занятом кроне становится 26-й вакансией. Уважает дневной лимит.
+    Возвращает число РЕАЛЬНО отправленных откликов.
+
+    ПОЛИТИКА ВОССТАНОВЛЕНИЯ (аудит 08.08.2026, находка 5). `pop_pending` снимает запись с диска
+    ДО обработки, и до этой правки вызов был обёрнут в `contextlib.suppress(Exception)`, результат
+    игнорировался, а `n` рос безусловно. Любая НАША ошибка (TypeError в build_cover, смена DOM)
+    съедала запись молча и рапортовала «+1 доп. отклик» — систематическая ошибка выела бы всю
+    очередь за один прогон, не оставив следа.
+
+    * ВЫПОЛНЕНО ЦЕЛИКОМ — исход дошёл до `_apply_one_vacancy`: applied/already/form/skip. Запись
+      обработана, обратно НЕ возвращается. Skip не возвращаем сознательно: архив и внешний сайт
+      не станут живыми от повтора, а каждая новая попытка — ещё один бот-сигнал HH.
+    * ЧАСТИЧНО — исключение до или во время обработки: запись возвращается в КОНЕЦ очереди
+      (`store.requeue_pending`, поля сохраняются целиком), прогон идёт к следующей.
+    * ПОВТОР БЕЗОПАСЕН: если отклик успел уйти, а упали мы на журналировании, следующая попытка
+      получит от HH ветку ALREADY (кнопка заменена на «Чат») — дубля работодателю не будет.
+    * КРУГ НЕ ЗАМКНЁТСЯ: каждый id пробуем не более одного раза за прогон (`seen`); встретили
+      возвращённую запись второй раз — очередь прокручена, выходим.
+    * КАПЧА — запись возвращаем и дренаж рвём: под капчей следующие клики только вредят.
+
+    НАБЛЮДАЕМОСТЬ: строка «Очередь ленты: обработано N, откликов +K, возвращено R, осталось Q».
+    Систематическая поломка = R>0 при неубывающем Q от прогона к прогону."""
+    applied = failed = 0
+    seen: set[str] = set()
     while store.applied_today() < daily_cap:
         rec = store.pop_pending()
         if not rec:
             break
         vid = str(rec.get("id"))
-        text = rec.get("cover") or cover.build_cover(
-            Candidate(id=vid, name=rec.get("name") or vid, url=""), cover_mode)
-        with contextlib.suppress(Exception):
-            _apply_one_vacancy(page, vid, rec.get("url", ""), text, rec.get("name", ""))
-        n += 1
+        if vid in seen:                        # круг замкнулся — вернуть и выйти
+            store.requeue_pending(rec)
+            break
+        seen.add(vid)
+        try:
+            text = rec.get("cover") or cover.build_cover(
+                Candidate(id=vid, name=rec.get("name") or vid, url=""), cover_mode)
+            res = _apply_one_vacancy(page, vid, rec.get("url", ""), text,
+                                     rec.get("name", ""), rec.get("employer", ""))
+        except Exception as e:
+            failed += 1
+            left = store.requeue_pending(rec)
+            log.error("Очередь ленты: {} НЕ обработана ({}: {}) — возвращена в очередь, в ней {}",
+                      vid, type(e).__name__, e, left)
+            time.sleep(random.uniform(*APPLY_PAUSE))   # упасть могли уже ПОСЛЕ навигации — не долбим HH
+            continue
+        status = str(res.get("status") or "")
+        if status == ApplyOutcome.APPLIED.code:
+            applied += 1
+        elif status == ApplyOutcome.CAPTCHA.code:
+            store.requeue_pending(rec)
+            log.error("Очередь ленты: HH показал капчу — дренаж ОСТАНОВЛЕН, {} возвращена "
+                      "в очередь", vid)
+            break
+        else:
+            log.info("Очередь ленты: {} -> {} (в отклики не зачтено)", vid, status)
         time.sleep(random.uniform(*APPLY_PAUSE))
-    if n:
-        log.success("Очередь ленты дренажирована: +{} доп. откликов (26+)", n)
-    return n
+    if seen:
+        log.info("Очередь ленты: обработано {}, откликов +{}, возвращено в очередь {}, "
+                 "осталось {}", len(seen), applied, failed, len(store.pending()))
+    if applied:
+        log.success("Очередь ленты дренажирована: +{} доп. откликов (26+)", applied)
+    return applied
 
 
 def apply_vacancy(vacancy_id: Any, url: str = "", cover_text: str = "", headless: bool = True,
@@ -997,14 +1193,16 @@ class ApplyWorker:
         self._start_lock = threading.Lock()
         self._headless = headless
 
-    def submit(self, vid: str, url: str, cover: str, name: str = "") -> dict[str, Any]:
-        """Поставить отклик в очередь и дождаться результата (блокирует поток запроса)."""
+    def submit(self, vid: str, url: str, cover: str, name: str = "",
+               employer: str = "") -> dict[str, Any]:
+        """Поставить отклик в очередь и дождаться результата (блокирует поток запроса).
+        `employer` опционален и нужен только журналу (см. `_apply_one_vacancy`)."""
         done = threading.Event()
         box: dict[str, Any] = {}
         # Кладём в очередь ДО старта потока: иначе поток мог бы упасть и слить пустую очередь
         # раньше, чем задание попадёт в неё (гонка -> вечное ожидание). finally потока сольёт
         # это задание статусом 'error', SystemExit-ветка — 'busy'.
-        self._q.put((str(vid), url, cover, name, done, box))
+        self._q.put((str(vid), url, cover, name, employer, done, box))
         self._ensure_thread()
         if not done.wait(timeout=self.RESULT_TIMEOUT):
             log.error("ApplyWorker: результат не пришёл за {}с — таймаут", self.RESULT_TIMEOUT)
@@ -1036,14 +1234,15 @@ class ApplyWorker:
             log.info("ApplyWorker: браузер поднят (logged_in={}), жду клики…", logged)
             while True:
                 try:
-                    vid, url, cover, name, done, box = self._q.get(timeout=self.IDLE_TIMEOUT)
+                    vid, url, cover, name, emp, done, box = self._q.get(
+                        timeout=self.IDLE_TIMEOUT)
                 except queue.Empty:
                     log.info("ApplyWorker: простой {}с — закрываю браузер, отпускаю lock",
                              self.IDLE_TIMEOUT)
                     break
                 try:
                     box["result"] = ({"status": "no-session", "letter": False} if not logged
-                                     else _apply_one_vacancy(page, vid, url, cover, name))
+                                     else _apply_one_vacancy(page, vid, url, cover, name, emp))
                 except Exception as e:
                     box["result"] = {"status": "error", "letter": False, "error": str(e)}
                 finally:

@@ -17,10 +17,14 @@ from hrwork.presentation.views.charts import (
     chart_by_source,
     chart_cities,
     chart_companies,
+    chart_company_funnel,
     chart_freshness,
     chart_remote,
     chart_tech_heatmap,
 )
+
+_FUNNEL_HEADER = ["Компания", "Откликов", "Отказов", "Измерено", "<=10м", "<=1ч",
+                  "<=1д", "Позитив/в работе", "Медиана мин", "Автобан % (от измеренных)"]
 
 
 def _write_csv(base, name: str, header: list[str], rows: list[list]) -> None:
@@ -166,6 +170,42 @@ def test_remote_sorts_cities_ascending_by_total_and_normalizes_share(tmp_path):
     assert list(fig.data[0].text) == ["40%", "60%"]   # 20/50, 60/100
 
 
+# --- chart_company_funnel: доля «<=1ч» в шапке считается от ИЗМЕРЕННЫХ, знаменатель назван ---
+
+def test_company_funnel_title_states_measured_denominator(tmp_path):
+    # БАГ 08.08.2026: шапка делила «<=1ч» на ВСЕ отказы, а колонка CSV «Автобан %» —
+    # на «Измерено». Компания с 10 отказами, из них 2 с чат-меткой и обе <=1ч, давала
+    # «100.0» в таблице и «20%» в шапке ТОЙ ЖЕ вкладки. Знаменатель один — измеренные,
+    # и он назван прямо в подписи: человек, видящий только график, не должен гадать.
+    _write_csv(tmp_path, "13_company_funnel.csv", _FUNNEL_HEADER,
+               [["ACME", 12, 10, 2, 0, 2, 2, 0, 30, 100.0]])
+    fig = chart_company_funnel(tmp_path)
+    assert fig.layout.title.text == ("Латентность автоотказа по компаниям "
+                                     "(отказов 10, измерено 2, из них <=1ч — 2 = 100%)")
+
+
+def test_company_funnel_unmeasured_rejects_go_to_no_mark_segment(tmp_path):
+    # «Отказов - Измерено» = молчаливые DISCARD без письма: серый сегмент «без метки»,
+    # а не «медленный отказ» — иначе знаменатель шапки и длина баров рассказывали бы разное
+    _write_csv(tmp_path, "13_company_funnel.csv", _FUNNEL_HEADER,
+               [["ACME", 12, 10, 2, 1, 2, 2, 0, 30, 100.0]])
+    seg = {t.name: list(t.x) for t in chart_company_funnel(tmp_path).data}
+    assert seg["<=10 мин"] == [1]
+    assert seg["10-60 мин"] == [1]                 # 2 - 1
+    assert seg["1 ч-1 день"] == [0]                # 2 - 2
+    assert seg[">1 дня"] == [0]                    # измерено 2 - <=1д 2
+    assert seg["без метки"] == [8]                 # отказов 10 - измерено 2
+
+
+def test_company_funnel_title_without_measured_rejects_is_zero_percent(tmp_path):
+    # все отказы молчаливые: доля от нуля измеренных -> 0%, без ZeroDivisionError
+    _write_csv(tmp_path, "13_company_funnel.csv", _FUNNEL_HEADER,
+               [["ACME", 5, 4, 0, 0, 0, 0, 0, "", 0.0]])
+    fig = chart_company_funnel(tmp_path)
+    assert fig.layout.title.text == ("Латентность автоотказа по компаниям "
+                                     "(отказов 4, измерено 0, из них <=1ч — 0 = 0%)")
+
+
 # --- пустой отчёт: любая chart_*-функция отдаёт валидную go.Figure, а не падает ---
 
 @pytest.mark.parametrize(("func", "name", "header"), [
@@ -176,6 +216,7 @@ def test_remote_sorts_cities_ascending_by_total_and_normalizes_share(tmp_path):
     (chart_remote, "09_remote_by_city.csv", ["Город", "Всего", "Удалённо", "Офис"]),
     (chart_freshness, "10_freshness_by_city.csv",
      ["Город", "Всего", "Свежих", "30-60дн", "Гостов"]),
+    (chart_company_funnel, "13_company_funnel.csv", _FUNNEL_HEADER),
 ])
 def test_chart_returns_figure_on_empty_report(tmp_path, func, name, header):
     _write_csv(tmp_path, name, header, [])   # только заголовок -> _read вернёт []

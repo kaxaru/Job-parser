@@ -65,8 +65,10 @@ function matchBadge(v) {
 }
 
 /* Бейджи CRM: реальный статус отклика с HH (приоритет над ручной пометкой) + «форма».
-   Пусто, если статуса нет (не синхронизировано / не откликались). */
-function statusBadge(v) {
+   Пусто, если статуса нет (не синхронизировано / не откликались).
+   Экспортируется ради теста (tests/feed/view.test.js): подстановка чужого текста чата
+   в атрибут title — единственное место рендера, где легко получить двойное экранирование. */
+export function statusBadge(v) {
   let out = '';
   if (v._synthetic) {                         /* отклик на вакансию, выпавшую из выдачи — данных мало */
     out += '<span class="status-badge" style="background:#6b7280"'
@@ -104,7 +106,9 @@ function statusBadge(v) {
              : '#2E7CB2';                            /* шаблонная рассылка */
     /* белый текст бейджа на жёлтом нечитаем — только для этого вида даём тёмный */
     const fg = botIv ? ';color:#1f2937' : '';
-    const tip = (c.preview || '').replace(/"/g, '&quot;');
+    /* esc() уже превращает " в &quot;; ручной replace до него давал ДВОЙНОЕ экранирование —
+       в подсказке было видно «&quot;» вместо кавычек (08.08.2026) */
+    const tip = c.preview || '';
     const locked = c.can_write === false ? ' 🔒' : '';
     const age = chatAgeLabel(c.ts);                  /* давность последнего сообщения работодателя */
     out += `<span class="status-badge" style="background:${bg}${fg}"`

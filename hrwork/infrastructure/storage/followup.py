@@ -6,6 +6,7 @@
 """
 import datetime
 import json
+from threading import Lock
 from typing import Any
 
 from hrwork.config import DATA_DIR, log
@@ -45,21 +46,40 @@ def save_chat_messages(data: dict[str, Any]) -> None:
     atomic_write_json(CHAT_MESSAGES_FILE, data, indent=0)
 
 
+_APPEND_LOCK = Lock()   # сериализует дозапись внутри процесса (сервер ленты — многопоточный)
+
+
 def append_applied(vid: str, name: str, url: str, via: str,
                    status: str = "applied", ts: str = "", employer: str = "") -> None:
     """Дозаписать факт отклика в журнал (append-only JSONL, по строке на отклик).
-    Пишут крон-батч (via='cron') и лента (via='feed'); single-instance lock гарантирует,
-    что одновременно активен лишь один писатель — гонок нет. ts пустой -> сейчас (локальное).
-    employer фиксируется В МОМЕНТ отклика: вакансия уйдёт из выдачи — воронка по компаниям
-    (funnel.py) не потеряет работодателя (fix.md №9)."""
+
+    ПИСАТЕЛЕЙ ТРИ, И ОНИ НЕ СЕРИАЛИЗОВАНЫ ОБЩИМ LOCK'ОМ (докстринг до 08.08.2026 обещал
+    обратное — «single-instance lock гарантирует, что активен лишь один писатель»; это было
+    неправдой): крон-батч (via='cron') и лента (via='feed') действительно ходят под
+    `autoclick.lock`, а `autoclick.py::sync_statuses` пишет сюда БЕЗ него и осознанно —
+    иначе синк снова встанет в очередь за откликами и статусы замрут на недели
+    (docs/apply.md, инцидент «Статусы стояли неделями»).
+
+    Целостность строки держится НЕ на lock'е, а на форме записи: одна короткая строка
+    (~200 байт) уходит одним `write` в файл, открытый на дозапись, — ОС такие записи
+    сериализует, поэтому смешать две строки нельзя. Внутрипроцессный `_APPEND_LOCK`
+    закрывает второй случай: несколько потоков сервера ленты в ОДНОМ процессе.
+    Восстановление: запись целиком либо есть, либо её нет; повтор безопасен — дубль по id
+    схлопывает `funnel.py` в ранний ts, а `load_applied_log` пропускает битую строку.
+    Наблюдаемость: расхождение «отклик есть на HH, строки нет» ловит `sync_statuses`
+    (дожурналирует с via='hh') и строка «Синк: … новых в журнал N».
+
+    ts пустой -> сейчас (локальное). employer фиксируется В МОМЕНТ отклика: вакансия уйдёт
+    из выдачи — воронка по компаниям (funnel.py) не потеряет работодателя (fix.md №9)."""
     rec = {
         "id": str(vid), "name": name or "", "url": url or "", "via": via, "status": status,
         "ts": ts or datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
         "employer": employer or "",
     }
+    line = json.dumps(rec, ensure_ascii=False) + "\n"
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with open(APPLIED_LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    with _APPEND_LOCK, open(APPLIED_LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line)                     # ОДИН write на запись — единица атомарности
 
 
 def load_applied_log() -> list[dict[str, Any]]:
@@ -91,19 +111,28 @@ def _save_pending(items: list[dict[str, Any]]) -> None:
     atomic_write_json(PENDING_FILE, items, indent=0)
 
 
-def enqueue_pending(vid: str, url: str, name: str, cover: str) -> int:
-    """Добавить вакансию в конец очереди (идемпотентно по id). Возвращает позицию в очереди."""
+def enqueue_pending(vid: str, url: str, name: str, cover: str, employer: str = "") -> int:
+    """Добавить вакансию в конец очереди (идемпотентно по id). Возвращает позицию в очереди.
+
+    `employer` кладётся В МОМЕНТ КЛИКА и опционален: лента его знает (карточка перед глазами),
+    а к моменту дренажа вакансия может уже уйти из выдачи. Дальше он уезжает в журнал —
+    без него карточка-призрак не находится по компании (инцидент 01.08.2026)."""
     items = load_pending()
     if any(str(x.get("id")) == str(vid) for x in items):
         return len(items)                       # уже в очереди — не дублируем
-    items.append({"id": str(vid), "url": url, "name": name, "cover": cover})
+    items.append({"id": str(vid), "url": url, "name": name, "cover": cover,
+                  "employer": employer})
     _save_pending(items)
     return len(items)
 
 
 def pop_pending_one() -> dict[str, Any] | None:
     """Снять ПЕРВЫЙ элемент очереди (FIFO, атомарно). None — пусто. По одному, чтобы
-    подхватывать добавленные во время дренажа."""
+    подхватывать добавленные во время дренажа.
+
+    Снятие БЕЗВОЗВРАТНО: запись пропала с диска раньше, чем её обработали. Тот, кто её снял,
+    обязан либо довести обработку до конца, либо вернуть запись через `requeue_pending`
+    (см. `autoclick.py::_drain_pending`)."""
     items = load_pending()
     if not items:
         return None
@@ -112,14 +141,37 @@ def pop_pending_one() -> dict[str, Any] | None:
     return first
 
 
-def add_form_vacancy(vid: str, name: str, url: str, ts: str = "") -> None:
-    """Добавить вакансию-опросник (идемпотентно по id). Атомарная запись."""
+def requeue_pending(rec: dict[str, Any]) -> int:
+    """Вернуть в КОНЕЦ очереди запись, снятую `pop_pending_one`, но не обработанную.
+    Возвращает длину очереди; идемпотентно по id.
+
+    Отличие от `enqueue_pending` — кладём запись ЦЕЛИКОМ, а не пересобираем её из четырёх
+    полей: возврат не имеет права терять то, чего вызывающий не знает. В конец, а не в
+    начало, чтобы сбойная запись не блокировала остальную очередь; защиту от бесконечного
+    круга держит вызывающий (одна попытка на запись за прогон)."""
+    items = load_pending()
+    if any(str(x.get("id")) == str(rec.get("id")) for x in items):
+        return len(items)                       # уже вернулась/добавлена — не дублируем
+    items.append(dict(rec))
+    _save_pending(items)
+    return len(items)
+
+
+def add_form_vacancy(vid: str, name: str, url: str, ts: str = "") -> bool:
+    """Добавить вакансию-опросник (идемпотентно по id). Атомарная запись.
+    True — записали новую, False — уже лежала в очереди.
+
+    Возврат нужен вызывающему для СЧЁТЧИКА: анкета — не отклик и не пропуск, и пока она
+    молча падала в очередь, массовое включение опросников на HH было неотличимо от нормы
+    (`autoclick.py::_apply_batch`, строка «Итог прогона»)."""
     data = load_form_vacancies()
     if vid in data:
-        return
+        log.debug("Вакансия-опросник уже в форм-очереди: {} ({})", name, vid)
+        return False
     data[vid] = {"name": name, "url": url, "ts": ts}
     atomic_write_json(FORM_VACANCIES_FILE, data, indent=0)
     log.info("Вакансия-опросник отложена в форму-очередь: {} ({})", name, vid)
+    return True
 
 
 def remove_form_vacancy(vid: str) -> None:

@@ -20,7 +20,11 @@ from typing import Any, NamedTuple
 # имя таблицы (специфично поиску). Спайк (load.py/bench.py) тоже берёт PG_DSN из config.
 from hrwork.config import PG_DSN
 from hrwork.config import SOURCES as CONFIG_SOURCES
-from hrwork.domain.freshness import FRESH_DAYS, GHOST_DAYS  # единый источник порогов (как в ленте)
+from hrwork.domain.freshness import (  # единый источник порогов и кодов (как в ленте)
+    FRESH_DAYS,
+    GHOST_DAYS,
+    FreshnessClass,
+)
 
 TABLE = os.getenv("SEARCH_TABLE", "search_demo.vacancies")
 LIMIT_MAX = 100   # потолок выдачи, чтобы не выкачать всё одним запросом
@@ -36,12 +40,27 @@ LIMIT_MAX = 100   # потолок выдачи, чтобы не выкачат�
 WORK_MEM = os.getenv("SEARCH_WORK_MEM", "64MB")
 
 # Возраст и класс свежести считаются В ЗАПРОСЕ (live от now()), а не при загрузке — как в ленте,
-# где age_days/fresh_class тоже производные. Пороги — из домена (FRESH_DAYS/GHOST_DAYS).
-_AGE = "(now()::date - created_at::date)"
+# где age_days/fresh_class тоже производные. Пороги и коды — из домена (FRESH_DAYS/GHOST_DAYS,
+# FreshnessClass.*.code).
+#
+# Возраст — ПОЛНЫЕ СУТКИ, как в домене (`freshness.py::_days_between` = `(later - earlier).days`,
+# то есть floor разницы в сутках от UTC-now). Было `(now()::date - created_at::date)` —
+# календарная разница ДАТ в таймзоне сессии Postgres, и она давала другой класс на границе:
+# created 2026-07-08T20:00Z в момент 2026-08-08T06:00Z -> домен 30 (FRESH в ленте), календарный
+# SQL 31 (RECENT в /api/search), и фильтр fresh=fresh терял вакансию; то же на границе 60/61
+# (recent против ghost). Аудит 08.08.2026, п.32.
+#
+# Эквивалентность держится на типе колонки: `created_at timestamptz`
+# (`dwh_demo/search_demo/load.py::DDL`), поэтому `now() - created_at` — точный интервал,
+# посчитанный на UTC-представлении, без влияния таймзоны сессии и DST. `extract(epoch …)/86400`
+# даёт ту же дробь суток, что `timedelta`, а floor() — то же округление вниз, что `.days`
+# (в том числе на отрицательном возрасте у даты из будущего: floor(-0.04) = -1 = timedelta.days).
+_AGE = "floor(extract(epoch from now() - created_at) / 86400)"
 _FRESH_CASE = (
-    f"CASE WHEN created_at IS NULL THEN 'unknown' "
-    f"WHEN {_AGE} <= {FRESH_DAYS} THEN 'fresh' "
-    f"WHEN {_AGE} <= {GHOST_DAYS} THEN 'recent' ELSE 'ghost' END"
+    f"CASE WHEN created_at IS NULL THEN '{FreshnessClass.UNKNOWN.code}' "
+    f"WHEN {_AGE} <= {FRESH_DAYS} THEN '{FreshnessClass.FRESH.code}' "
+    f"WHEN {_AGE} <= {GHOST_DAYS} THEN '{FreshnessClass.RECENT.code}' "
+    f"ELSE '{FreshnessClass.GHOST.code}' END"
 )
 # Карточные колонки (общие для обоих режимов) + производные свежести.
 _COLS = ("id, source, name, employer, city, sal_from, sal_to, sal_mid, currency, url, techs, "
@@ -53,10 +72,12 @@ _COLS = ("id, source, name, employer, city, sal_from, sal_to, sal_mid, currency,
 SOURCES = tuple(CONFIG_SOURCES)
 
 # WHERE-фрагмент фильтра свежести по классу (null-даты в «свежие/недавние» не попадают).
+# Ключи — коды домена: фильтр обязан отбирать ровно то, что _FRESH_CASE пометил тем же кодом.
 _FRESH_WHERE = {
-    "fresh":  f"created_at IS NOT NULL AND {_AGE} <= {FRESH_DAYS}",
-    "recent": f"created_at IS NOT NULL AND {_AGE} > {FRESH_DAYS} AND {_AGE} <= {GHOST_DAYS}",
-    "ghost":  f"created_at IS NOT NULL AND {_AGE} > {GHOST_DAYS}",
+    FreshnessClass.FRESH.code:  f"created_at IS NOT NULL AND {_AGE} <= {FRESH_DAYS}",
+    FreshnessClass.RECENT.code: (f"created_at IS NOT NULL AND {_AGE} > {FRESH_DAYS} "
+                                 f"AND {_AGE} <= {GHOST_DAYS}"),
+    FreshnessClass.GHOST.code:  f"created_at IS NOT NULL AND {_AGE} > {GHOST_DAYS}",
 }
 # Описание с ЭКРАНИРОВАННЫМ HTML. Сниппет — единственное поле выдачи, которое страница
 # поиска вставляет в DOM без `esc()` (ради подсветки `<mark>`), поэтому безопасность

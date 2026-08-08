@@ -5,7 +5,7 @@
 Playwright, поэтому логику можно менять и тестировать без риска для реальных откликов."""
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from typing import Any
@@ -62,8 +62,27 @@ APPLY_CORE        = set(RESUME_CORE)                     # tier1: строгое
 # `pick_candidates` сортирует по tier, а внутри — по грейду (младшие раньше, см. _EXP_ORDER),
 # поэтому старшая вилка разбирается последней и только когда junior-кандидаты кончились.
 APPLY_EXTRA_EXPS  = set(APPLY_EXTRA_EXP_IDS)   # из профиля (`extra_exp_ids`), дефолт «3–6 лет»
-APPLY_EXPS        = {e for x in (*RESUME_EXP_IDS, *APPLY_EXTRA_EXPS)
-                     if (e := Experience.from_code(x))}
+
+
+def _exps_from_codes(codes: Iterable[str]) -> set[Experience]:
+    """Коды опыта -> VO, с ЖАЛОБОЙ на непризнанный код.
+
+    Мягкий парсер (`Experience.from_code`) применён к НАШЕЙ константе из профиля, а не к
+    данным портала, поэтому молча пропускать нераспознанное нельзя: пропуск сужает отбор под
+    отклик (= недоотклики), и наблюдаемости у такого сужения нет никакой — пул просто меньше.
+    `config.py::_known_exp_ids` фильтрует те же коды на входе; здесь второй рубеж, на случай
+    когда набор пришёл не оттуда."""
+    out: set[Experience] = set()
+    for x in codes:
+        e = Experience.from_code(x)
+        if e is None:
+            log.warning("APPLY_EXPS: код опыта {} не распознан — исключён из отбора", x)
+            continue
+        out.add(e)
+    return out
+
+
+APPLY_EXPS        = _exps_from_codes((*RESUME_EXP_IDS, *APPLY_EXTRA_EXPS))
 APPLY_SKIP_GHOSTS = True                                 # не откликаться на гост-вакансии (>60 дн)
 # ВРЕМЕННО: не пытаться откликаться на вакансии-опросники повторно. Бот их не заполняет
 # (вопросы работодателя специфичны), но раньше они НЕ исключались из выборки — очередь
@@ -127,9 +146,16 @@ def _rx(key: str, default: str) -> "re.Pattern[str]":
 
 # Чёрный список по ГРЕЙДУ: senior-роли и рус-эквиваленты (ведущий/старший/тимлид/lead —
 # иначе «Ведущий backend» проскакивает мимо «senior»).
+#
+# `\bsr\b` и «принципал» добавлены 08.08.2026 (аудит): их знал словарь грейдов
+# `domain/grade.py::_TITLE_RX`, но не этот список, и «Sr. Python Developer» проходил отбор
+# как рядовая вакансия, а для зарплатного ответа считался senior. Один тайтл — две трактовки
+# в одном прогоне. Набор слов синхронизирован с `resume_profile.example.json::blacklists.senior`
+# (страж паритета — tests/backend/test_profile_settings.py).
 APPLY_SENIOR_BLACKLIST = _rx("senior",
-    r"\bsenior\b|\bсеньор|\bсиньор"
-    r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b|\bprincipal\b|\bstaff\b")
+    r"\bsenior\b|\bсеньор|\bсиньор|\bsr\b"
+    r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b"
+    r"|\bprincipal\b|принципал|\bstaff\b")
 
 # ── РУКОВОДЯЩИЕ должности: всё, что выше Lead ──────────────────────────────────────────
 # Задано пользователем 07.08.2026: интересны только стандартные инженерные позиции до

@@ -28,7 +28,7 @@ from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, check_list_complete, normalize_each, register_source
 from .hh import BROWSER_UA
 
 
@@ -43,6 +43,14 @@ class HirifyCfg:
     page_conc: int = HIRIFY_PAGE_CONCURRENCY       # параллельных страниц списка (env)
     enrich_conc: int = HIRIFY_ENRICH_CONCURRENCY   # параллельных /slug (env)
     enrich_max: int = HIRIFY_ENRICH_MAX            # порог полного enrich vs tldr-заглушка (env)
+    # Доля списка, которую можно недобрать молча (сверку делает base.check_list_complete).
+    # ПОРОГ 2 % выбран так:
+    #   * одна страница hirify — 100 записей из ~18 000, то есть 0.55 %. Ронять весь прогон
+    #     из-за одного транзиентного сбоя нельзя: записи вернутся следующим сбором, а их
+    #     описания уложатся в дневной бюджет `HIRIFY_ENRICH_MAX = 600` (2 % от 18k = ~360);
+    #   * выше 2 % усечённый срез стоит дороже пропуска прогона: восстановление описаний
+    #     растянется на несколько дней бюджета, а кеш уже затёрт.
+    list_loss_max_ratio: float = 0.02
 
 
 CFG = HirifyCfg()
@@ -80,8 +88,13 @@ def _meta_header(it: dict[str, Any]) -> str:
     if eng:
         parts.append(f"🗣 English {eng}")
     s = it.get("salary") or {}
-    if s.get("salary_in_usd"):
-        parts.append(f"💰 ~${s['salary_in_usd']:,} {s.get('currency', '')} (норм.)")
+    # Гейт по ТИПУ, а не по truthy: `salary_in_usd` приходит и строкой ("120000"), а
+    # спецификатор `:,` на строке даёт ValueError («Cannot specify ',' with 's'») — одна
+    # такая карточка роняла нормализацию ВСЕЙ страницы. `_usd_mid` — мягкий парсер внешних
+    # данных: строка/мусор/None -> None. Ноль отбрасываем: у портала это «нет данных».
+    usd = _usd_mid(s)
+    if usd is not None and usd > 0:
+        parts.append(f"💰 ~${usd:,.0f} {s.get('currency', '')} (норм.)")
     parts.append("📌 hirify.me")
     return "<p>" + html.escape(" · ".join(parts)) + "</p>"
 
@@ -191,48 +204,84 @@ class HirifySource(Source):
         # пагинация Laravel: last_page/total на верхнем уровне ответа (meta нет)
         last_page = min(int(first.get("last_page") or 1), CFG.max_pages)
         total = int(first.get("total") or len(items))
+        per_page = int(first.get("per_page") or len(items) or 1)
         log.info("hirify: total={} last_page={} — тяну список…", total, last_page)
 
         sem = asyncio.Semaphore(CFG.page_conc)
+        failed: list[int] = []                          # страницы, не отдавшиеся после всех ретраев
 
         async def _page(p: int) -> list[dict[str, Any]]:
             async with sem:
                 d = await self._get_page(p)
-            return (d or {}).get("data") or []
+            if d is None:            # сбой транспорта — это НЕ «страница честно пустая»
+                failed.append(p)
+                return []
+            data: list[dict[str, Any]] = d.get("data") or []
+            return data
 
         if last_page > 1:
             pages = await asyncio.gather(*(_page(p) for p in range(2, last_page + 1)))
             for chunk in pages:
                 items.extend(chunk)
         log.info("hirify: список собран — {} вакансий", len(items))
+        check_list_complete(len(items), total=total, per_page=per_page, failed=failed,
+                            source="hirify", max_lost_ratio=CFG.list_loss_max_ratio)
 
         # Этап 2: инкрементальный enrich. Описания из прошлого сбора берём из кеша (сеть не трогаем),
         # /slug тянем ТОЛЬКО для новых/изменившихся (по _sig), не более HIRIFY_ENRICH_MAX за прогон.
         # Так полное покрытие описаниями растёт день за днём без пере-скачивания неизменных.
-        cache = storage.load_desc_cache()               # {id: {sig, description_html, requirement, at}}
+        cache = storage.load_desc_cache()               # схема записи — storage/files.py::load_desc_cache
         reuse: list[tuple[dict[str, Any], dict[str, Any]]] = []   # (item, hit): sig совпал и не протух
         todo:  list[dict[str, Any]] = []                          # новые/изменившиеся/протухшие — кандидаты на /slug
+        stale: dict[str, dict[str, Any]] = {}                     # та же версия, но описание протухло
         for it in items:
-            hit = cache.get(f"hirify_{it.get('id')}")
-            if storage.cache_hit_usable(hit, _sig(it)):
+            vid, sig = f"hirify_{it.get('id')}", _sig(it)
+            hit = cache.get(vid)
+            if storage.cache_hit_usable(hit, sig):
                 reuse.append((it, hit))
-            else:
-                todo.append(it)
+                continue
+            todo.append(it)
+            if storage.cache_hit_matches(hit, sig):
+                stale[vid] = hit
         todo.sort(key=lambda it: it.get("created_at") or "", reverse=True)   # свежие — в приоритет
-        to_enrich, tldr_only = todo[:CFG.enrich_max], todo[CFG.enrich_max:]
+        # Бюджет /slug — СНАЧАЛА тем, у кого описания нет вовсе. У протухших оно есть и
+        # переживает прогон (fallback ниже), а у никогда-не-обогащённых альтернатива — tldr,
+        # и раньше именно они не доходили до enrich никогда: экспирация съедала весь бюджет.
+        # Сортировка стабильная, поэтому порядок «свежие раньше» внутри групп сохраняется.
+        todo.sort(key=lambda it: f"hirify_{it.get('id')}" in stale)
+        to_enrich, tail = todo[:CFG.enrich_max], todo[CFG.enrich_max:]
 
         esem = asyncio.Semaphore(CFG.enrich_conc)
 
-        async def _enrich(it: dict[str, Any]) -> VacancyRecord:
+        async def _fetch_full(it: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
             async with esem:
                 full = await self._get_one(it.get("slug", ""))
-            return _normalize(it, full)
+            return it, full
 
-        enriched = list(await asyncio.gather(*(_enrich(it) for it in to_enrich))) if to_enrich else []
-        out = [_normalize(it, cached_desc=hit["description_html"], enriched_at=hit.get("at"))
-               for it, hit in reuse]
+        def _from_cache(pair: tuple[dict[str, Any], dict[str, Any]]) -> VacancyRecord:
+            it, hit = pair
+            return _normalize(it, cached_desc=hit["description_html"], enriched_at=hit.get("at"))
+
+        def _from_full(pair: tuple[dict[str, Any], dict[str, Any] | None]) -> VacancyRecord:
+            return _normalize(pair[0], pair[1])
+
+        def _from_tail(it: dict[str, Any]) -> VacancyRecord:
+            hit = stale.get(f"hirify_{it.get('id')}")
+            if hit is None:
+                return _normalize(it)               # описания не было — tldr, доберём следующим прогоном
+            # Бюджет кончился, а описание в кеше есть: ПРОТУХШЕЕ ЛУЧШЕ tldr-шапки. Метку `at`
+            # переносим как есть — запись остаётся кандидатом на обновление, но уже скачанный
+            # текст больше не стирается (раньше хвост сверх бюджета откатывался на tldr).
+            return _normalize(it, cached_desc=hit["description_html"], enriched_at=hit.get("at"))
+
+        fetched = list(await asyncio.gather(*(_fetch_full(it) for it in to_enrich))) if to_enrich else []
+        # Нормализация — через normalize_each: кривая карточка портала не должна ронять
+        # источник целиком (иначе санити-гейт видит нулевой срез и морозит кеш всех порталов).
+        out = normalize_each(reuse, _from_cache, source="hirify")
+        enriched = normalize_each(fetched, _from_full, source="hirify")
         out += enriched
-        out += [_normalize(it) for it in tldr_only]     # без полного описания — доберём в следующий прогон
-        log.info("hirify: собрано {} (кеш {}, дозагружено {}, tldr {})",
-                 len(out), len(reuse), len(enriched), len(tldr_only))
+        kept_stale = sum(1 for it in tail if f"hirify_{it.get('id')}" in stale)
+        out += normalize_each(tail, _from_tail, source="hirify")
+        log.info("hirify: собрано {} (кеш {}, дозагружено {}, протухший кеш {}, tldr {})",
+                 len(out), len(reuse), len(enriched), kept_stale, len(tail) - kept_stale)
         return out

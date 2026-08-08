@@ -21,12 +21,13 @@ def _stub_rates(monkeypatch):
 
 
 def _vac(vid, city, mid, currency="RUR", exp="between1And3", schedule="fullDay",
-         techs=(), created_at=None, employer="", role=Role.DEVELOPER):
+         techs=(), created_at=None, employer="", role=Role.DEVELOPER, source="hh"):
     return Vacancy(
         id=vid, name="x", city=city, city_id="1",
         salary=Salary(mid, None, currency) if mid is not None else None,
         experience=Experience.from_code(exp), schedule=Schedule.from_code(schedule),
         techs=list(techs), role=role, employer=employer, created_at=created_at,
+        source=source,
     )
 
 
@@ -64,6 +65,101 @@ def test_remote_by_city_counts_remote_and_flexible():
     assert row["city"] == "Москва"
     assert (row["total"], row["remote"], row["onsite"]) == (3, 2, 1)
     assert row["pct"] == round(2 * 100 / 3, 1)
+
+
+# --- «Сколько удалёнки» — ОДИН предикат на весь проект (домен), а не кортеж в аналитике ---
+# 08.08.2026: `analyzer._REMOTE` отвечал на этот вопрос сам, а лента — своим фильтром, и
+# 16 857 вакансий были «офисом» в ленте и «удалёнкой» в отчётах 09/11/12. Победил домен
+# (`Vacancy.is_remote_like`). Семантика срезов при этом НЕ менялась — это и фиксируется:
+# remote и гибрид считаются удалёнкой, офис и «формат не назван» — нет.
+
+@pytest.mark.parametrize(("schedule", "remote", "onsite"), [
+    ("remote", 1, 0),
+    ("flexible", 1, 0),      # гибрид = удалёнка (был им и до перевода на доменный предикат)
+    ("fullDay", 0, 1),
+    (None, 0, 1),            # портал формат не назвал -> удалёнку не домысливаем
+])
+def test_remote_by_city_counts_remote_and_hybrid_as_remote(schedule, remote, onsite):
+    row = Analyzer.with_live_rates([_vac("1", "Москва", 100, schedule=schedule)]).remote_by_city()[0]
+    assert (row["total"], row["remote"], row["onsite"]) == (1, remote, onsite)
+    assert row["pct"] == float(remote * 100)
+
+
+@pytest.mark.parametrize(("schedule", "remote", "office"), [
+    ("remote", 1, 0),
+    ("flexible", 1, 0),
+    ("fullDay", 0, 1),
+    (None, 0, 1),
+])
+def test_by_company_remote_split_matches_domain_predicate(schedule, remote, office):
+    row = Analyzer.with_live_rates(
+        [_vac("1", "М", 100, employer="Acme", schedule=schedule)]).by_company()[0]
+    assert (row["remote"], row["office"]) == (remote, office)
+
+
+@pytest.mark.parametrize(("schedule", "remote", "office"), [
+    ("remote", 1, 0),
+    ("flexible", 1, 0),
+    ("fullDay", 0, 1),
+    (None, 0, 1),
+])
+def test_by_source_remote_split_matches_domain_predicate(schedule, remote, office):
+    row = Analyzer.with_live_rates(
+        [_vac("1", "М", 100, source="hirify", schedule=schedule)]).by_source()[0]
+    assert (row["remote"], row["office"]) == (remote, office)
+
+
+# --- Агрегаты округляются, а не усекаются (класс инцидента «4166 против 4167») ---
+
+def test_salary_by_lang_rounds_mean_and_quartiles():
+    # БАГ 08.08.2026: int() усекал среднее и квантили. Тот же класс, что `salary.py::net`
+    # («4166 там, где верно 4167»): цена копеечная, но один и тот же пересчёт обязан
+    # вести себя одинаково во всём проекте.
+    # Вилка n=5: 100001, 100002, 100002, 100003, 100005 (net RUB, курс 1:1).
+    vacs = [_vac(str(i), "Москва", s, techs=["Python"])
+            for i, s in enumerate((100_001, 100_002, 100_002, 100_003, 100_005))]
+    out = Analyzer.with_live_rates(vacs).salary_by_lang()["Python"]
+    assert out["n"] == 5
+    assert out["mean"] == 100_003        # 500 013 / 5 = 100 002.6 -> 100 003 (усечение: 100 002)
+    assert out["median"] == 100_002
+    assert out["p25"] == 100_002         # 100 001.5 -> 100 002 (усечение: 100 001)
+    assert out["p75"] == 100_004
+    assert (out["min"], out["max"]) == (100_001, 100_005)
+
+
+def test_salary_city_lang_rounds_median_and_quartiles():
+    # ячейка город×язык: порог 3, квантили считаются от 4 значений
+    # 100000, 100001, 100002, 100003 -> медиана 100 001.5, P75 100 002.75
+    vacs = [_vac(str(i), "Москва", s, techs=["Python"])
+            for i, s in enumerate((100_000, 100_001, 100_002, 100_003))]
+    cell = Analyzer.with_live_rates(vacs).salary_city_lang()["Москва"]["Python"]
+    assert cell["n"] == 4
+    assert cell["median"] == 100_002     # 100 001.5 -> 100 002 (усечение: 100 001)
+    assert cell["p25"] == 100_000
+    assert cell["p75"] == 100_003        # 100 002.75 -> 100 003 (усечение: 100 002)
+
+
+def test_salary_by_experience_rounds_quartiles():
+    vacs = [_vac(str(i), "Москва", s, exp="between1And3")
+            for i, s in enumerate((100_001, 100_002, 100_002, 100_003, 100_005))]
+    out = Analyzer.with_live_rates(vacs).salary_by_experience()["1–3 года"]
+    assert out["median"] == 100_002
+    assert out["p25"] == 100_002         # 100 001.5 -> 100 002 (усечение: 100 001)
+    assert out["p75"] == 100_004
+
+
+@pytest.mark.parametrize("read", [
+    lambda a: a.freshness_summary()["median_age"],
+    lambda a: a.by_company()[0]["median_age"],
+    lambda a: a.freshness_by_city()[0]["median_age"],
+], ids=["freshness_summary", "by_company", "freshness_by_city"])
+def test_median_age_rounds_instead_of_truncating(read):
+    # медиана возраста 11 и 12 дней = 11.5 -> 12 дней, а не 11 (int усекал)
+    a = Analyzer.with_live_rates([
+        _vac("1", "М", 100, employer="Acme", created_at=_days_ago(11)),
+        _vac("2", "М", 100, employer="Acme", created_at=_days_ago(12)),
+    ])
+    assert read(a) == 12
 
 
 def test_salary_by_experience_threshold_and_median():

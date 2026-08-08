@@ -7,6 +7,7 @@ SimpleHTTPRequestHandler, чей __init__ сразу вычитывает зап
 """
 import gzip
 import io
+import json
 
 import pytest
 
@@ -322,6 +323,78 @@ def test_gzip_missing_file_returns_none(tmp_path):
     h = _bare_handler(path="/missing.js", headers={"Accept-Encoding": "gzip"},
                       directory=str(tmp_path))
     assert h._gzip_resp() is None
+
+
+# ────── работодатель в теле POST /api/apply (инцидент 01.08.2026) ──────
+# Работодатель фиксируется В МОМЕНТ КЛИКА: к дренажу очереди вакансия уходит из выдачи,
+# и карточка-призрак ленты не находится ни поиском по компании, ни воронкой автоотказов.
+# Поле необязательное — клиент, который его не шлёт, получает прежнее поведение.
+
+
+class _WorkerSpy:
+    """Заглушка тёплого воркера откликов: запоминает аргументы submit, браузер не поднимает."""
+
+    def __init__(self, status):
+        self.calls = []
+        self._status = status
+
+    def submit(self, vid, url, cover, name="", employer=""):
+        self.calls.append((vid, url, cover, name, employer))
+        return {"status": self._status, "letter": False}
+
+
+def _apply(monkeypatch, body, status="applied"):
+    """POST /api/apply с телом `body` -> (Resp, шпион воркера, аргументы store.enqueue)."""
+    from hrwork.application.apply import autoclick
+    worker = _WorkerSpy(status)
+    enqueued = []
+
+    def _enqueue(*args):
+        enqueued.append(args)
+        return 3                                  # позиция в очереди ожидания
+
+    monkeypatch.setattr(autoclick, "get_apply_worker", lambda: worker)
+    monkeypatch.setattr(server.store, "enqueue", _enqueue)
+    raw = json.dumps(body).encode("utf-8")
+    h = _bare_handler(command="POST", headers={"Content-Length": str(len(raw))}, body=raw)
+    return h._apply_post(), worker, enqueued
+
+
+def test_apply_sends_the_employer_to_the_apply_worker(monkeypatch):
+    _resp, worker, _q = _apply(monkeypatch, {"id": "77", "url": "https://hh.ru/vacancy/77",
+                                             "cover": "письмо", "name": "Python Developer",
+                                             "employer": "Acme"})
+    assert worker.calls == [("77", "https://hh.ru/vacancy/77", "письмо",
+                             "Python Developer", "Acme")]
+
+
+def test_apply_without_employer_sends_empty_string(monkeypatch):
+    # Обратная совместимость: старая лента шлёт тело без ключа employer.
+    _resp, worker, _q = _apply(monkeypatch, {"id": "77", "url": "u", "cover": "c", "name": "n"})
+    assert worker.calls == [("77", "u", "c", "n", "")]
+
+
+def test_busy_apply_queues_the_employer_for_the_cron(monkeypatch):
+    # Браузер занят кроном -> вакансия уходит в очередь ожидания, и работодатель обязан
+    # уехать туда же: к моменту дренажа спросить его будет уже не у кого.
+    resp, _worker, enqueued = _apply(monkeypatch, {"id": "77", "url": "u", "cover": "c",
+                                                   "name": "n", "employer": "Acme"},
+                                     status="busy")
+    assert enqueued == [("77", "u", "n", "c", "Acme")]
+    assert json.loads(resp.body) == {"status": "queued", "position": 3, "letter": False}
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("\u041e\u041e\u041e\x07\u0420\u043e\u043c\u0430\u0448\u043a\u0430\n", "ООО Ромашка"),   # C0-символ ломает построчный разбор журнала
+    ("\u202eAcme", "Acme"),                    # bidi-переворот показа названия в ленте
+    ("  Acme  ", "Acme"),
+    ("Ц" * 250, "Ц" * 200),                      # потолок: запись журнала остаётся короткой строкой
+    ({"name": "Acme"}, ""),                      # чужие данные: не-строка -> пусто, без падения
+    (None, ""),
+])
+def test_employer_from_request_body_is_sanitized(raw, expected, monkeypatch):
+    _resp, worker, _q = _apply(monkeypatch, {"id": "77", "employer": raw})
+    assert worker.calls[0][4] == expected
 
 
 def test_chats_endpoint_keeps_contact_after_our_reply(monkeypatch):

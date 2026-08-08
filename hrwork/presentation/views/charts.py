@@ -470,8 +470,9 @@ def chart_company_funnel(base: Path = REPORTS_DIR, top_n: int = 18) -> go.Figure
     rows = _read(base, "13_company_funnel.csv")
 
     # сводка по ВСЕМ строкам (включая «вне выдачи») — для подписи; бары — только по known
-    tot_rej = sum(int(r["Отказов"]) for r in rows)
-    tot_1h  = sum(int(r["<=1ч"]) for r in rows)
+    tot_rej  = sum(int(r["Отказов"]) for r in rows)
+    tot_meas = sum(int(r["Измерено"]) for r in rows)
+    tot_1h   = sum(int(r["<=1ч"]) for r in rows)
     known = [r for r in rows if r["Компания"] != "(вне выдачи)" and int(r["Отказов"]) > 0]
     # порядок строк CSV = ранжирование funnel.compute_funnel (единое для таблицы и графика);
     # горизонтальные бары рисуются снизу вверх -> разворачиваем, чтобы топ был сверху
@@ -495,10 +496,16 @@ def chart_company_funnel(base: Path = REPORTS_DIR, top_n: int = 18) -> go.Figure
             hovertemplate="%{y}<br>" + name + ": %{x} отказов<extra></extra>",
         ))
     height = max(520, len(comps) * 32 + 140)
-    pct_1h = round(tot_1h * 100 / tot_rej) if tot_rej else 0
+    # Знаменатель доли — ИЗМЕРЕННЫЕ отказы, тот же, что у колонки CSV «Автобан %
+    # (от измеренных)» (`funnel.py::_CSV_HEADERS`). До 08.08.2026 шапка делила на ВСЕ
+    # отказы: компания с 10 отказами, из них 2 с чат-меткой и обе <=1ч, давала «100.0»
+    # в таблице и «20 %» в шапке той же вкладки. Знаменатель назван прямо в подписи —
+    # человек, видящий только график, не должен его угадывать.
+    pct_1h = round(tot_1h * 100 / tot_meas) if tot_meas else 0
     fig.update_layout(
-        **_layout(f"Латентность автоотказа по компаниям  "
-                  f"(всего отказов {tot_rej}, из них <=1ч — {tot_1h} = {pct_1h}%)"),
+        **_layout(f"Латентность автоотказа по компаниям "
+                  f"(отказов {tot_rej}, измерено {tot_meas}, "
+                  f"из них <=1ч — {tot_1h} = {pct_1h}%)"),
         barmode="stack",
         height=height,
         xaxis=dict(title="Отказов", showgrid=True, gridcolor=GRID),

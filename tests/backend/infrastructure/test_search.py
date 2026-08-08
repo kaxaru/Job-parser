@@ -1,8 +1,16 @@
 """Сборка SQL поиска (без БД): фильтры, режимы, класс свежести. _build_sql — чистая."""
+import datetime
+
 import pytest
 
+from hrwork.domain import freshness
 from hrwork.domain.freshness import FRESH_DAYS, GHOST_DAYS
 from hrwork.infrastructure import search as S
+
+# Возраст в SQL = floor полных суток от now(), ровно как `freshness.py::_days_between`.
+# Литерал спецификации: /api/search и лента обязаны звать один и тот же класс свежести
+# одной и той же вакансии.
+AGE_SQL = "floor(extract(epoch from now() - created_at) / 86400)"
 
 
 def test_cols_expose_age_fresh_and_source():
@@ -41,6 +49,49 @@ def test_fts_mode_with_query():
 def test_fresh_filter_adds_band_clause(fresh, marker):
     sql, _ = S._build_sql(q=None, city=None, sal_min=0, fresh=fresh)
     assert "created_at IS NOT NULL" in sql and marker in sql
+
+
+# ── Регрессия 08.08.2026 (аудит, п.32): возраст в SQL расходился с доменом ──────────────
+# SQL считал КАЛЕНДАРНУЮ разницу дат в таймзоне сессии Postgres (now()::date -
+# created_at::date), домен — полные сутки от UTC-now ((later - earlier).days). Вакансия,
+# созданная 2026-07-08T20:00Z, в момент 2026-08-08T06:00Z была FRESH в ленте (30 дн) и
+# RECENT в /api/search (31 дн) — фильтр fresh=fresh её терял. То же на границе 60/61.
+
+@pytest.mark.parametrize("created,now_iso,expected_age", [
+    ("2026-07-08T20:00:00+00:00", "2026-08-08T06:00:00+00:00", 30),   # 30 сут 10 ч -> FRESH
+    ("2026-06-08T20:00:00+00:00", "2026-08-08T06:00:00+00:00", 60),   # 60 сут 10 ч -> RECENT
+])
+def test_domain_age_is_floor_of_full_utc_days(created, now_iso, expected_age):
+    """Спецификация, которой обязан следовать SQL: возраст — полные сутки, не разница дат."""
+    assert freshness.age_days(created, datetime.datetime.fromisoformat(now_iso)) == expected_age
+
+
+def test_age_column_counts_full_days_like_domain():
+    assert S._AGE == AGE_SQL
+
+
+def test_age_does_not_depend_on_session_timezone():
+    # приведение к ::date считает возраст в таймзоне сессии Postgres, а домен — в UTC
+    sql, _ = S._build_sql(q=None, city=None, sal_min=0, fresh="fresh")
+    assert "::date" not in sql
+
+
+def test_fresh_case_labels_rows_with_domain_codes_and_thresholds():
+    expected = ("CASE WHEN created_at IS NULL THEN 'unknown' "
+                f"WHEN {AGE_SQL} <= 30 THEN 'fresh' "
+                f"WHEN {AGE_SQL} <= 60 THEN 'recent' "
+                "ELSE 'ghost' END")
+    assert expected == S._FRESH_CASE
+
+
+@pytest.mark.parametrize("fresh,expected_clause", [
+    ("fresh",  f"created_at IS NOT NULL AND {AGE_SQL} <= 30"),
+    ("recent", f"created_at IS NOT NULL AND {AGE_SQL} > 30 AND {AGE_SQL} <= 60"),
+    ("ghost",  f"created_at IS NOT NULL AND {AGE_SQL} > 60"),
+])
+def test_fresh_filter_selects_the_same_band_it_labels(fresh, expected_clause):
+    sql, _ = S._build_sql(q=None, city=None, sal_min=0, fresh=fresh)
+    assert expected_clause in sql
 
 
 def test_unknown_fresh_value_ignored():

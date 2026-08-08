@@ -7,10 +7,17 @@ from typing import Any
 from hrwork.config import LANG_KEYS, MIN_SAMPLE_CITY_LANG, MIN_SAMPLE_SALARY
 from hrwork.domain import freshness
 from hrwork.domain.models import Vacancy
-from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net import rates
 
-_REMOTE = (Schedule.REMOTE, Schedule.HYBRID)   # «удалённо» для срезов = remote + гибрид
+# «Удалённо» для срезов спрашиваем У ДОМЕНА (`Vacancy.is_remote_like`). Свой кортеж
+# `_REMOTE = (REMOTE, HYBRID)` здесь был вторым ответом на тот же вопрос и разошёлся с
+# фильтром ленты: 16 857 вакансий одновременно «офис» в ленте и «удалёнка» в отчётах
+# 09/11/12 и графиках chart_remote/chart_by_source (инцидент 08.08.2026). Предикат
+# ровно один; смысл среза при этом прежний — гибрид считается удалёнкой.
+
+# Округление агрегатов — `round`, а не `int`: усечение давало «4166 там, где верно 4167»
+# (тот же разбор, что в `salary.py::net`). На .5 работает банковское округление Python —
+# симметрия с доменом важнее, чем половина рубля или полдня возраста.
 
 
 class Analyzer:
@@ -59,10 +66,10 @@ class Analyzer:
             qs = statistics.quantiles(sals, n=4)
             out[lang] = {
                 'n':      len(sals),
-                'median': int(statistics.median(sals)),
-                'mean':   int(statistics.mean(sals)),
-                'p25':    int(qs[0]),
-                'p75':    int(qs[2]),
+                'median': round(statistics.median(sals)),
+                'mean':   round(statistics.mean(sals)),
+                'p25':    round(qs[0]),
+                'p75':    round(qs[2]),
                 'min':    min(sals),
                 'max':    max(sals),
             }
@@ -83,9 +90,9 @@ class Analyzer:
                 qs = statistics.quantiles(sals, n=4) if len(sals) >= 4 else None
                 out[city][lang] = {
                     'n':      len(sals),
-                    'median': int(statistics.median(sals)),
-                    'p25':    int(qs[0]) if qs else None,
-                    'p75':    int(qs[2]) if qs else None,
+                    'median': round(statistics.median(sals)),
+                    'p25':    round(qs[0]) if qs else None,
+                    'p75':    round(qs[2]) if qs else None,
                 }
         return out
 
@@ -113,7 +120,7 @@ class Analyzer:
         city_remote: dict[str, int] = {}
         for v in self.vacs:
             city_total[v.city] = city_total.get(v.city, 0) + 1
-            if v.schedule in _REMOTE:
+            if v.is_remote_like():
                 city_remote[v.city] = city_remote.get(v.city, 0) + 1
         rows = []
         for city, total in city_total.items():
@@ -140,7 +147,7 @@ class Analyzer:
             "counts":      {fc.code: cls.get(fc, 0) for fc in FC},   # code-keyed для CSV/отчётов
             "ghost_pct":   round(cls[FC.GHOST] * 100 / dated, 1) if dated else 0.0,
             "fresh_pct":   round(cls[FC.FRESH] * 100 / dated, 1) if dated else 0.0,
-            "median_age":  int(statistics.median(ages)) if ages else None,
+            "median_age":  round(statistics.median(ages)) if ages else None,
         }
 
     def _group_stats(self, key_field: str,
@@ -155,10 +162,10 @@ class Analyzer:
         out: dict[str, dict[str, Any]] = {}
         for g, vacs in groups.items():
             ages = [a for v in vacs if (a := v.age_days()) is not None]
-            remote = sum(1 for v in vacs if v.schedule in _REMOTE)
+            remote = sum(1 for v in vacs if v.is_remote_like())
             out[g] = {
                 "total":      len(vacs),
-                "median_age": int(statistics.median(ages)) if ages else None,
+                "median_age": round(statistics.median(ages)) if ages else None,
                 "ghosts":     sum(1 for v in vacs if v.is_ghost()),
                 "remote":     remote,
                 "office":     len(vacs) - remote,
@@ -240,7 +247,7 @@ class Analyzer:
                 "recent":     cls[FC.RECENT],
                 "ghost":      cls[FC.GHOST],
                 "ghost_pct":  round(cls[FC.GHOST] * 100 / dated, 1),
-                "median_age": int(statistics.median(ages)) if ages else None,
+                "median_age": round(statistics.median(ages)) if ages else None,
             })
         return sorted(rows, key=lambda r: -r["ghost_pct"])
 
@@ -256,8 +263,8 @@ class Analyzer:
             qs = statistics.quantiles(sals, n=4)
             out[label] = {
                 'n':      len(sals),
-                'median': int(statistics.median(sals)),
-                'p25':    int(qs[0]),
-                'p75':    int(qs[2]),
+                'median': round(statistics.median(sals)),
+                'p25':    round(qs[0]),
+                'p75':    round(qs[2]),
             }
         return out

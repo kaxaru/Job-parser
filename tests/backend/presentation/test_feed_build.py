@@ -15,7 +15,7 @@ from hrwork.domain.role import Role
 from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net import rates
-from hrwork.infrastructure.storage import VacancyRecord
+from hrwork.infrastructure.storage import VacancyRecord, followup
 from hrwork.presentation.views import feed
 
 # FX-курсы (per-USD) фиксируем -> тесты гермётичны, без сети. USD 1:1, RUB 100.
@@ -25,6 +25,26 @@ _STATUSES = {"v1": "INVITATION"}     # у v1 есть статус работо�
 _FORMS = {"v2": {"name": "Аналитик данных"}}   # v2 — вакансия-опросник (нужна форма)
 # v1 — форма протухла при свипе (status=empty) -> карточка гасится как «не актуальна»
 _FORM_CACHE = {"v1": {"status": "empty"}, "v2": {"status": "ok"}}
+# Переписка по v1: живой ответ HR — последний НЕ наш и НЕ ботовый (04.07 11:00). Бот пишет
+# позже (10.07), наше сообщение — между: оба в `hr_ts` попадать не должны.
+_CHATS = {
+    "v1": {"messages": [
+        {"text": "Ваш отклик зарегистрирован", "ts": "2026-07-10T08:00:00+03:00", "bot": True},
+        {"text": "Здравствуйте! Расскажете о себе?", "ts": "2026-07-02T09:00:00+03:00"},
+        {"text": "Да, конечно", "ts": "2026-07-03T10:00:00+03:00", "mine": True},
+        {"text": "Когда вам удобно созвониться?", "ts": "2026-07-04T11:00:00+03:00"},
+    ]},
+}
+
+
+def _live_crm_tripwire(*_args, **_kwargs):
+    """Растяжка на ЖИВОЕ CRM-состояние: сборка ленты обязана читать только подменённое.
+
+    ИНЦИДЕНТ-КЛАСС «второй держатель зависимости» (аудит 08.08.2026, находка 59): фикстура
+    подменяла четыре метода `store`, а `feed.py::_last_hr_replies` ходил в пятый —
+    `store.chat_messages()`, — и поле `hr_ts` считалось из переписки ЗАПУСКАЮЩЕГО."""
+    raise AssertionError("build_feed прочитал живой data/chat_messages.json — "
+                         "подмена feed.store.chat_messages потеряна")
 
 
 class _Repo:
@@ -78,20 +98,28 @@ def _const(js_text: str, name: str):
     raise KeyError(name)
 
 
-def _build_feed_data(out_dir, **config_overrides):
-    """Собрать ленту в `out_dir` с подменёнными зависимостями и вернуть текст feed-data.js.
+def _build_feed_files(out_dir, records=None, chats=None, **config_overrides):
+    """Собрать ленту в `out_dir` с подменёнными зависимостями -> (feed-data.js, feed.html).
 
     Свой MonkeyPatch-контекст: фикстура `monkeypatch` функциональная и в модульную не годится.
     `config_overrides` — атрибуты модуля `feed` (константы конфига), чтобы проверять инжекцию
-    настроек профиля, не трогая файл на диске."""
+    настроек профиля, не трогая файл на диске.
+
+    Подменяются ВСЕ пять держателей CRM-состояния (`store.statuses/forms/form_cache/marks/
+    chat_messages`) плюс растяжка на настоящий загрузчик переписки: `store.chat_messages` —
+    статический делегат в `followup.load_chat_messages`, и патч надо ставить у ТОГО
+    держателя, через которого идёт вызов (`feed.store`), а растяжка ловит промах."""
     data = out_dir / "data"
-    records = _records()
+    records = _records() if records is None else records
+    chats = {} if chats is None else chats
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(feed, "vacancy_repository", lambda: _Repo(records))
         mp.setattr(feed.store, "statuses", lambda: dict(_STATUSES))
         mp.setattr(feed.store, "forms", lambda: dict(_FORMS))
         mp.setattr(feed.store, "form_cache", lambda: dict(_FORM_CACHE))
         mp.setattr(feed.store, "marks", lambda: dict(_MARKS))
+        mp.setattr(feed.store, "chat_messages", lambda: dict(chats))
+        mp.setattr(followup, "load_chat_messages", _live_crm_tripwire)
         mp.setattr(feed.rates, "get_rates", lambda: dict(_FX))
         mp.setattr(feed.shutil, "which", lambda _name: None)   # esbuild off -> не собираем feed.js
         mp.setattr(feed, "DATA_DIR", data)
@@ -99,29 +127,60 @@ def _build_feed_data(out_dir, **config_overrides):
         for name, value in config_overrides.items():
             mp.setattr(feed, name, value)
         feed.build_feed()
-        return (data / "feed-data.js").read_text(encoding="utf-8")
+        return ((data / "feed-data.js").read_text(encoding="utf-8"),
+                (data / "feed.html").read_text(encoding="utf-8"))
+
+
+def _build_feed_data(out_dir, records=None, chats=None, **config_overrides):
+    """Только текст feed-data.js (большинству тестов HTML не нужен)."""
+    return _build_feed_files(out_dir, records, chats, **config_overrides)[0]
 
 
 @pytest.fixture(scope="module")
-def feed_globals(tmp_path_factory):
-    """Собрать ленту один раз (build_feed дорогой) и вернуть распарсенный feed-data.js."""
-    js_text = _build_feed_data(tmp_path_factory.mktemp("feed"))
+def _feed_bundle(tmp_path_factory):
+    """Текст feed-data.js: `build_feed` дорогой, поэтому собирается один раз на модуль."""
+    return _build_feed_data(tmp_path_factory.mktemp("feed"), chats=_CHATS)
 
-    vac_list = _const(js_text, "VACANCIES")
+
+@pytest.fixture
+def feed_globals(_feed_bundle):
+    """Разобранный feed-data.js — СВОИ объекты на каждый тест.
+
+    Раньше фикстура была модульной и раздавала одни и те же словари 40+ тестам: тест,
+    поправивший карточку «чтобы проверить», молча менял вход соседям, а зависимость от
+    порядка делала такую поломку невоспроизводимой (аудит 08.08.2026, находка 64).
+    Разбор JSON заново стоит доли миллисекунды, сборка ленты — нет."""
+    vac_list = _const(_feed_bundle, "VACANCIES")
     return {
-        "text": js_text,
+        "text": _feed_bundle,
         "vacancies_by_id": {v["id"]: v for v in vac_list},
-        "sal_max": _const(js_text, "SAL_MAX"),
-        "saved_marks": _const(js_text, "SAVED_MARKS"),
-        "fx_rates": _const(js_text, "FX_RATES"),
-        "fx_alias": _const(js_text, "FX_ALIAS"),
+        "sal_max": _const(_feed_bundle, "SAL_MAX"),
+        "saved_marks": _const(_feed_bundle, "SAVED_MARKS"),
+        "fx_rates": _const(_feed_bundle, "FX_RATES"),
+        "fx_alias": _const(_feed_bundle, "FX_ALIAS"),
     }
+
+
+@pytest.mark.parametrize("case", ["портит карточку соседу", "обязан получить чистую"])
+def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
+    """Каждый тест получает СВОИ словари, а не общий на модуль (находка 64).
+
+    Первый случай портит имя вакансии, второй обязан увидеть исходное. Модульная фикстура
+    раздавала одни и те же объекты 40+ тестам: «поправил карточку, чтобы проверить» молча
+    меняло вход соседям, и поломка зависела от порядка запуска."""
+    assert feed_globals["vacancies_by_id"]["v1"]["name"] == "Python Backend"
+    feed_globals["vacancies_by_id"]["v1"]["name"] = "ИСПОРЧЕНО СОСЕДОМ"
 
 
 @pytest.mark.parametrize("name", [
     "VACANCIES", "SAL_MAX", "SAVED_MARKS", "FX_RATES", "FX_ALIAS",
-    "STATE_LABELS_PY", "RESUME_CORE_PY", "RESUME_EXPS_PY", "MARK_VALUES_PY",
+    "STATE_LABELS_PY", "RESUME_CORE_PY", "MARK_VALUES_PY",
     "CHAT_FROZEN_PY",
+    # формат работы: подписи и «что считается удалёнкой» — из домена (Schedule), 08.08.2026.
+    # RESUME_EXPS_PY здесь БОЛЬШЕ НЕТ: мост был мёртвым (жёсткий фильтр по грейду убран
+    # 07.08, читателя в JS не осталось), а его вычисление роняло сборку на опечатке в
+    # resume_profile.json::exp_ids — см. test_feed_survives_unknown_exp_id_in_profile.
+    "SCHED_LABELS_PY", "REMOTE_LIKE_PY",
     # PORTAL_SITES_PY добавлен 01.08.2026 и в этот список НЕ попал — страж отставал от
     # кода почти неделю (найдено аудитом 07.08). Он и есть мост подписей порталов в JS,
     # без которого talanto и getmatch подписывались как «hh.ru».
@@ -183,7 +242,8 @@ def test_frozen_chat_kinds_injected_from_python(feed_globals):
     ("v1", "sal_from", 200_000),
     ("v1", "sal_mid", 200_000),
     ("v1", "currency", "RUR"),
-    ("v1", "exp", "1–3 года"),          # Experience.label (EXP_LABELS['between1And3'])
+    ("v1", "exp", "1–3 года"),          # Experience.label (EXP_LABELS['between1And3']) — ПОКАЗ
+    ("v1", "exp_id", "between1And3"),   # Experience.hh_id — КОД для чипов и скоринга resume.js
     ("v1", "schedule", "remote"),
     ("v1", "techs", ["Python", "Docker"]),
     ("v1", "remote_any", True),         # schedule=remote
@@ -196,6 +256,7 @@ def test_frozen_chat_kinds_injected_from_python(feed_globals):
     ("v2", "sal_mid", 3_000),
     ("v2", "currency", "USD"),
     ("v2", "exp", "3–6 лет"),
+    ("v2", "exp_id", "between3And6"),
     ("v2", "schedule", "fullDay"),
     ("v2", "remote_any", False),        # office + текст без маркеров удалёнки
     ("v2", "role", "Аналитик"),
@@ -204,9 +265,25 @@ def test_frozen_chat_kinds_injected_from_python(feed_globals):
     ("v2", "needs_form", True),         # v2 в store.forms
     ("v2", "form_dead", False),         # кеш ok -> живая
     ("v2", "source", "hirify"),
+    # ts последнего ЖИВОГО ответа HR: ботовый (10.07) и наш (03.07) не считаются
+    ("v1", "hr_ts", "2026-07-04T11:00:00+03:00"),
+    ("v2", "hr_ts", ""),                # переписки нет
 ])
 def test_vacancy_card_field_survives_roundtrip(vid, field, expected, feed_globals):
     assert feed_globals["vacancies_by_id"][vid][field] == expected
+
+
+@pytest.mark.parametrize("vid", ["v1", "v2"])
+def test_hr_reply_ts_is_empty_without_chats(vid, tmp_path):
+    """Без переписки поле пустое у ВСЕХ карточек.
+
+    РЕГРЕССИЯ 08.08.2026 (находка 59, тот же класс, что funnel-инцидент того же дня):
+    `feed.py::_last_hr_replies` зовёт `store.chat_messages()`, а фикстура сборки его не
+    подменяла — `hr_ts` считался из CRM-состояния запускающего, и результат теста зависел
+    от того, кто ответил разработчику в чатах HH. Растяжка `_live_crm_tripwire` держит
+    подмену на месте, этот тест — что подменённое пусто именно пусто."""
+    cards = {v["id"]: v for v in _const(_build_feed_data(tmp_path), "VACANCIES")}
+    assert cards[vid]["hr_ts"] == ""
 
 
 def test_mark_values_bridge_matches_python(feed_globals):
@@ -221,9 +298,79 @@ def test_freshness_and_id_fields_present_in_card(field, feed_globals):
     assert field in feed_globals["vacancies_by_id"]["v1"]
 
 
-def test_sal_max_is_largest_card_mid(feed_globals):
-    # SAL_MAX = верх ползунка зарплаты -> максимальная серединка среди карточек.
-    assert feed_globals["sal_max"] == 200_000
+def test_sal_max_is_computed_in_rubles(feed_globals):
+    """SAL_MAX — верх ползунка В РУБЛЯХ, а не «максимум как пришло» (регрессия 08.08.2026).
+
+    В выдаче v1 = 200 000 RUR и v2 = 3 000 USD. При курсе USD=1.0 / RUB=100.0 это 200 000
+    и 300 000 рублей, значит верх шкалы 300 000. Сырой максимум дал бы 200 000: сравнивались
+    числа разных валют, из-за чего одна узбекская вилка задирала шкалу до 35 млн, а
+    `main.js::rescaleSalary` конвертировал получившееся число ещё раз, уже как рубли."""
+    assert feed_globals["sal_max"] == 300_000
+
+
+def test_sal_max_ignores_single_outlier(tmp_path):
+    """Верх шкалы — 99-й перцентиль, поэтому одиночный выброс её не задирает.
+
+    Сто вакансий по 100 000 ₽ и одна на 35 000 000 ₽: перцентиль (nearest-rank, округление
+    вверх до шага 10 000) даёт 100 000. По максимуму рабочий диапазон занимал бы 0.3% длины
+    ползунка, и фильтр по зарплате был бы неуправляем."""
+    records = [
+        _record(f"n{i}", name="Backend", city="Москва", employer="Acme", source="hh",
+                mid=100_000, currency="RUR", exp="between1And3", schedule="remote",
+                techs=["Python"], role=Role.BACKEND, url="https://hh.ru/vacancy/1")
+        for i in range(100)
+    ]
+    records.append(
+        _record("rich", name="Backend", city="Москва", employer="Acme", source="hh",
+                mid=35_000_000, currency="RUR", exp="between1And3", schedule="remote",
+                techs=["Python"], role=Role.BACKEND, url="https://hh.ru/vacancy/2"))
+    assert _const(_build_feed_data(tmp_path, records=records), "SAL_MAX") == 100_000
+
+
+def test_sal_max_without_any_salary_falls_back_to_default(tmp_path):
+    # Вилок нет ни у одной карточки -> шкала не схлопывается в ноль, а берёт дефолтный верх.
+    records = [_record("free", name="Backend", city="Москва", employer="Acme", source="hh",
+                       mid=None, currency="", exp="between1And3", schedule="remote",
+                       techs=["Python"], role=Role.BACKEND, url="https://hh.ru/vacancy/3")]
+    assert _const(_build_feed_data(tmp_path, records=records), "SAL_MAX") == 500_000
+
+
+def test_schedule_bridge_carries_domain_labels_and_remote_like(feed_globals):
+    """Подписи формата и «что считается удалёнкой» едут из домена (08.08.2026).
+
+    Ожидаемое — литералы из `domain/schedule.py`, а не `{s.hh_code: s.label ...}`: иначе
+    тест повторил бы реализацию и прошёл при любой её ошибке. Раньше моста не было вовсе,
+    и `model.js::SCHED_LABELS` совпадал с доменом ровно в одном коде из трёх."""
+    assert _const(feed_globals["text"], "SCHED_LABELS_PY") == {
+        "remote": "Удалённо", "flexible": "Гибрид", "fullDay": "Офис",
+    }
+    assert _const(feed_globals["text"], "REMOTE_LIKE_PY") == ["remote", "flexible"]
+
+
+def test_exp_chips_are_rendered_from_exp_labels(tmp_path):
+    """Чипы «Опыт» рендерятся из `config.EXP_LABELS`, а не четырьмя литералами в шаблоне.
+
+    Подписи грейдов жили в трёх местах сразу (EXP_LABELS -> feed.html.j2 -> resume.js), и
+    правка EXP_LABELS молча ломала и чипы, и скоринг (аудит 08.08.2026). Подменяем словарь
+    подписей: чип обязан приехать с новой подписью и с КОДОМ в value — по коду фильтр
+    сравнивает `exp_id` карточки, поэтому переименование подписи выдачу не меняет."""
+    _, html = _build_feed_files(tmp_path, EXP_LABELS={"noExperience": "Стажёр",
+                                                      "moreThan6": "Сеньор"})
+    assert '<input type="checkbox" class="lang-cb exp-cb" id="exp-0" value="noExperience">' in html
+    assert '<label class="lang-label" for="exp-0">Стажёр</label>' in html
+    assert '<input type="checkbox" class="lang-cb exp-cb" id="exp-1" value="moreThan6">' in html
+    assert '<label class="lang-label" for="exp-1">Сеньор</label>' in html
+    assert "1–3 года" not in html          # старых литералов в шаблоне не осталось
+
+
+def test_dead_resume_exps_bridge_is_gone(feed_globals):
+    """`RESUME_EXPS_PY` больше не эмитится (08.08.2026).
+
+    Мост был мёртвым: жёсткий фильтр по грейду убран 07.08, читателя в JS не осталось
+    (`grep '_PY' src/`), зато его вычисление `[EXP_LABELS[e] for e in RESUME_EXP_IDS]`
+    роняло `hh.py feed`/`serve` с KeyError на опечатке в `resume_profile.json::exp_ids`
+    («1-3 года» с дефисом вместо en-dash). Сборка больше не читает профиль ради подписей."""
+    assert "RESUME_EXPS_PY" not in feed_globals["text"]
 
 
 def test_saved_marks_pass_through_unchanged(feed_globals):

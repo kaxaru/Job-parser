@@ -14,6 +14,20 @@ from hrwork.config import REPORTS_DIR, log
 from hrwork.domain import freshness
 from hrwork.domain.models import Vacancy
 
+# Файлы, которыми ВЛАДЕЕТ ReportWriter: `cleanup` удаляет только их. Каталог вывода
+# приходит извне (по-портальные срезы дашборда), и удаление «всех *.csv, кроме
+# записанных» снесло бы там чужое — начиная с `13_company_funnel.csv`, который пишет
+# `funnel.py` мимо реестра отчётов. Список продублирован относительно имён в отчётных
+# функциях осознанно: страж `test_reporter.py::test_managed_csv_lists_exactly_the_reports_
+# writer_produces` не даёт им разъехаться.
+MANAGED_CSV: frozenset[str] = frozenset({
+    '01_cities.csv', '02_tech_by_city.csv', '03_salary_by_lang.csv',
+    '04_salary_city_lang.csv', '05_top_stacks.csv', '06_salary_by_exp.csv',
+    '07_python_stack.csv', '08_js_stack.csv', '09_remote_by_city.csv',
+    '10_freshness_by_city.csv', '11_companies.csv', '11c_company_sizes.csv',
+    '12_sources.csv',
+})
+
 
 def _fmt(n: int | None) -> str:
     return f'{n:,}'.replace(',', ' ') if n is not None else '—'
@@ -50,13 +64,21 @@ class ReportWriter:
         log.info('-> {}', path)
 
     def cleanup(self) -> None:
-        """Удалить .csv, НЕ записанные в этом прогоне (отчёт стал условным и не сгенерился).
-        Только в дефолтном каталоге: по-портальные подкаталоги пишутся заново, а удаление
-        по чужому каталогу рисковало бы снести данные другого среза."""
-        if self.out_dir != REPORTS_DIR:
-            return
-        for path in self.out_dir.iterdir():
-            if path.is_file() and path.suffix == '.csv' and path.name not in self.written:
+        """Удалить отчёты, НЕ записанные в этом прогоне (отчёт стал условным и не сгенерился).
+
+        Работает в ЛЮБОМ каталоге вывода, включая по-портальный. До 08.08.2026 чистка
+        молча выходила при `out_dir != REPORTS_DIR`, и у портала, чей отчёт в этом прогоне
+        не собрался, оставался файл ПРОШЛОГО прогона: `dashboard.py::build_dashboard`
+        считает наличие CSV признаком «данные есть», и вкладка показывала старые числа
+        без признака устаревания.
+
+        Удаляем ТОЛЬКО своё — имена из `MANAGED_CSV`. Каталог приходит извне, и правило
+        «любой *.csv, кроме записанных» снесло бы там чужие данные: `13_company_funnel.csv`
+        (его пишет `funnel.py`), ручные выгрузки, что угодно ещё."""
+        if not self.out_dir.exists():
+            return                                   # прогон не записал ни одного отчёта
+        for path in sorted(self.out_dir.iterdir()):
+            if path.name in MANAGED_CSV and path.name not in self.written and path.is_file():
                 path.unlink()
                 log.info('Удалён устаревший отчёт: {}', path)
 

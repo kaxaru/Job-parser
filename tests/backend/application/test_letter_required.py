@@ -31,8 +31,10 @@ CAND = Candidate(id="135096772", name="Python-разработчик",
 class _Locator:
     """Локатор Playwright в объёме, который трогает _fill_letter_if_required."""
 
-    def __init__(self, count: int = 1, disabled: bool = False, boom: bool = False):
+    def __init__(self, count: int = 1, disabled: bool = False, boom: bool = False,
+                 fill_boom: bool = False):
         self._count, self._disabled, self._boom = count, disabled, boom
+        self._fill_boom = fill_boom
         self.filled: str | None = None
 
     @property
@@ -48,6 +50,8 @@ class _Locator:
         return self._disabled
 
     def fill(self, text: str, timeout: int | None = None) -> None:
+        if self._fill_boom:
+            raise RuntimeError("Timeout 3000ms exceeded")
         self.filled = text
 
 
@@ -97,3 +101,39 @@ def test_blank_cover_text_falls_back_to_template():
     submit, letter = _Locator(disabled=True), _Locator()
     autoclick._fill_letter_if_required(_Page(submit, letter), CAND, cover_text="   \n  ")
     assert letter.filled == EXPECTED_TEMPLATE_LETTER
+
+
+# ── Граница suppress: чужой DOM подавляем, СВОЮ ошибку — нет (аудит 08.08.2026) ─────────
+# Пока `cover.build_cover` лежал под тем же общим suppress, что и обращения к DOM, наш
+# AttributeError давал молчаливый False: письмо не вписано -> кнопка осталась disabled ->
+# «отклик НЕ подтверждён за 10с» -> SKIP, неотличимый от проблемы HH. Этот класс ошибки
+# уже стоил трёх недель (docs/errors.md, 03-04.08.2026), поэтому он обязан быть громким.
+
+def test_our_error_building_the_letter_is_not_swallowed(monkeypatch):
+    submit, letter = _Locator(disabled=True), _Locator()
+
+    def boom(cand, mode="template"):
+        raise AttributeError("'Candidate' object has no attribute 'desc'")
+
+    monkeypatch.setattr(autoclick.cover, "build_cover", boom)
+    with pytest.raises(AttributeError):
+        autoclick._fill_letter_if_required(_Page(submit, letter), CAND)
+    assert letter.filled is None
+
+
+def test_dom_failure_while_filling_stays_suppressed():
+    # чужое: страница может рухнуть в момент записи — это не наш дефект, прогон продолжается
+    submit, letter = _Locator(disabled=True), _Locator(fill_boom=True)
+    assert autoclick._fill_letter_if_required(_Page(submit, letter), CAND) is False
+    assert letter.filled is None
+
+
+def test_letter_is_not_built_when_the_button_is_active(monkeypatch):
+    # письмо строится ЛЕНИВО: там, где HH пускает и так, режим 'llm' не тратит запрос
+    submit, letter = _Locator(disabled=False), _Locator()
+
+    def forbidden(cand, mode="template"):
+        raise AssertionError("письмо не должно строиться: кнопка активна")
+
+    monkeypatch.setattr(autoclick.cover, "build_cover", forbidden)
+    assert autoclick._fill_letter_if_required(_Page(submit, letter), CAND) is False

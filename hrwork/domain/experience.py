@@ -10,6 +10,16 @@ from collections.abc import Iterable
 from enum import Enum
 from typing import Any
 
+# КОМПРОМИСС (08.08.2026): доменный модуль тянет `hrwork.config` ради ОДНОГО словаря
+# подписей EXP_LABELS (используется только в `Experience.label`). Импорт `config` не
+# бесплатен: на нём делаются DATA_DIR.mkdir()/LOGS_DIR.mkdir(), load_dotenv,
+# log.remove()+log.add() и чтение resume_profile.json — то есть `import
+# hrwork.domain.experience` создаёт каталоги и переконфигурирует глобальный loguru,
+# вопреки обещанию docs/domain.md «ни сети, ни диска».
+# Оставлено сознательно: перенос подписей в домен раздвоил бы источник (подписи читает и
+# конфиг-потребитель), а это тот же класс дефекта, что split-brain словарей FreshnessClass.
+# Развязка — вынос чистых констант в модуль без side-effect'ов, см. docs/domain.md
+# «Известные компромиссы».
 from hrwork.config import EXP_LABELS
 
 
@@ -103,6 +113,12 @@ class Experience(Enum):
 #   * ключи-подстроки друг друга («mid» внутри «middle»/«midweight») обязаны вести в ОДИН
 #     уровень, иначе результат зависел бы от позиции. Сейчас все три -> BETWEEN_1_3;
 #     добавляя ключ, проверь, не является ли он подстрокой соседа с другим уровнем.
+#
+# Эта таблица говорит, сколько лет опыта требует РАБОТОДАТЕЛЬ, и НЕ обязана совпадать с
+# `grade.py::_BY_EXP` (какую свою вилку называть по годам — самооценка владельца профиля).
+# Расхождение намеренное и разобрано в комментарии у `_BY_EXP`; его набор пришпилен стражем
+# `test_grade.py::test_grade_label_roundtrip_matches_the_title_dictionary`. Добавляя сюда
+# ключ, который встречается и в тайтлах (`grade.py::_TITLE_RX`), прогони этот тест.
 _GRADE_TO_EXP: list[tuple[str, Experience]] = [
     ("trainee",     Experience.NONE),
     ("intern",      Experience.NONE),       # internship (themuse), intern (jobicy)

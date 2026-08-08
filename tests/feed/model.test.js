@@ -5,19 +5,23 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  SCHED_LABELS,
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
-  countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
+  countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, isRemoteLike,
+  matchColor, matchInk,
   safeUrl,
   isDiscard, isInvited,
   journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
 } from '../../src/feed/model.js';
 
-/* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте. */
+/* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте.
+   exp — подпись для показа, exp_id — доменный код грейда (по нему идут чипы и скоринг). */
 function vac(over = {}) {
   return {
     id: '1', name: 'Python Backend', employer: 'Acme', url: '', city: 'Москва',
     sal_from: null, sal_to: null, sal_mid: null, currency: 'RUR',
-    exp: '1–3 года', schedule: 'remote', techs: ['Python'], remote_any: true,
+    exp: '1–3 года', exp_id: 'between1And3',
+    schedule: 'remote', techs: ['Python'], remote_any: true,
     role: 'Backend', status: null, needs_form: false,
     ...over,
   };
@@ -405,9 +409,9 @@ describe('matchColor / matchInk — светофор, а не термометр
 
 describe('filterVacancies — фильтрация + сортировка (чистая)', () => {
   const data = [
-    vac({ id: 'a', name: 'Python backend', employer: 'Альфа', techs: ['Python'], sal_mid: 200000, city: 'Москва', exp: '1–3 года' }),
-    vac({ id: 'b', name: 'Java dev', employer: 'Сбер', techs: ['Java'], sal_mid: 300000, city: 'Казань', exp: '3–6 лет', remote_any: false, schedule: 'fullDay' }),
-    vac({ id: 'c', name: 'Go SRE', employer: 'Яндекс', techs: ['Go'], sal_mid: null, city: 'Москва', exp: '6+ лет' }),
+    vac({ id: 'a', name: 'Python backend', employer: 'Альфа', techs: ['Python'], sal_mid: 200000, city: 'Москва', exp: '1–3 года', exp_id: 'between1And3' }),
+    vac({ id: 'b', name: 'Java dev', employer: 'Сбер', techs: ['Java'], sal_mid: 300000, city: 'Казань', exp: '3–6 лет', exp_id: 'between3And6', remote_any: false, schedule: 'fullDay' }),
+    vac({ id: 'c', name: 'Go SRE', employer: 'Яндекс', techs: ['Go'], sal_mid: null, city: 'Москва', exp: '6+ лет', exp_id: 'moreThan6' }),
   ];
   const ids = arr => arr.map(v => v.id);
 
@@ -419,8 +423,13 @@ describe('filterVacancies — фильтрация + сортировка (чи�
   it('фильтр по языкам', () => {
     assert.deepEqual(ids(filterVacancies(data, flt({ langs: new Set(['Java']) }))), ['b']);
   });
-  it('фильтр по опыту', () => {
-    assert.deepEqual(ids(filterVacancies(data, flt({ exps: new Set(['6+ лет']) }))), ['c']);
+  /* Чип опыта несёт КОД грейда, а не подпись: подписи жили в трёх местах (config.EXP_LABELS,
+     шаблон, resume.js) и правка любой из них молча ломала отбор — аудит 08.08.2026. */
+  it('фильтр по опыту — по коду грейда', () => {
+    assert.deepEqual(ids(filterVacancies(data, flt({ exps: new Set(['moreThan6']) }))), ['c']);
+  });
+  it('подпись грейда чипом уже не ловится', () => {
+    assert.deepEqual(ids(filterVacancies(data, flt({ exps: new Set(['6+ лет']) }))), []);
   });
   it('resumeOnly оставляет только подходящие', () => {
     assert.deepEqual(ids(filterVacancies(data, flt({ resumeOnly: true }))), ['a']);
@@ -456,6 +465,62 @@ describe('filterVacancies — фильтрация + сортировка (чи�
       filterVacancies(eq, flt({ matchSort: true, sort: 'desc' })).map(v => v.id),
       ['hi', 'mid', 'lo'],
     );
+  });
+});
+
+/* Решение 08.08.2026: «удалёнка» = remote + гибрид (domain/schedule.py::is_remote_like),
+   один ответ на ленту, отчёты и графики. До него кнопка «Офис» пропускала flexible, а
+   analyzer.py::_REMOTE считал его удалёнкой — 16 857 вакансий в двух бакетах сразу. */
+describe('filterVacancies — формат работы: гибрид считается удалёнкой', () => {
+  const data = [
+    vac({ id: 'rem', schedule: 'remote' }),
+    vac({ id: 'hyb', schedule: 'flexible' }),
+    vac({ id: 'off', schedule: 'fullDay' }),
+  ];
+  const ids = arr => arr.map(v => v.id);
+
+  it('«Удалённо» показывает и remote, и гибрид', () => {
+    assert.deepEqual(ids(filterVacancies(data, flt({ schedule: 'remote' }))), ['rem', 'hyb']);
+  });
+  it('«Офис» гибрид НЕ показывает', () => {
+    assert.deepEqual(ids(filterVacancies(data, flt({ schedule: 'office' }))), ['off']);
+  });
+  it('«Все» показывает все три формата', () => {
+    assert.deepEqual(ids(filterVacancies(data, flt({ schedule: 'all' }))), ['rem', 'hyb', 'off']);
+  });
+  it('пустой формат (призрак из журнала) — не удалёнка', () => {
+    assert.equal(isRemoteLike(''), false);
+  });
+  it('remote и flexible — удалёнка, fullDay — нет', () => {
+    assert.equal(isRemoteLike('remote'), true);
+    assert.equal(isRemoteLike('flexible'), true);
+    assert.equal(isRemoteLike('fullDay'), false);
+  });
+});
+
+/* Фолбэк подписей формата обязан ДОСЛОВНО совпадать с Schedule.label (Python — источник).
+   Совпадение с Python пришпилено стражем tests/backend/presentation/test_feed_bridge.py;
+   здесь фиксируем сами литералы и то, что мёртвых кодов больше нет. */
+describe('SCHED_LABELS — подписи формата (офлайн-фолбэк)', () => {
+  it('три кода домена с подписями из Schedule.label', () => {
+    assert.deepEqual(SCHED_LABELS, {
+      remote: 'Удалённо', flexible: 'Гибрид', fullDay: 'Офис',
+    });
+  });
+});
+
+/* Регрессия 08.08.2026: офлайн-фолбэк STATE_LABELS разъехался с chat.py по двум ключам
+   («Звонок» вместо «Телефон-интервью», «Закрыта» вместо «Вакансия закрыта»), и JS-тесты
+   закрепляли ФОЛБЭК, а не источник. Подпись видна пользователю на бейдже карточки. */
+describe('statusInfo — подписи статусов из фолбэка совпадают с Python', () => {
+  it('PHONE_INTERVIEW -> «Телефон-интервью»', () => {
+    assert.equal(statusInfo(vac({ status: 'PHONE_INTERVIEW' })).label, 'Телефон-интервью');
+  });
+  it('DISCARD_VACANCY_CLOSED -> «Вакансия закрыта»', () => {
+    assert.equal(statusInfo(vac({ status: 'DISCARD_VACANCY_CLOSED' })).label, 'Вакансия закрыта');
+  });
+  it('DISCARD_BY_APPLICANT -> «Вы отказались»', () => {
+    assert.equal(statusInfo(vac({ status: 'DISCARD_BY_APPLICANT' })).label, 'Вы отказались');
   });
 });
 
@@ -605,6 +670,34 @@ describe('journalById — свёртка журнала откликов', () =>
 
   it('записи без id отбрасываются', () => {
     assert.deepEqual(journalById([{ ts: '2026-07-31T13:13:44+04:00' }, null]), {});
+  });
+
+  /* Регрессия 08.08.2026: дубли схлопывались сравнением ISO-СТРОК, а в журнале сосуществуют
+     смещения +04:00 (append_applied) и +03:00 (метки HH). «09:30+03:00» = 06:30Z позже, чем
+     «10:00+04:00» = 06:00Z, но строкой меньше — «первым откликом» выбирался поздний. */
+  it('разные смещения: побеждает реально РАННИЙ момент, а не меньшая строка', () => {
+    const byId = journalById([
+      { id: '7', ts: '2026-07-20T09:30:00+03:00', via: 'hh' },      // 06:30Z
+      { id: '7', ts: '2026-07-20T10:00:00+04:00', via: 'cron' },    // 06:00Z — раньше
+    ]);
+    assert.equal(byId['7'].ts, '2026-07-20T10:00:00+04:00');
+    assert.equal(byId['7'].via, 'cron');
+  });
+
+  it('порядок записей не влияет на результат', () => {
+    const byId = journalById([
+      { id: '7', ts: '2026-07-20T10:00:00+04:00', via: 'cron' },
+      { id: '7', ts: '2026-07-20T09:30:00+03:00', via: 'hh' },
+    ]);
+    assert.equal(byId['7'].via, 'cron');
+  });
+
+  it('битая метка не вытесняет разобранную', () => {
+    const byId = journalById([
+      { id: '7', ts: '2026-07-20T10:00:00+04:00', via: 'cron' },
+      { id: '7', ts: 'не-дата', via: 'мусор' },
+    ]);
+    assert.equal(byId['7'].via, 'cron');
   });
 });
 

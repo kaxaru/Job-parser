@@ -33,7 +33,7 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://jobicy.com"
@@ -75,8 +75,19 @@ def _grades(it: dict[str, Any]) -> list[str]:
 
 
 def _city(it: dict[str, Any]) -> str:
-    """География найма. «Anywhere» оставляем как есть — это лучший случай и он читается."""
+    """География найма («USA», «EMEA», «APAC, Australia»). «Anywhere» = места нет -> та же
+    доменная REMOTE_CITY, что у остальных порталов.
+
+    Раньше «Anywhere» оставалось как есть, «потому что читается». Намеренность устарела:
+    подпись города пользователю видна только в карточке, а КЛЮЧОМ она работает в фасете
+    городов ленты и в срезе 01_cities — и там это был отдельный бакет того же состояния
+    рядом с «Remote»/«Worldwide»/«Удалённо» (замер по кешу 08.08.2026: jobicy «Anywhere» 7
+    записей при 12 268 в бакете Remote). Ровно тот дефект, ради которого REMOTE_CITY
+    и заводилась. Уточнённая география («EMEA», «Canada, USA») НЕ сводится — там есть
+    ограничение найма, и терять его нельзя."""
     geo = " ".join(str(it.get("jobGeo") or "").split())
+    if geo.lower() == "anywhere":
+        return REMOTE_CITY
     return geo or REMOTE_CITY
 
 
@@ -153,7 +164,9 @@ class JobicySource(Source):
             for it in chunk:
                 if it.get("id") is not None:
                     uniq.setdefault(it["id"], it)
-        recs = [_normalize(it) for it in uniq.values()]
+        # Нормализация — через normalize_each: кривая карточка портала не должна ронять
+        # источник целиком (иначе санити-гейт видит нулевой срез и морозит кеш всех порталов).
+        recs = normalize_each(uniq.values(), _normalize, source="jobicy")
         out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
         log.info("jobicy: собрано {} (индустрий {}, ответов {}, дублей {}, не-IT отсеяно {})",
                  len(out), len(JOBICY_INDUSTRIES), total, total - len(uniq), len(recs) - len(out))

@@ -3,6 +3,17 @@ import hashlib
 import re
 from typing import Any
 
+# КОМПРОМИСС (08.08.2026): домен зависит от `hrwork.config` ради словарей классификации —
+# ROLE_PATTERNS (регексы ролей), TECH_PATTERNS (регексы стека), LANG_KEYS (какие теги
+# считаются ЯЗЫКОМ для фолбэка `_detect_role`). Это ПОЛЬЗОВАТЕЛЬСКАЯ настройка, её место
+# в конфиге, а не в ядре. Цена: `config` на импорте делает DATA_DIR.mkdir()/LOGS_DIR.mkdir(),
+# load_dotenv, log.remove()+log.add() и читает resume_profile.json, поэтому
+# `import hrwork.domain.parsing` в чистом окружении создаёт data/ и logs/ и переконфигурирует
+# глобальный loguru — вопреки обещанию docs/domain.md «ни сети, ни диска, ни HTML».
+# Убрать импорт здесь нельзя без каскада: `_ROLE_RX` резолвит ключи ROLE_PATTERNS НА ИМПОРТЕ
+# (fail-fast на дрейф конфига), а `_build_screened()` на импорте же разбирает TECH_PATTERNS.
+# Развязка — вынос чистых констант в модуль без side-effect'ов, см. docs/domain.md
+# «Известные компромиссы».
 from hrwork.config import LANG_KEYS, ROLE_PATTERNS, TECH_PATTERNS
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy

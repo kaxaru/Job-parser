@@ -101,15 +101,28 @@ const TC = {
 };
 export function tagClr(t) { return TC[t] || ['#3a3d4a', '#bbb']; }
 
-export const SCHED_LABELS = {
-  fullDay: 'Полный день', remote: 'Удалённо', flexible: 'Гибкий график',
-  shift: 'Сменный', flyInFlyOut: 'Вахта',
+/* Подписи формата работы. Единый источник — Python (domain/schedule.py::Schedule.label),
+   инжектится как SCHED_LABELS_PY; хардкод ниже — ДОСЛОВНЫЙ фолбэк для офлайна/тестов
+   (страж «фолбэк == инжект» — tests/backend/presentation/test_feed_bridge.py).
+   Раньше моста не было вовсе: из трёх кодов подписи совпадали в одном, а коды shift и
+   flyInFlyOut были мёртвыми — домен их не производит (в Schedule три члена). */
+export const SCHED_LABELS = (typeof SCHED_LABELS_PY !== 'undefined' && SCHED_LABELS_PY) || {
+  remote: 'Удалённо', flexible: 'Гибрид', fullDay: 'Офис',
 };
+
+/* Что считается удалёнкой. Единый источник — Python (schedule.py::REMOTE_LIKE_CODES),
+   инжектится как REMOTE_LIKE_PY; хардкод — дословный фолбэк.
+   Решение 08.08.2026: remote-like = remote + гибрид. До него ответов было два — кнопка
+   «Офис» пропускала flexible в офисный бакет, а analyzer.py::_REMOTE считал его удалёнкой;
+   16 857 вакансий были одновременно «офис» в ленте и «удалёнка» в отчётах и графиках. */
+const REMOTE_LIKE = new Set(
+  (typeof REMOTE_LIKE_PY !== 'undefined' && REMOTE_LIKE_PY) || ['remote', 'flexible']);
+export const isRemoteLike = code => REMOTE_LIKE.has(code);
 
 /* Словарь пометок — единый источник в Python (marks.py::MARK_VALUES), инжектится через
    feed-data.js (MARK_VALUES_PY). Хардкод — фолбэк для офлайна/тестов. Дублировать значения
    нельзя: так уже разъезжались словари (инцидент "discard" 2026-07-22). */
-export const MARK_VALUES = (typeof MARK_VALUES_PY !== 'undefined' && MARK_VALUES_PY)
+const MARK_VALUES = (typeof MARK_VALUES_PY !== 'undefined' && MARK_VALUES_PY)
   || ['applied', 'rejected'];
 const MARK_BTN_META = {
   applied:  { label: '✓ Отклик', title: 'Отметить/снять «откликнулся»' },
@@ -220,17 +233,17 @@ export function ageColor(age, paper = '#1a1d27') {
 /* ── Статус отклика из API HH (v.status = currentApplicantState) ──
    Подписи приходят из Python (chat.STATE_LABELS) через feed-data.js — единый источник.
    Хардкод ниже — фолбэк для офлайна/тестов (feed-data.js не подгружен). */
-export const STATE_LABELS = (typeof STATE_LABELS_PY !== 'undefined' && STATE_LABELS_PY) || {
+const STATE_LABELS = (typeof STATE_LABELS_PY !== 'undefined' && STATE_LABELS_PY) || {
   RESPONSE: 'Отклик', INVITATION: 'Приглашение', CONSIDER: 'Рассматривается',
-  PHONE_INTERVIEW: 'Звонок', INTERVIEW: 'Интервью', ASSESSMENT: 'Тестовое',
+  PHONE_INTERVIEW: 'Телефон-интервью', INTERVIEW: 'Интервью', ASSESSMENT: 'Тестовое',
   HIRED: 'Оффер', DISCARD: 'Отказ', DISCARD_BY_EMPLOYER: 'Отказ',
-  DISCARD_BY_APPLICANT: 'Вы отказались', DISCARD_VACANCY_CLOSED: 'Закрыта',
+  DISCARD_BY_APPLICANT: 'Вы отказались', DISCARD_VACANCY_CLOSED: 'Вакансия закрыта',
 };
 /* Тупиковые виды чата («фриз»): заглушка «резюме получено, свяжемся» и интервью с ботом
    в чужом мессенджере — висят неделями и ответа по существу не ждут. Единый источник —
    Python (chat_class.FROZEN_KINDS), инжектится как CHAT_FROZEN_PY; хардкод — фолбэк
    для офлайна/тестов. Раньше код 'ack' был захардкожен в трёх местах ленты. */
-export const FROZEN_CHAT_KINDS = new Set(
+const FROZEN_CHAT_KINDS = new Set(
   (typeof CHAT_FROZEN_PY !== 'undefined' && CHAT_FROZEN_PY) || ['ack', 'bot_interview']);
 export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
 
@@ -281,18 +294,29 @@ export function appliedInRange(v, from, to) {
   return true;
 }
 
+/* Метка журнала -> миллисекунды эпохи; неразбираемая/пустая -> null. */
+function tsMs(ts) {
+  const t = Date.parse(ts || '');
+  return Number.isNaN(t) ? null : t;
+}
+
 /* Журнал откликов -> {id: запись первого отклика} (самый РАННИЙ ts на вакансию).
    employer переносится из журнала: без него поиск по компании не находит «призраков»
-   (01.08.2026 — чат с «Константинов Семен Павлович» не искался ни по одному фильтру). */
+   (01.08.2026 — чат с «Константинов Семен Павлович» не искался ни по одному фильтру).
+
+   Сравниваем РАЗОБРАННЫЕ метки, а не ISO-строки (08.08.2026). В журнале сосуществуют
+   смещения +04:00 (append_applied) и +03:00 (метки HH), а лексикографика их не учитывает:
+   «09:30+03:00» (06:30Z) строкой меньше «10:00+04:00» (06:00Z), хотя реально позже.
+   Неразбираемая метка не вытесняет разобранную — иначе мусор в журнале стал бы «первым». */
 export function journalById(applied) {
   const byId = {};
   for (const e of applied || []) {
     if (!e?.id) continue;
     const prev = byId[e.id];
-    if (!prev || (e.ts && e.ts < prev.ts)) {
-      byId[e.id] = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
-                     employer: e.employer };
-    }
+    const cur = tsMs(e.ts);
+    if (prev && (cur === null || (tsMs(prev.ts) !== null && cur >= tsMs(prev.ts)))) continue;
+    byId[e.id] = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
+                   employer: e.employer };
   }
   return byId;
 }
@@ -304,7 +328,7 @@ export function syntheticCard(id, a = {}) {
   return {
     id, name: a.name || `Вакансия ${id}`, url: a.url || `https://hh.ru/vacancy/${id}`,
     employer: a.employer || '', city: '', techs: [], sal_from: null, sal_to: null,
-    sal_mid: null, currency: '', exp: '', schedule: '', remote_any: false, role: '',
+    sal_mid: null, currency: '', exp: '', exp_id: '', schedule: '', remote_any: false, role: '',
     age: null, gap: null, fresh: 'unknown', resp: null, status: null, needs_form: false,
     form_dead: false, source: '', _synthetic: true, applied: a,
   };
@@ -413,7 +437,9 @@ export function filterVacancies(vacancies, f) {
     if (!f.showNonIt && v.role === 'Не-IT') return false;          /* по умолчанию не-IT скрыты */
     if (f.roles.size > 0 && !f.roles.has(v.role)) return false;    /* фильтр по роли (чипы) */
     if (f.langs.size > 0 && !v.techs.some(t => f.langs.has(t))) return false;
-    if (f.exps.size > 0 && !f.exps.has(v.exp)) return false;
+    /* чипы опыта несут доменный КОД грейда (шаблон рендерит их из EXP_LABELS), карточка —
+       exp_id; сравнение по подписи ломалось бы от переименования в EXP_LABELS */
+    if (f.exps.size > 0 && !f.exps.has(v.exp_id)) return false;
     if (f.minSal > 0 || f.maxSal < f.salMax) {
       const mid = v.sal_mid === null ? null : convert(v.sal_mid, v.currency, f.displayCur || 'RUB');
       if (mid === null) {
@@ -424,8 +450,10 @@ export function filterVacancies(vacancies, f) {
     }
     if (f.source && f.source !== 'all' && v.source !== f.source) return false;  /* портал-источник */
     if (f.city && !cityMatches(v.city, f.city, f.cityExact)) return false;
-    if (f.schedule === 'remote' && v.schedule !== 'remote') return false;
-    if (f.schedule === 'office' && v.schedule === 'remote') return false;
+    /* «Удалённо»/«Офис» — по домену (REMOTE_LIKE = remote + гибрид), а не по литералу
+       'remote': иначе flexible попадал в офисный бакет, а отчёты считали его удалёнкой */
+    if (f.schedule === 'remote' && !REMOTE_LIKE.has(v.schedule)) return false;
+    if (f.schedule === 'office' && REMOTE_LIKE.has(v.schedule)) return false;
     /* Статус отклика (API): all | invited | discard | response | form */
     if (f.status === 'invited' && !isInvited(v.status)) return false;
     if (f.status === 'discard' && !isDiscard(v.status)) return false;

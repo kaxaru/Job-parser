@@ -122,7 +122,10 @@ document.getElementById('modal-box').addEventListener('click', async e => {
   btn.disabled = true;
   if (statusEl) statusEl.textContent = '⏳ Откликаюсь… (браузер + HH, до минуты)';
   try {
-    const res = await applyVacancy(id, btn.dataset.url, cover, V_MAP[id]?.name || '');
+    /* employer шлём рядом с name: журнал фиксирует работодателя в момент клика — без него
+       карточка-призрак не ищется по компании (инцидент 01.08.2026, docs/errors.md). */
+    const res = await applyVacancy(id, btn.dataset.url, cover,
+                                   V_MAP[id]?.name || '', V_MAP[id]?.employer || '');
     if (statusEl) {
       statusEl.textContent = (APPLY_LABELS[res.status] || res.status) + (res.letter ? ' + письмо' : '');
     }
@@ -197,7 +200,10 @@ salMinVal.textContent = fmtK(0);
 salMaxVal.textContent = fmtK(SAL_MAX);
 
 /* ── Переключатель валюты: зарплаты приводятся к выбранной валюте (курсы FX_RATES).
-   При смене — пересчитать масштаб слайдера (SAL_MAX в RUR -> выбранная) и сбросить диапазон. ── */
+   При смене — пересчитать масштаб слайдера и сбросить диапазон.
+   ИНВАРИАНТ: SAL_MAX приходит из Python уже В РУБЛЯХ (feed.py::_salary_slider_max), поэтому
+   здесь ровно одна конверсия RUB -> выбранная. Раньше это число было максимумом по СЫРЫМ
+   вилкам разных валют, и та же строка конвертировала узбекские сумы как рубли. ── */
 function rescaleSalary(cur) {
   const max = Math.round(convert(SAL_MAX, 'RUR', cur));
   salMinEl.max = max; salMaxEl.max = max;

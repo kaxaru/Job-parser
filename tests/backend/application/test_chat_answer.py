@@ -294,6 +294,102 @@ def test_years_with_specific_tech_is_silent():
     assert suggest("Сколько лет опыта на Python?", prof)["text"] == "Python — 3 года."
 
 
+# ═══════ авто-«нет»: «нет» — тоже утверждение о кандидате (аудит 08.08.2026) ═══════
+# Три РАЗНЫХ случая, и путать их нельзя:
+#   а) технология в профиле ЕСТЬ, но названа иначе -> «нет» это прямая ложь -> молчим;
+#   б) технологию узнали и в профиле её точно нет -> честное «нет» допустимо;
+#   в) вопрос вообще не про технологию (практика, процесс) -> молчим, тема человеку.
+PROF_NEG = {"answers": {
+    "stack": ["PostgreSQL", "Docker", "REST API"],
+    "stack_past": ["C#", ".NET"],
+    "answer_negative": True,
+}}
+
+
+@pytest.mark.parametrize("question", [
+    "Есть ли опыт с Postgres?",
+    "Есть ли опыт работы с постгресом?",
+    "Работали с Докером?",
+    "Приходилось работать с докер-компоуз?",
+    "Есть ли опыт с SQL?",
+    "Do you have experience with Postgres?",
+])
+def test_no_negative_about_tech_that_profile_has_under_another_name(question):
+    # НАХОДКА 08.08.2026 (прогон агента): stack=[PostgreSQL, Docker] -> «Есть ли опыт
+    # с Postgres?» -> «Нет, с этим не работал.» Движок соврал про собственный стек, потому
+    # что сверял точную подстроку и не знал ни транслита, ни кириллических словоформ.
+    assert suggest(question, PROF_NEG) is None
+
+
+@pytest.mark.parametrize("question, expected", [
+    ("Есть ли опыт работы с OHIF Viewer?", "Нет, с этим не работал."),
+    ("Работали с Kubernetes?", "Нет, с этим не работал."),
+    ("Приходилось работать с Кубером?", "Нет, с этим не работал."),
+    ("Есть ли опыт с Redis?", "Нет, с этим не работал."),
+    ("Have you worked with Kubernetes?", "No, I haven't worked with that."),
+])
+def test_negative_stays_for_technology_absent_from_profile(question, expected):
+    # Обратная сторона фикса: узнаваемая ЧУЖАЯ технология по-прежнему получает честное
+    # «нет». Отдельно про Kubernetes: стек с «.NET» не должен его глушить — «.NET»
+    # нормализуется в «net», а «kubernetes» содержит «net» внутри слова.
+    a = suggest(question, PROF_NEG)
+    assert a["rule"] == "has_exp_no"
+    assert a["text"] == expected
+
+
+@pytest.mark.parametrize("question", [
+    "Был ли опыт нагрузочного тестирования?",
+    "Есть ли опыт наставничества?",
+    "Занимались ли вы код-ревью?",
+    "Есть ли опыт постановки процессов?",
+    "Do you have experience with load testing?",
+    "Do you have experience in code review?",
+])
+def test_silence_when_question_is_not_about_a_technology(question):
+    # НАХОДКА 08.08.2026: «Был ли опыт нагрузочного тестирования?» -> «Нет, с этим
+    # не работал.» Факта нет вообще: практика — не технология, и стек её не опровергает.
+    assert suggest(question, PROF_NEG) is None
+
+
+def test_profile_synonyms_block_a_negative_about_own_tech():
+    # Словарь синонимов расширяется из профиля словами, а не регексом: у владельца
+    # Greenplum, бот пишет «GPDB» — «нет» про свой же стек уходить не должно.
+    prof = {"answers": {"stack": ["Greenplum"], "answer_negative": True,
+                        "tech_synonyms": {"Greenplum": ["gpdb", "гринплам"]}}}
+    assert suggest("Есть ли опыт с GPDB?", prof) is None
+    assert suggest("Работали с Гринпламом?", prof) is None
+
+
+def test_profile_synonyms_make_a_cyrillic_name_recognizable_as_tech():
+    # Вторая сторона того же ключа: слово из словаря опознаётся как НАЗВАНИЕ технологии,
+    # поэтому про отсутствующий в стеке Гринплам можно честно ответить «нет».
+    prof = {"answers": {"stack": ["Docker"], "answer_negative": True,
+                        "tech_synonyms": {"Greenplum": ["гринплам"]}}}
+    a = suggest("Работали с Гринпламом?", prof)
+    assert a["rule"] == "has_exp_no"
+    assert a["text"] == "Нет, с этим не работал."
+
+
+def test_broken_profile_synonyms_do_not_break_the_run():
+    # Профиль пишет человек: строка вместо списка — опечатка. Дефолтный словарь остаётся
+    # в силе (Docker в стеке -> «нет» про Докер не уходит), прогон не падает.
+    prof = {"answers": {"stack": ["Docker"], "answer_negative": True,
+                        "tech_synonyms": {"Greenplum": "гринплам", 42: None}}}
+    assert suggest("Работали с Докером?", prof) is None
+
+
+def test_years_with_cyrillic_tech_name_is_silent():
+    # БАГ 21.07 в кириллическом написании: «Сколько лет работаете с Докером?» проходил мимо
+    # латинского backstop'а и получал ОБЩИЙ стаж, набранный на другом стеке.
+    prof = {"answers": {
+        "stack": ["Python", "Docker"], "stack_past": ["C#"],
+        "years_text": "Общий опыт 5 лет: EPAM (.NET).",
+        "years_python_text": "Python — 3 года.",
+    }}
+    assert suggest("Сколько лет вы работаете с Докером?", prof) is None
+    assert suggest("Сколько лет вы в разработке?", prof)["text"] == "Общий опыт 5 лет: EPAM (.NET)."
+
+
 # ══════════════ intent-роутер: маршрутизация по метке LLM ══════════════
 from hrwork.application.apply.chat.chat_intent import IntentResult  # noqa: E402
 
@@ -351,6 +447,13 @@ def test_intent_has_exp_yes():
     a = suggest("работали?", PROF_FE, intent=_i("has_exp", "FastAPI"))
     assert a["rule"] == "has_exp_yes"
     assert "FastAPI" in a["text"]
+
+
+def test_intent_has_exp_no_lie_about_tech_present_under_another_name():
+    # Тот же инвариант на LLM-маршруте: метка has_exp + tech=[Postgres] при PostgreSQL
+    # в стеке. «Нет» отсюда уйти не должно; утвердительный ответ по синониму движок
+    # тоже не собирает (синонимы только ЗАПРЕЩАЮТ «нет»), поэтому вопрос — человеку.
+    assert suggest("работали?", PROF_NEG, intent=_i("has_exp", "Postgres")) is None
 
 
 @pytest.mark.parametrize("label", ["has_exp", "years", "years_tech", "depth"])

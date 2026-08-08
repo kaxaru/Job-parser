@@ -38,7 +38,7 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://himalayas.app"
@@ -209,22 +209,28 @@ class HimalayasSource(Source):
         out: list[VacancyRecord] = []
         raw_total = dupes = dropped = 0
 
+        def _one(it: dict[str, Any]) -> VacancyRecord | None:
+            """Карточка -> запись или None, если она отсеяна штатно (дубль, не-IT)."""
+            nonlocal dupes, dropped
+            vid = _vid(it)
+            if not vid:
+                return None
+            if vid in seen:                      # выдача сортируется по дате и сдвигается
+                dupes += 1                       # между запросами -> окна пересекаются
+                return None
+            seen.add(vid)
+            rec = _normalize(it)
+            if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
+                dropped += 1
+                return None
+            return rec
+
         def _take(batch: list[dict[str, Any]]) -> None:
-            nonlocal raw_total, dupes, dropped
-            for it in batch:
-                raw_total += 1
-                vid = _vid(it)
-                if not vid:
-                    continue
-                if vid in seen:                  # выдача сортируется по дате и сдвигается
-                    dupes += 1                   # между запросами -> окна пересекаются
-                    continue
-                seen.add(vid)
-                rec = _normalize(it)
-                if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
-                    dropped += 1
-                    continue
-                out.append(rec)
+            # Изоляция НА ЭЛЕМЕНТЕ (normalize_each): кривая карточка портала не должна ронять
+            # источник целиком — иначе санити-гейт видит нулевой срез и морозит кеш всех порталов.
+            nonlocal raw_total
+            raw_total += len(batch)
+            out.extend(normalize_each(batch, _one, source="himalayas"))
 
         _take(first)
         page = 1

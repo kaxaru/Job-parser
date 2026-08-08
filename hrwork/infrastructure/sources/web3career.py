@@ -45,7 +45,7 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://web3.career"
@@ -163,6 +163,14 @@ class Web3CareerSource(Source):
         pass
 
     async def _get_tag(self, tag: str) -> list[dict[str, Any]]:
+        # ИЗВЕСТНАЯ УТЕЧКА, НЕ ЗАКРЫТАЯ ЗДЕСЬ (аудит 08.08.2026): WEB3_TOKEN уходит
+        # аргументом curl-подпроцесса, а argv виден любому процессу пользователя
+        # (`Get-CimInstance Win32_Process`). Перенос токена в заголовок этого НЕ лечит:
+        # `net/http.py::_curl_fetch` кладёт заголовки в тот же argv (`-H "k: v"`), так что
+        # секрет лишь переехал бы из одного аргумента в соседний. Настоящий фикс —
+        # в `net/http.py` (curl умеет читать и URL, и заголовки из stdin: `curl --config -`),
+        # плюс проверка живым запросом, принимает ли API web3.career токен заголовком:
+        # документирован только query-параметр. Оба шага вне этой правки, см. needs_elsewhere.
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
         url = (f"{CFG.api_url}?token={WEB3_TOKEN}&limit={CFG.limit}"
                f"&tag={tag}&show_description=true")
@@ -214,7 +222,9 @@ class Web3CareerSource(Source):
             for it in chunk:
                 if it.get("id") is not None:
                     uniq.setdefault(it["id"], it)
-        recs = [_normalize(it) for it in uniq.values()]
+        # Нормализация — через normalize_each: кривая карточка портала не должна ронять
+        # источник целиком (иначе санити-гейт видит нулевой срез и морозит кеш всех порталов).
+        recs = normalize_each(uniq.values(), _normalize, source="web3")
         out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
         log.info("web3: собрано {} (тегов {}, ответов {}, дублей {}, не-IT отсеяно {})",
                  len(out), len(WEB3_TAGS), total, total - len(uniq), len(recs) - len(out))

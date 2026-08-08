@@ -37,6 +37,14 @@ def test_add_multiple(tmp_forms):
     assert set(followup.load_form_vacancies()) == {"1", "2"}
 
 
+def test_add_reports_new_vacancy_and_duplicate_apart(tmp_forms):
+    # Возврат нужен счётчику прогона: анкета — не отклик и не пропуск, и пока она падала
+    # в очередь молча, массовое включение опросников на HH было неотличимо от нормы
+    # (аудит 08.08.2026, «FORM-исходы невидимы в сводке прогона»).
+    assert followup.add_form_vacancy("1", "A", "u1") is True
+    assert followup.add_form_vacancy("1", "A", "u1") is False
+
+
 # ── Кеш структуры анкет: свип пишет сюда, чтобы не гонять форму повторно ──
 @pytest.fixture
 def tmp_cache(tmp_path, monkeypatch):
@@ -87,3 +95,49 @@ def test_pending_enqueue_fifo_and_idempotent(tmp_pending):
     assert [x["id"] for x in followup.load_pending()] == ["2"]
     assert followup.pop_pending_one()["id"] == "2"
     assert followup.pop_pending_one() is None
+
+
+def test_pending_keeps_the_employer_known_at_click_time(tmp_pending):
+    # работодателя знает ЛЕНТА в момент клика; к дренажу вакансия может уйти из выдачи,
+    # а в журнале без него карточка-призрак не ищется по компании (инцидент 01.08.2026)
+    followup.enqueue_pending("1", "u1", "n1", "c1", employer="ООО Ромашка")
+    assert followup.pop_pending_one()["employer"] == "ООО Ромашка"
+
+
+def test_pending_employer_defaults_to_empty(tmp_pending):
+    followup.enqueue_pending("1", "u1", "n1", "c1")
+    assert followup.pop_pending_one()["employer"] == ""
+
+
+# ── Возврат в очередь: снятая, но НЕ обработанная запись не имеет права пропасть ──
+# АУДИТ 08.08.2026: pop_pending_one удаляет запись с диска ДО обработки, а дренаж глотал
+# исключение и рапортовал «+1 доп. отклик». Систематическая ошибка выела бы всю очередь молча.
+
+def test_requeue_returns_the_record_whole(tmp_pending):
+    followup.enqueue_pending("1", "u1", "n1", "c1")
+    rec = followup.pop_pending_one()
+    assert followup.requeue_pending(rec) == 1
+    assert followup.load_pending() == [{"id": "1", "url": "u1", "name": "n1", "cover": "c1",
+                                        "employer": ""}]
+
+
+def test_requeue_keeps_fields_the_queue_does_not_know_about(tmp_pending):
+    # возврат кладёт запись ЦЕЛИКОМ, а не пересобирает её из четырёх известных полей
+    followup.requeue_pending({"id": "7", "url": "u7", "name": "n7", "cover": "c7",
+                              "employer": "ООО Ромашка"})
+    assert followup.load_pending()[0]["employer"] == "ООО Ромашка"
+
+
+def test_requeue_puts_the_record_at_the_tail(tmp_pending):
+    # в конец, а не в начало: сбойная запись не должна блокировать остальную очередь
+    followup.enqueue_pending("1", "u1", "n1", "c1")
+    followup.enqueue_pending("2", "u2", "n2", "c2")
+    rec = followup.pop_pending_one()
+    followup.requeue_pending(rec)
+    assert [x["id"] for x in followup.load_pending()] == ["2", "1"]
+
+
+def test_requeue_is_idempotent_by_id(tmp_pending):
+    followup.requeue_pending({"id": "1", "url": "u1", "name": "n1", "cover": "c1"})
+    assert followup.requeue_pending({"id": "1", "url": "u1", "name": "n1", "cover": "c1"}) == 1
+    assert len(followup.load_pending()) == 1

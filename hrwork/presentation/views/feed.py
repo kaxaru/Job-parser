@@ -30,13 +30,13 @@ from hrwork.config import (
     PAPER,
     PORTAL_SITES,
     RESUME_CORE,
-    RESUME_EXP_IDS,
     ROLE_PATTERNS,
     TEMPLATE_DIR,
     TEXT,
     log,
 )
 from hrwork.domain.parsing import has_remote
+from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
 from hrwork.infrastructure.net import rates
 from hrwork.infrastructure.storage import MARK_VALUES, vacancy_repository
 
@@ -93,6 +93,36 @@ def sanitize_desc(src: str) -> str:
     return s.result()
 
 
+# ── Ползунок зарплаты ─────────────────────────────────────────────────────────
+# Шаг ползунка нужен и Python (округление верха шкалы), и шаблону (`step=`), поэтому
+# определён ЗДЕСЬ и передаётся в feed.html.j2 — дублировать «10000» в шаблоне нельзя.
+SALARY_STEP = 10_000
+SALARY_PCTL = 99                 # перцентиль, по которому берётся верх шкалы
+SALARY_MAX_DEFAULT = 500_000     # вилок нет вовсе -> дефолтный верх
+
+
+def _salary_slider_max(mids_rub: list[int]) -> int:
+    """Верх ползунка зарплаты (РУБЛИ): `SALARY_PCTL`-й перцентиль по методу nearest-rank,
+    округлённый ВВЕРХ до `SALARY_STEP`. Пустой вход -> `SALARY_MAX_DEFAULT`.
+
+    Две причины, обе замерены 08.08.2026 на срезе в 109 798 вакансий:
+    * **рубли, а не «как пришло»**: максимум брался по сырым `sal_mid` разных валют, и одна
+      узбекская вилка talanto (35 000 000 UZS) задирала `SAL_MAX` до 35 млн, при том что
+      максимум среди рублёвых — 3 250 000. `main.js::rescaleSalary` затем конвертировал это
+      число как рубли, то есть врал ещё раз;
+    * **перцентиль, а не максимум**: даже честные 3 250 000 оставляли рабочему диапазону
+      0-500к 15% длины ползунка при шаге 10 000 — фильтр остаётся неуправляемым от одного
+      выброса. Верх шкалы обрезает ХВОСТ, а не выдачу: пока ползунок стоит на максимуме,
+      условие `maxSal < salMax` ложно и вакансии дороже верха видны (`model.js::filterVacancies`).
+    Округление вверх — чтобы верх шкалы был достижим ползунком с целым шагом."""
+    if not mids_rub:
+        return SALARY_MAX_DEFAULT
+    ordered = sorted(mids_rub)
+    idx = (SALARY_PCTL * len(ordered) + 99) // 100 - 1      # ceil(p*n/100) - 1, без float
+    value = ordered[idx]
+    return max(SALARY_STEP, -(-value // SALARY_STEP) * SALARY_STEP)
+
+
 def _salary_fields(sal: Any) -> dict[str, Any]:
     """Зарплатные поля карточки (JS-имена sal_from/to/mid — забота презентации, не домена).
     None-вилка -> пустые значения; убирает 4× повтор `v.salary.X if v.salary else …` (Demeter)."""
@@ -129,9 +159,11 @@ def build_feed() -> None:
     dead_forms = {vid for vid, r in store.form_cache().items()
                   if (s := FormSweepStatus.from_code(r.get("status"))) and s.is_dead}
     hr_replies = _last_hr_replies()               # {vacancyId: ts последнего ЖИВОГО ответа}
+    fx_rates = rates.get_rates()                  # курсы per-USD (суточный кеш)
 
     records = []          # лёгкие карточные поля (идут в feed-data.js)
     descs = {}            # id -> описание (идёт в feed-desc.js, грузится лениво)
+    mids_rub: list[int] = []   # серединки вилок В РУБЛЯХ — только для верха ползунка
     for rec in vacancies:
         v = rec.vacancy
         remote_any = v.is_remote() or has_remote(v.name + " " + rec.requirement)
@@ -142,7 +174,11 @@ def build_feed() -> None:
             "employer": v.employer,
             "city":     v.city,
             **_salary_fields(v.salary),
+            # exp — ПОДПИСЬ для карточки, exp_id — доменный код (Experience.hh_id) для
+            # фильтра-чипов и скоринга resume.js. Скоринг ключуется по КОДУ: раньше он
+            # ключевался по подписи, и правка EXP_LABELS молча обнуляла бы баллы за опыт.
             "exp":      v.experience.label if v.experience else "",
+            "exp_id":   v.experience.hh_id if v.experience else "",
             "schedule": v.schedule.hh_code,
             "techs":    v.techs,
             "remote_any": remote_any,
@@ -160,13 +196,17 @@ def build_feed() -> None:
             "hr_ts":    hr_replies.get(str(v.id), ""),
             "source":   v.source,          # портал: hh / hirify / talanto / getmatch
         })
+        # серединка вилки В РУБЛЯХ — только для шкалы ползунка (в карточку не едет:
+        # там своя валюта, конверсию для показа делает model.js::convert)
+        if v.salary and (mid_rub := rates.to_rub(v.salary.mid, v.salary.currency, fx_rates)):
+            mids_rub.append(mid_rub)
         # описание (description_html, иначе текст requirement) — только для модалки;
         # санитизируем здесь, а не на клиенте: закрывает и serve, и file://
         descs[v.id] = sanitize_desc(rec.description_html.strip() or rec.requirement)
 
     cities  = sorted({r["city"] for r in records if r["city"]})
     langs   = sorted(LANG_KEYS)
-    sal_max = max((r["sal_mid"] for r in records if r["sal_mid"]), default=500_000)
+    sal_max = _salary_slider_max(mids_rub)
     # Роли-чипы: только IT-роли, что реально встретились, в порядке ROLE_PATTERNS.
     present = {r["role"] for r in records}
     roles   = [role for role in ROLE_PATTERNS if role in present]
@@ -202,7 +242,6 @@ def build_feed() -> None:
     marks = store.marks()
 
     # 3. feed-data.js — лёгкие карточные данные (грузится <script src>, не inline в HTML)
-    fx_rates = rates.get_rates()                 # курсы per-USD (суточный кеш)
     data_js = (
         f"const VACANCIES = {json.dumps(records, ensure_ascii=False)};\n"
         f"const SAL_MAX = {sal_max};\n"
@@ -212,8 +251,16 @@ def build_feed() -> None:
         # Единый источник Python->JS (иначе молча расходятся): подписи статусов и профиль резюме.
         f"const STATE_LABELS_PY = {json.dumps(chat.STATE_LABELS, ensure_ascii=False)};\n"
         f"const RESUME_CORE_PY = {json.dumps(RESUME_CORE)};\n"
-        f"const RESUME_EXPS_PY = {json.dumps([EXP_LABELS[e] for e in RESUME_EXP_IDS])};\n"
         f"const MARK_VALUES_PY = {json.dumps(list(MARK_VALUES))};\n"     # словарь пометок (marks.py)
+        # Формат работы: подписи и «что считается удалёнкой» — из домена (Schedule).
+        # До 08.08.2026 моста не было вовсе: model.js держал свой SCHED_LABELS, где из трёх
+        # кодов совпадал ОДИН (fullDay: «Полный день» против «Офис»), плюс мёртвые shift и
+        # flyInFlyOut, которых домен не производит. REMOTE_LIKE_PY закрывает вторую половину
+        # того же расхождения: кнопка «Офис» пропускала flexible, а отчёты считали его
+        # удалёнкой — 16 857 вакансий в двух бакетах сразу (Schedule.is_remote_like).
+        f"const SCHED_LABELS_PY = "
+        f"{json.dumps({s.hh_code: s.label for s in Schedule}, ensure_ascii=False)};\n"
+        f"const REMOTE_LIKE_PY = {json.dumps(list(REMOTE_LIKE_CODES))};\n"
         # тупиковые виды чата (chat_class.FROZEN_KINDS): бейдж, фильтр «Личные» и счётчик
         f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
         # подпись портала в карточке (config.PORTAL_SITES) — единый источник с Python
@@ -250,7 +297,13 @@ def build_feed() -> None:
         langs=langs,
         roles=roles,
         nonit=nonit,
+        # Чипы опыта рендерятся ИЗ EXP_LABELS (код -> подпись), а не четырьмя литералами
+        # в шаблоне: подписи жили в трёх местах сразу (config -> шаблон -> resume.js), и
+        # правка EXP_LABELS молча ломала и чипы, и скоринг. `value` чипа — доменный КОД,
+        # фильтр сравнивает его с `exp_id` карточки.
+        exps=list(EXP_LABELS.items()),
         sal_max=sal_max,
+        sal_step=SALARY_STEP,
         total_records=len(records),
         has_status=bool(statuses) or bool(forms),
         n_forms=f"{n_alive}+{n_dead}⌛" if n_dead else str(n_alive),

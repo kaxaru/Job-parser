@@ -1,4 +1,13 @@
-"""Тесты отбора кандидатов, дневной квоты и single-instance lock (без браузера)."""
+"""Тесты отбора кандидатов, дневной квоты и single-instance lock (без браузера).
+
+Отбор считается на ДЕФОЛТАХ проекта, а не на профиле запускающего: `candidates.py`
+компилирует чёрные списки и собирает `APPLY_CORE`/`APPLY_EXPS`/`APPLY_OFFICE_CITIES` один
+раз на импорте, из `resume_profile.json`. Владелец, снявший правило документированной
+ручкой (`"blacklists": {"qa": []}`) или изменивший города тира-3, получал бы либо десятки
+красных тестов, либо — хуже — зелёные тесты, проверяющие его личные предпочтения
+(аудит 08.08.2026, находка 57). Дефолты возвращает фикстура `apply_defaults`;
+доказательство механизма — tests/backend/test_profile_isolation.py.
+"""
 import datetime
 import json
 import os
@@ -13,6 +22,8 @@ from hrwork.application.apply.candidates import ApplyTier, OutOfScope, out_of_sc
 from hrwork.application.apply.runtime import lock, quota
 from hrwork.application.apply.runtime.quota import applied_today
 from hrwork.infrastructure.storage import JsonVacancyRepository
+
+pytestmark = pytest.mark.usefixtures("apply_defaults")
 
 
 def _raw(vid="1", name="Python Backend разработчик", sched="remote",
@@ -338,11 +349,20 @@ def test_candidate_carries_employer_and_desc():
 
 
 # ── Дневная квота откликов ──
+_QUOTA_DAY = "2026-08-08"      # «сегодня» квоты, фиксированное -> прогон не зависит от часов
+
+
 @pytest.fixture
 def tmp_quota(tmp_path, monkeypatch):
+    """Файл счётчика во временном каталоге + ЗАМОРОЖЕННЫЕ сутки.
+
+    ФЛАК (аудит 08.08.2026): счётчик спрашивает `date.today()` на КАЖДОМ обращении, поэтому
+    `bump_quota(3); bump_quota(2)` в 23:59:59 попадали в разные сутки и второй вызов начинал
+    счёт заново. Дата замораживается на уровне `quota._today` — публичного шва у модуля нет."""
     f = tmp_path / "apply_quota.json"
     monkeypatch.setattr(quota, "QUOTA_FILE", f)
     monkeypatch.setattr(quota, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(quota, "_today", lambda: _QUOTA_DAY)
     return f
 
 
@@ -359,6 +379,69 @@ def test_quota_accumulates_within_day(tmp_quota):
 def test_quota_ignores_other_day(tmp_quota):
     tmp_quota.write_text(json.dumps({"date": "2000-01-01", "count": 199}), encoding="utf-8")
     assert applied_today() == 0                 # запись за прошлый день -> 0
+
+
+# ── Реконсиляция квоты: окно «клик -> учёт» (аудит 08.08.2026) ──────────────────────────
+# Между кликом «Откликнуться» и bump_quota есть щель: watchdog сносит дерево, либо HH
+# подтверждает отклик на 11-й секунде, когда apply_one уже вернул SKIP. Отклик УШЁЛ, а
+# счётчик его не увидел; marks и журнал чинил синк, квоту — никто, и за сутки бот слал cap+N.
+
+def test_reconcile_raises_the_counter_to_the_journal_fact(tmp_quota):
+    quota.bump_quota(35)
+    assert quota.reconcile_quota(103) == 103
+    assert applied_today() == 103
+
+
+def test_reconcile_never_lowers_the_counter(tmp_quota):
+    # журнал догоняет реальность с задержкой; «выравнивание» вниз открыло бы путь к cap+N
+    quota.bump_quota(103)
+    assert quota.reconcile_quota(35) == 103
+    assert applied_today() == 103
+
+
+def test_reconcile_is_idempotent(tmp_quota):
+    quota.bump_quota(10)
+    assert quota.reconcile_quota(12) == 12
+    assert quota.reconcile_quota(12) == 12
+    assert applied_today() == 12
+
+
+def test_reconcile_ignores_yesterdays_counter(tmp_quota):
+    tmp_quota.write_text(json.dumps({"date": "2000-01-01", "count": 199}), encoding="utf-8")
+    assert quota.reconcile_quota(4) == 4        # вчерашние 199 = 0 сегодня -> поднимаем до факта
+
+
+def test_journal_counts_todays_applies_deduped_by_id(monkeypatch):
+    # Сутки задаются ЯВНО (параметр `today` функции): без этого журнал строился по
+    # `date.today()` теста, а считался по `date.today()` реализации — на границе суток это
+    # два разных дня и ноль вместо двух (аудит 08.08.2026).
+    rows = [
+        {"id": "1", "ts": "2026-08-08T10:00:00+03:00"},
+        {"id": "1", "ts": "2026-08-08T11:00:00+03:00"},   # тот же отклик вторым каналом
+        {"id": "2", "ts": "2026-08-08T12:00:00+03:00"},
+        {"id": "3", "ts": "2000-01-01T09:00:00+03:00"},   # прошлый день
+        {"id": "4", "ts": ""},                            # без даты
+    ]
+    monkeypatch.setattr(autoclick.store, "applied_log", lambda: rows)
+    assert autoclick._journal_applied_today("2026-08-08") == 2
+
+
+def test_quota_is_raised_when_the_click_never_reached_the_counter(monkeypatch):
+    got = []
+    monkeypatch.setattr(autoclick.store, "applied_today", lambda: 35)
+    monkeypatch.setattr(autoclick, "_journal_applied_today", lambda: 103)
+    monkeypatch.setattr(autoclick.store, "reconcile_quota", lambda n: got.append(n) or n)
+    assert autoclick._reconciled_today() == 103
+    assert got == [103]
+
+
+def test_quota_is_left_alone_when_the_journal_agrees(monkeypatch):
+    def forbidden(n):
+        raise AssertionError("квоту трогать нельзя, расхождения нет")
+    monkeypatch.setattr(autoclick.store, "applied_today", lambda: 40)
+    monkeypatch.setattr(autoclick, "_journal_applied_today", lambda: 40)
+    monkeypatch.setattr(autoclick.store, "reconcile_quota", forbidden)
+    assert autoclick._reconciled_today() == 40
 
 
 # ── Кулдаун поднятия резюме (гейт слитой задачи bump+apply) ──
@@ -405,6 +488,56 @@ def test_lock_acquire_release(tmp_lock):
     with lock._single_instance():
         assert tmp_lock.exists()                # держим -> файл есть
     assert not tmp_lock.exists()                # вышли -> снят
+
+
+# ── Захват атомарен (аудит 08.08.2026): check-then-write пускал два Chromium на профиль ──
+# Крон-слот и ручной `hh.py forms` могли пройти проверку живости в одно окно и оба «взять»
+# lock. Окно узаконил watchdog-путь: _kill_own_tree отдаёт lock ДО выстрела, пока Chromium
+# ещё умирает. O_EXCL отдаёт файл ровно одному претенденту — это гарантия ФС.
+
+def test_lock_file_is_never_overwritten_by_a_second_acquirer(tmp_lock):
+    tmp_lock.write_text(json.dumps({"pid": 424242, "ts": lock.time.time()}), encoding="utf-8")
+    assert lock._try_acquire() is False
+    assert json.loads(tmp_lock.read_text())["pid"] == 424242     # чужая запись цела
+
+
+def test_only_one_of_concurrent_acquirers_gets_the_lock(tmp_lock):
+    import threading
+    results: list[bool] = []
+    barrier = threading.Barrier(8)
+
+    def grab():
+        barrier.wait()
+        results.append(lock._try_acquire())
+
+    threads = [threading.Thread(target=grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(True) == 1              # ровно один хозяин профиля
+    assert results.count(False) == 7
+
+
+def test_acquired_lock_carries_our_pid(tmp_lock):
+    assert lock._try_acquire() is True
+    assert json.loads(tmp_lock.read_text())["pid"] == os.getpid()
+
+
+def test_stale_drop_keeps_a_lock_that_became_live(tmp_lock, monkeypatch):
+    # пока мы решались снять протухший файл, конкурент положил свой ЖИВОЙ — снести его
+    # значило бы пустить второй Chromium на persistent-профиль
+    monkeypatch.setattr(lock, "_pid_alive", lambda pid: True)
+    tmp_lock.write_text(json.dumps({"pid": 424242, "ts": lock.time.time()}), encoding="utf-8")
+    assert lock._drop_stale() is False
+    assert tmp_lock.exists()
+
+
+def test_stale_drop_removes_an_orphaned_lock(tmp_lock, monkeypatch):
+    monkeypatch.setattr(lock, "_pid_alive", lambda pid: False)
+    tmp_lock.write_text(json.dumps({"pid": 424242, "ts": lock.time.time()}), encoding="utf-8")
+    assert lock._drop_stale() is True
+    assert not tmp_lock.exists()
 
 
 def test_lock_rejects_fresh_live_instance(tmp_lock, monkeypatch):
@@ -569,7 +702,10 @@ def test_apply_worker_busy_when_lock_taken(monkeypatch):
 
 def test_get_apply_worker_singleton_thread_safe(monkeypatch):
     import threading
-    autoclick._apply_worker = None
+    # Модульный синглтон возвращает monkeypatch, а не присваивание в конце теста: до
+    # 08.08.2026 восстановление стояло ПОСЛЕ ассертов и падение теста оставляло в
+    # `autoclick._apply_worker` живой ApplyWorker — следующему тесту доставался чужой воркер.
+    monkeypatch.setattr(autoclick, "_apply_worker", None)
     created = []
     orig = autoclick.ApplyWorker
 
@@ -592,7 +728,6 @@ def test_get_apply_worker_singleton_thread_safe(monkeypatch):
         t.join()
     assert len(created) == 1                  # ровно один воркер, несмотря на гонку
     assert len({id(w) for w in workers}) == 1
-    autoclick._apply_worker = None
 
 
 # ── инкрементальный синк: «кеш vs сеть» по lastMessageTime из списка + терминальный статус ──
@@ -671,19 +806,31 @@ def test_watchdog_fires_before_the_next_cron_slot():
 # вакансии, каждой карточкой подтверждая HH, что перед ним бот. Замер 19 суток лога:
 # отношение пропусков к откликам выросло с 0.3 до 36, максимальная серия — 268 подряд.
 
+_SKIP_STREAK_MAX = 50      # дефолт config.APPLY_SKIP_STREAK_MAX (env-ручка того же имени)
+
+
 @pytest.fixture
 def batch_env(monkeypatch):
-    """Пул из 200 кандидатов; все браузерные вызовы и запись состояния — заглушками."""
-    seen = {"applied": [], "quota": 0}
+    """Пул из 200 кандидатов; все браузерные вызовы и запись состояния — заглушками.
+
+    Порог предохранителя прибит к ДЕФОЛТУ: он приходит из переменной окружения, то есть у
+    запускающего со своим `.env` был бы другой, а ожидаемое ниже — литерал, а не
+    `autoclick.APPLY_SKIP_STREAK_MAX` (иначе тест повторяет реализацию и пройдёт при любом
+    её значении, включая порог больше пула)."""
+    monkeypatch.setattr(autoclick, "APPLY_SKIP_STREAK_MAX", _SKIP_STREAK_MAX)
+    seen = {"applied": [], "quota": 0, "forms": []}
     pool = [autoclick.Candidate(id=str(i), name=f"Вакансия {i}", url=f"https://hh.ru/vacancy/{i}")
             for i in range(200)]
     monkeypatch.setattr(autoclick, "pick_candidates", lambda *a, **k: pool)
     monkeypatch.setattr(autoclick, "vacancy_repository", lambda: type("R", (), {"load": staticmethod(list)})())
     monkeypatch.setattr(autoclick, "skippable_form_ids", lambda *a, **k: set())
     monkeypatch.setattr(autoclick.store, "applied_today", lambda: 0)
+    monkeypatch.setattr(autoclick.store, "applied_log", list)   # журнал пуст -> квота не правится
     monkeypatch.setattr(autoclick.store, "marks", dict)
     monkeypatch.setattr(autoclick.store, "forms", dict)
     monkeypatch.setattr(autoclick.store, "form_cache", dict)
+    monkeypatch.setattr(autoclick.store, "add_form",
+                        lambda *a, **k: seen["forms"].append(a[0]) or True)
     monkeypatch.setattr(autoclick.store, "mark_applied", lambda v: seen["applied"].append(v))
     monkeypatch.setattr(autoclick.store, "bump_quota", lambda n: seen.__setitem__("quota", seen["quota"] + n) or seen["quota"])
     monkeypatch.setattr(autoclick.store, "log_applied", lambda *a, **k: None)
@@ -703,7 +850,7 @@ def test_blocked_account_stops_run_instead_of_grinding_the_pool(batch_env, monke
 
     monkeypatch.setattr(autoclick, "apply_one", always_skip)
     assert autoclick._apply_batch(page=None, apply_limit=20, daily_cap=200) == 0
-    assert len(tried) == autoclick.APPLY_SKIP_STREAK_MAX      # ровно порог, не весь пул
+    assert len(tried) == 50                     # ровно порог (пул 200) — не весь пул
 
 
 def test_successful_apply_resets_the_skip_streak(batch_env, monkeypatch):
@@ -721,4 +868,56 @@ def test_successful_apply_resets_the_skip_streak(batch_env, monkeypatch):
     monkeypatch.setattr(autoclick, "apply_one", alternate)
     applied = autoclick._apply_batch(page=None, apply_limit=3, daily_cap=200)
     assert applied == 3
-    assert len(seq) > autoclick.APPLY_SKIP_STREAK_MAX          # прогон НЕ остановился на пороге
+    assert len(seq) == 123                # 3 отклика × 41 карточка: порог 50 не сработал ни разу
+
+
+# ── Сводка прогона: анкеты видны наравне с откликами и пропусками (аудит 08.08.2026) ────
+# Анкета — не отклик и не пропуск, поэтому в отношении «скип/отклик» её не было вовсе:
+# HH массово включает опросники, прогон даёт 3 отклика и 20 анкет, «пропусков 0», отношение
+# в норме — и падение темпа не видно неделями. Это ровно класс «21 отклик в день вместо 200».
+
+@pytest.mark.parametrize("applied, skipped, forms, reconciled, level, line", [
+    (10, 3, 0, 2, "info",
+     "Итог прогона: откликов 10, анкет 0, пропусков 3 (скип/отклик 0.3), уже откликались 2"),
+    (3, 0, 20, 0, "warning",
+     "Итог прогона: откликов 3, анкет 20, пропусков 0 (скип/отклик 0.0), уже откликались 0"),
+    (5, 0, 5, 0, "info",
+     "Итог прогона: откликов 5, анкет 5, пропусков 0 (скип/отклик 0.0), уже откликались 0"),
+    (5, 0, 10, 0, "warning",
+     "Итог прогона: откликов 5, анкет 10, пропусков 0 (скип/отклик 0.0), уже откликались 0"),
+    (2, 10, 0, 1, "warning",
+     "Итог прогона: откликов 2, анкет 0, пропусков 10 (скип/отклик 5.0), уже откликались 1"),
+    (0, 7, 0, 0, "warning",
+     "Итог прогона: откликов 0, анкет 0, пропусков 7 (скип/отклик все), уже откликались 0"),
+])
+def test_run_summary_names_forms_and_flags_degradation(applied, skipped, forms, reconciled,
+                                                       level, line):
+    assert autoclick._run_summary(applied, skipped, forms, reconciled) == (level, line)
+
+
+def test_form_outcomes_reach_the_run_summary(batch_env, monkeypatch):
+    """21 анкета на 3 отклика: анкеты обязаны доехать до счётчика сводки."""
+    calls = []
+    monkeypatch.setattr(autoclick, "_run_summary",
+                        lambda *a: calls.append(a) or ("info", "сводка"))
+
+    def survey_heavy(page, cand, **kw):
+        # каждая восьмая карточка — отклик, остальные семь уходят анкетами
+        return (autoclick.ApplyOutcome.APPLIED if int(cand.id) % 8 == 7
+                else autoclick.ApplyOutcome.FORM)
+
+    monkeypatch.setattr(autoclick, "apply_one", survey_heavy)
+    assert autoclick._apply_batch(page=None, apply_limit=3, daily_cap=200) == 3
+    assert calls == [(3, 0, 21, 0)]          # (откликов, пропусков, анкет, уже откликались)
+
+
+def test_batch_budget_uses_the_reconciled_quota(batch_env, monkeypatch):
+    """Отклик, ушедший мимо счётчика, обязан съедать дневной лимит: журнал знает 200 при
+    счётчике 0 -> лимит исчерпан, ни одной новой карточки не трогаем."""
+    tried = []
+    monkeypatch.setattr(autoclick, "_journal_applied_today", lambda: 200)
+    monkeypatch.setattr(autoclick.store, "reconcile_quota", lambda n: n)
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda *a, **k: tried.append(1) or autoclick.ApplyOutcome.APPLIED)
+    assert autoclick._apply_batch(page=None, apply_limit=10, daily_cap=200) == 0
+    assert tried == []

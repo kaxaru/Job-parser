@@ -22,7 +22,7 @@ from typing import Any
 from hrwork.application.apply.chat import chat, chat_answer, chat_class
 from hrwork.application.apply.chat.chat_answer import VacancyContext
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import DATA_DIR, log
+from hrwork.config import DATA_DIR, body, log
 
 REPLIES_LOG = DATA_DIR / "chat_replies.jsonl"
 SEND_PAUSE = (2.0, 4.0)          # сек между отправками — не строчить как автомат
@@ -322,18 +322,26 @@ def run(send: bool = False, limit: int = 10, only: str = "", wait: bool = True,
     if only and not sendable and not manual:
         log.warning("Для вакансии {} предложения нет (уже отвечали / нет факта / "
                     "не бот / чат закрыт)", only)
+    # ТЕЛА СООБЩЕНИЙ МАСКИРУЮТСЯ (`config.body`, находка аудита 08.08.2026, п.49): вопрос
+    # рекрутера и полный отправляемый ответ с фактами профиля уходили в `logs/*.log` дословно
+    # и на уровне INFO, а `retention=3` держит эти файлы неделями. Служебная часть строки
+    # остаётся: id вакансии, имя правила, отправитель, счётчики — по ним запись и опознают.
+    # `keep=20` у вопроса нужен, чтобы отличить один вопрос бота от другого в цепочке.
+    # `LOG_BODIES=1` возвращает дословную запись на время отладки. Интерактивные `print`
+    # в `_console_consent`/`_rephrase_consent` не трогаем: их читает человек у терминала,
+    # а без tty (крон) они не выполняются вовсе.
     for p in sendable:
         cand = _rephrased(p, rephrase)
         if cand != p.text:                                # dry-run показывает переформулировку
             log.info("[{}] #{}: «{}»\n    источник: «{}»\n    кандидат: «{}»",
-                     p.rule, p.vid, p.question[:80], p.text, cand)
+                     p.rule, p.vid, body(p.question, keep=20), body(p.text), body(cand))
         else:
             log.info("[{}] {} #{}: «{}» -> «{}»", p.rule, p.sender, p.vid,
-                     p.question[:80], p.text)
+                     body(p.question, keep=20), body(p.text))
     for p in manual:
         tag = "manual, спросим" if include_manual else "manual, НЕ отправляется"
         log.info("[{}] #{}: «{}» -> предложение: «{}»",
-                 tag, p.vid, p.question[:80], p.text)
+                 tag, p.vid, body(p.question, keep=20), body(p.text))
     if not send:
         log.info("DRY-RUN: {} готово к отправке, {} manual{}. Отправка: --send",
                  len(sendable), len(manual),

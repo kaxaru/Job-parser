@@ -3,6 +3,7 @@ import csv
 import datetime
 import shutil
 import urllib.request
+from pathlib import Path
 
 import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader
@@ -70,27 +71,62 @@ SOURCE_LABELS = {"all": "Все"}      # порталы берут своё им
 # не удалось — шаблон падает на CDN, дашборд остаётся рабочим.
 PLOTLY_VERSION = "2.35.2"
 PLOTLY_CDN = f"https://cdn.plot.ly/plotly-{PLOTLY_VERSION}.min.js"
-PLOTLY_LOCAL = DATA_DIR / f"plotly-{PLOTLY_VERSION}.min.js"
+PLOTLY_FILE = f"plotly-{PLOTLY_VERSION}.min.js"
+
+
+def _plotly_local() -> Path:
+    """Путь локальной копии plotly.js. Функция, а не константа: `DATA_DIR` подменяем
+    (тесты сборки), а константа связалась бы с настоящим каталогом на ИМПОРТЕ — и загрузка
+    ушла бы в личный data/ мимо подмены (аудит 08.08.2026, п.58)."""
+    return DATA_DIR / PLOTLY_FILE
 
 
 def _ensure_plotly() -> str | None:
     """Скачать plotly.js рядом с дашбордом, если его там нет. Возвращает имя файла для
     относительной ссылки (работает и через `hh.py serve`, и при открытии как file://),
     либо None — тогда шаблон возьмёт CDN."""
-    if PLOTLY_LOCAL.exists() and PLOTLY_LOCAL.stat().st_size > 1_000_000:
-        return PLOTLY_LOCAL.name
+    local = _plotly_local()
+    if local.exists() and local.stat().st_size > 1_000_000:
+        return local.name
     try:
         # URL фиксированный https, не из пользовательского ввода
         with urllib.request.urlopen(PLOTLY_CDN, timeout=60) as r:
             data = r.read()
-        tmp = PLOTLY_LOCAL.with_suffix(".tmp")
+        tmp = local.with_suffix(".tmp")
         tmp.write_bytes(data)
-        tmp.replace(PLOTLY_LOCAL)                  # атомарно: полуфайл не подхватится
-        log.info("plotly.js скачан локально: {:.1f} МБ -> {}", len(data) / 1e6, PLOTLY_LOCAL.name)
-        return PLOTLY_LOCAL.name
+        tmp.replace(local)                         # атомарно: полуфайл не подхватится
+        log.info("plotly.js скачан локально: {:.1f} МБ -> {}", len(data) / 1e6, local.name)
+        return local.name
     except Exception as e:
         log.warning("plotly.js скачать не удалось ({}) — дашборд возьмёт CDN", e)
         return None
+
+
+def _prune_stale_source_dirs(fresh: set[str]) -> None:
+    """Снести отчёты по-портальных каталогов, которые этот прогон НЕ переоткрывал.
+
+    Портал пропал из данных (или срез по источникам вообще не строится) -> в
+    `reports/by_source/<портал>/` никто больше не приходит: `run_reports` зовут только для
+    живых источников, а `ReportWriter.cleanup` чистит лишь тот каталог, в который писал.
+    Это последний путь к устаревшим CSV в дереве отчётов после фикса находки 24.
+
+    Удаляем ТОЛЬКО СВОЁ — имена из `reporter.py::MANAGED_CSV`. Посторонний файл (ручная
+    выгрузка, заметка) обязан пережить чистку, поэтому каталог снимается лишь опустевшим."""
+    base = REPORTS_DIR / "by_source"
+    if not base.is_dir():
+        return
+    for d in sorted(base.iterdir()):
+        if not d.is_dir() or d.name in fresh:
+            continue
+        stale = [p for p in sorted(d.iterdir())
+                 if p.is_file() and p.name in _reporter.MANAGED_CSV]
+        for path in stale:
+            path.unlink()
+        if not any(d.iterdir()):
+            d.rmdir()                              # остались чужие файлы -> каталог не трогаем
+        if stale:
+            log.info("Портал {} пропал из данных — снято устаревших отчётов: {}",
+                     d.name, len(stale))
 
 
 def build_dashboard() -> None:
@@ -104,17 +140,29 @@ def build_dashboard() -> None:
             _reporter.run_reports([v for v in vacs if v.source == src], out_dir=d)
             src_dirs[src] = d
     _reporter.run_reports(vacs, out_dir=REPORTS_DIR)        # 'all' последним -> дефолтный каталог
+    _prune_stale_source_dirs(set(src_dirs) - {"all"})       # каталоги пропавших порталов
     sources = ["all"] + (list(present) if len(present) > 1 else [])
 
     # Воронка автоотказов — CRM-данные (отклики/чаты), НЕ рыночные Vacancy, поэтому пишется
     # отдельно от run_reports: строго после его cleanup() (иначе снесёт как «неучтённый» CSV)
     # и только в общий срез (отклики не делятся по источнику). Пусто/нет данных -> нет вкладки.
+    funnel_csv = REPORTS_DIR / "13_company_funnel.csv"
     try:
-        ov = _write_funnel_csv(REPORTS_DIR / "13_company_funnel.csv")
-        log.info("Воронка: откликов {}, отказов {} (<=1ч {}), приглашений {}, медиана отказа {} мин",
-                 ov["applied"], ov["rejected"], ov["le_1h"], ov["invited"], ov["median_reject_min"])
+        ov = _write_funnel_csv(funnel_csv)
+        # Подписи те же, что в CSV (`funnel.py::_CSV_HEADERS`) и в шапке графика
+        # (`charts.py::chart_company_funnel`): знаменатель доли «<=1 ч» — ИЗМЕРЕННЫЕ отказы,
+        # а «отказов N (<=1ч M)» читалось как доля от всех. «Позитив/в работе» — по той же
+        # причине, что в CSV: в INVITED_STATES входит CONSIDER, это ещё не приглашение.
+        log.info("Воронка: откликов {}, отказов {} (измерено {}, из них <=1ч {}), "
+                 "позитив/в работе {}, медиана отказа {} мин",
+                 ov["applied"], ov["rejected"], ov["measured"], ov["le_1h"],
+                 ov["invited"], ov["median_reject_min"])
     except Exception as e:                                  # CRM-состояние может отсутствовать
-        log.warning("Воронку автоотказов пропускаю: {}", e)
+        # Срез ПРОШЛОГО прогона снимаем: вкладка появляется по факту существования CSV
+        # (`keys` ниже), и уцелевший файл показывал бы старые числа без признака устаревания —
+        # ровно то, от чего лечит `reporter.py::ReportWriter.cleanup` остальные отчёты.
+        funnel_csv.unlink(missing_ok=True)
+        log.warning("Воронку автоотказов пропускаю: {} (устаревший {} удалён)", e, funnel_csv.name)
 
     # Набор и порядок вкладок = _CHARTS (единый реестр), чьи CSV есть в общем срезе. Условные
     # (freshness/companies/by_source) появляются только когда собран соответствующий отчёт.

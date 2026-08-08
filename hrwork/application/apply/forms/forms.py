@@ -5,12 +5,18 @@
 резолвит ВСЕ поля (словарь/факты/LLM); при полноте заполняет + пишет письмо + ЖМЁТ «Откликнуться»;
 хоть один пробел -> НЕ шлёт, лог пробелов -> в форм-очередь (человек пополняет form_answers).
 
+ПОЛНОТА — это ТРИ этапа, и каждый гейтит отправку: съём страницы (`form_read.extract_form`,
+`missed == 0`), резолв ответа на каждое поле, фактическое заполнение (`_fill_field`). Хромает
+любой — анкета уходит человеку.
+
 `run()` — тем же путём обрабатывает НАКОПЛЕННУЮ форм-очередь (`store.forms()`): бэклог, что
 осел до inline или где пробелы уже закрыты словарём. `--dry` — только показать резолвинг.
+Дренаж — такой же реальный отклик, поэтому он и УВАЖАЕТ суточную квоту, и инкрементит её.
 
 БЕЗОПАСНОСТЬ (docs/security.md): у LLM нет execution-канала (только строка -> .fill/.check/
 .select_option/print) — машина не тронута ни при какой инъекции. Ответы только из фактов/словаря;
-radio/checkbox строго из опций (membership). origin только hh.ru.
+radio/checkbox строго из опций (membership); свободный текст проходит денилист
+`form_fill._denied`. origin только hh.ru.
 """
 from __future__ import annotations
 
@@ -29,7 +35,7 @@ from hrwork.application.apply.forms import form_fill, form_read
 from hrwork.application.apply.forms.form_status import FormSweepStatus
 from hrwork.application.apply.outcome import SETTLED_MARKS, ApplyChannel
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import FORMS_ENABLED, log
+from hrwork.config import FORMS_ENABLED, body, log
 
 _SUBMIT = '[data-qa="vacancy-response-submit-popup"]'          # «Откликнуться» (с ответами теста)
 _LETTER = 'textarea[data-qa="vacancy-response-popup-form-letter-input"]'
@@ -51,7 +57,8 @@ def _is_hh(url: str) -> bool:
     return False
 
 
-_VAC_CTX: dict[str, Any] | None = None       # ленивый кеш {id: (employer, desc, name, salary_floor)}
+# ленивый кеш {id: (employer, desc, name, salary_floor, experience_code)}
+_VAC_CTX: dict[str, Any] | None = None
 
 
 def _load_vac_ctx() -> dict[str, Any]:
@@ -65,8 +72,10 @@ def _load_vac_ctx() -> dict[str, Any]:
                 floor = None                       # пол вакансии (net RUB) для правила «если выше»
                 if sal and getattr(sal, "frm", None) and getattr(sal, "currency", None) in (None, "RUR", "RUB"):
                     floor = sal.frm
+                exp = getattr(r.vacancy, "experience", None)   # вилка опыта -> фолбэк грейда
                 _VAC_CTX[r.vacancy.id] = (r.vacancy.employer or "",
-                                          getattr(r, "requirement", "") or "", r.vacancy.name or "", floor)
+                                          getattr(r, "requirement", "") or "", r.vacancy.name or "",
+                                          floor, exp.hh_id if exp else None)
     return _VAC_CTX
 
 
@@ -78,6 +87,14 @@ def _vacancy_ctx(vid: str) -> tuple[str, str, str]:
 def _vacancy_floor(vid: str) -> int | None:
     v = _load_vac_ctx().get(str(vid))
     return v[3] if v else None
+
+
+def _vacancy_exp(vid: str) -> str | None:
+    """Код вилки опыта вакансии (`Experience.hh_id`) — тот же фолбэк грейда, что у чатов:
+    без него «Python-разработчик» с вилкой 1–3 года получал в анкете MIDDLE-ставку, а
+    в переписке JUNIOR-вилку (см. `form_fill.detect_grade`)."""
+    v = _load_vac_ctx().get(str(vid))
+    return v[4] if v else None
 
 
 def _resolve(field: Any, resume_ctx: str, sal_target: int | None = None,
@@ -139,11 +156,17 @@ def _fill_cover(page: Any, vid: str, rec: dict[str, Any], cover_mode: str) -> No
     тоглом «Добавить» (`_LETTER_TOGGLE`, выверено живым прогоном 134804227) — сперва раскрыть."""
     emp, desc, nm = _vacancy_ctx(vid)
     cand = SimpleNamespace(id=str(vid), name=nm or rec.get("name", ""), employer=emp, desc=desc)
+    # build_cover — НАША логика, и она ВНЕ suppress: под общим гасителем её падение
+    # (AttributeError в шаблоне, битый профиль) выглядело как «поле письма не найдено», то
+    # есть свой дефект маскировался под проблему HH. Fail fast на своей ошибке: она
+    # повторится на КАЖДОЙ вакансии, и упасть на первой дешевле, чем разослать 60 откликов
+    # без письма. Гасим только DOM-вызовы ниже.
+    text = cover.build_cover(cand, cover_mode)
     with contextlib.suppress(Exception):
         if not page.locator(_LETTER).count():
             page.locator(_LETTER_TOGGLE).first.click(timeout=3_000)
             page.wait_for_timeout(500)
-        page.locator(_LETTER).first.fill(cover.build_cover(cand, cover_mode))
+        page.locator(_LETTER).first.fill(text)
         log.info("[{}] сопроводительное вписано в поле формы", vid)
         return
     log.warning("[{}] письмо НЕ вписано (поле не найдено/fill упал) — отклик уйдёт без него", vid)
@@ -170,18 +193,33 @@ def _wait_submitted(page: Any, tries: int = 6) -> bool:
 def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
     """Inline авто-отклик на анкету (вызывается из apply_one под гейтом FORMS_ENABLED, страница
     уже на форме). Резолвит ВСЕ поля; при полноте — заполняет, пишет письмо, ЖМЁТ «Откликнуться»
-    -> True (верификацию делает apply_one). Пустое извлечение или ХОТЬ ОДИН пробел -> НЕ шлёт,
-    лог пробелов -> False (вакансия уходит в форм-очередь, человек пополняет form_answers)."""
+    -> True (верификацию делает apply_one). Пустое извлечение, НЕПОЛНЫЙ съём страницы или ХОТЬ
+    ОДИН пробел -> НЕ шлёт, лог -> False (вакансия уходит в форм-очередь, человек пополняет
+    form_answers)."""
     resume_ctx = form_fill.build_resume_ctx()
-    fields = form_read.extract_fields(page)
+    snapshot = form_read.extract_form(page)
+    fields = list(snapshot.fields)
     if not fields:
         log.info("[{}] анкета без извлечённых полей — в очередь (руками)", cand.id)
         return False
+    # Полнота СЪЁМА — первый из трёх этапов инварианта (съём -> резолв -> заполнение).
+    # Без этой проверки исключение на пятом вопросе оставляло четыре поля, все четыре
+    # резолвились, и гейт полноты проходил ПО ОБРЕЗАННОМУ СПИСКУ.
+    if not snapshot.complete:
+        log.warning("[{}] АВТО-ОТКЛИК ПРОПУЩЕН: анкета снята НЕПОЛНО — {} из {} вопросов не "
+                    "извлеклось (флэки-DOM или незнакомый контрол); отправка по обрезанному "
+                    "списку запрещена, вакансия остаётся в очереди",
+                    cand.id, snapshot.missed, snapshot.missed + len(fields))
+        return False
     _, desc, nm = _vacancy_ctx(str(cand.id))      # описание — контекст для «чем интересна вакансия»
-    sal_target = form_fill.salary_target(nm or getattr(cand, "name", ""), _vacancy_floor(cand.id))
+    sal_target = form_fill.salary_target(nm or getattr(cand, "name", ""), _vacancy_floor(cand.id),
+                                         _vacancy_exp(cand.id))
     resolved = [(f, *_resolve(f, resume_ctx, sal_target, desc)) for f in fields]
     gaps = [f for f, val, _ in resolved if not val]
     if gaps:
+        # Текст ВОПРОСА здесь не маскируется (в отличие от превью `_dry_preview`): это
+        # публичный текст работодателя и единственное, по чему владелец поймёт, какую запись
+        # добавить в `form_answers`. Маскируется подставленное ЗНАЧЕНИЕ, а его тут нет.
         for f in gaps:
             log.warning("[{}] ПРОБЕЛ анкеты (нет ответа): {}", cand.id, f.prompt[:90])
         log.warning("[{}] АВТО-ОТКЛИК ПРОПУЩЕН: {}/{} полей без ответа — пополни form_answers "
@@ -204,6 +242,15 @@ def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
         log.warning("[{}] АВТО-ОТКЛИК ПРОПУЩЕН: {}/{} полей не заполнилось — отклик ушёл бы "
                     "с дырами", cand.id, len(unfilled), len(fields))
         return False
+    # ЧТО именно уходит работодателю — в лог до submit. Отклик необратим, а текст свободных
+    # полей пишет LLM по чужому описанию вакансии: без этой строки сработавшую инъекцию
+    # (и просто неудачную формулировку) нельзя увидеть постфактум ничем.
+    # ЭТА строка сознательно НЕ маскируется `config.body`, в отличие от превью `_dry_preview`:
+    # она — единственная посмертная улика необратимого действия, и приватность собственного
+    # лога тут дешевле, чем слепота к тому, что ушло работодателю (аудит 08.08.2026, п.49).
+    for f, val, own in ready:
+        log.info("[{}] анкета отправляется: {} -> {}{}", cand.id, f.prompt[:60], val[:200],
+                 f" | свой вариант: {own[:200]}" if own else "")
     _fill_cover(page, str(cand.id), {"name": getattr(cand, "name", "")}, cover_mode)
     with contextlib.suppress(Exception):
         page.locator(_SUBMIT).first.click(timeout=5_000)
@@ -232,14 +279,21 @@ def _dry_preview(page: Any, vid: str, rec: dict[str, Any]) -> None:
     resume_ctx = form_fill.build_resume_ctx() if FORMS_ENABLED else ""
     fields = form_read.extract_fields(page)
     _, desc, _ = _vacancy_ctx(vid)
-    sal_target = form_fill.salary_target(rec.get("name", ""), _vacancy_floor(vid))
+    sal_target = form_fill.salary_target(rec.get("name", ""), _vacancy_floor(vid),
+                                         _vacancy_exp(vid))
     gaps = 0
+    # ТЕЛА МАСКИРУЮТСЯ (`config.body`, находка аудита 08.08.2026, п.49): пара «поле анкеты ->
+    # подставленное значение» уходила в `logs/*.log` дословно и на уровне INFO — вместе с
+    # зарплатой, которую превью подставляет само (`form_fill.salary_target`). Служебная часть
+    # видна: тип поля, id вакансии, число полей и пробелов. `keep` оставляет ровно столько,
+    # чтобы отличить одно поле анкеты от другого; «DECLINE (пробел)» — наша метка, не текст.
+    # Дословно — `LOG_BODIES=1`, ровно для того превью и запускают.
     for f in fields:
         val, own = _resolve(f, resume_ctx, sal_target, desc)
         gaps += not val
-        tail = f" (+свой: {own})" if own else ""
-        log.info("  [{}] {} -> {}", f.ftype.code, f.prompt[:55],
-                 (f"{val}{tail}" if val else "DECLINE (пробел)"))
+        tail = f" (+свой: {body(own)})" if own else ""
+        log.info("  [{}] {} -> {}", f.ftype.code, body(f.prompt, keep=25),
+                 (f"{body(val)}{tail}" if val else "DECLINE (пробел)"))
     log.info("[{}] {} — полей {}, пробелов {}", vid, rec.get("name"), len(fields), gaps)
 
 
@@ -346,7 +400,10 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
         cover_mode: str = "template", limit: int = 0) -> dict[str, Any]:
     """Обработать НАКОПЛЕННУЮ форм-очередь тем же авто-путём, что inline apply: полные анкеты ->
     заполнить + «Откликнуться»; пробелы -> лог. `--dry` — только резолвинг; `limit` — максимум
-    ОТПРАВЛЕННЫХ за запуск (дренаж бэклога батчами, не одним залпом)."""
+    ОТПРАВЛЕННЫХ за запуск (дренаж бэклога батчами, не одним залпом).
+
+    Суточный потолок HH (`store.daily_cap`) уважается ТАК ЖЕ, как в `autoclick._drain_pending`:
+    `limit` — это размер батча, а не защита от лимита площадки (CLI-дефолт `0` = безлимит)."""
     queue = store.forms()
     if only:
         queue = {k: v for k, v in queue.items() if k == str(only)}
@@ -378,7 +435,17 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
         if not _logged_in(page):
             log.error("Нет сессии HH — сначала: hh.py autoclick --login")
             return {"forms": len(queue), "submitted": 0}
+        cap = store.daily_cap()
         for vid, rec in queue.items():
+            # Суточная квота ПРОВЕРЯЕТСЯ, а не только инкрементится. Дренаж — такой же
+            # реальный отклик, как крон-путь, и до 08.08.2026 единственным ограничителем был
+            # `--limit` с CLI-дефолтом 0 (безлимит): вечерний `hh.py forms` при выбранных
+            # 200/200 добавлял сверху всю очередь. Ровно так 28.07 пробили лимит HH и словили
+            # капчу — тогда чинили УЧЁТ (bump_quota), а гейт поставить забыли.
+            if not dry and (used := store.applied_today()) >= cap:
+                log.warning("Дневной лимит откликов исчерпан: {}/{} — дренаж форм ОСТАНОВЛЕН, "
+                            "очередь остаётся до завтра", used, cap)
+                break
             if not dry and limit and submitted >= limit:
                 log.info("Лимит отправки достигнут: {} за запуск", limit)
                 break

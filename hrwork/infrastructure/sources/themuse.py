@@ -42,7 +42,7 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, register_source
+from .base import Source, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://www.themuse.com"
@@ -61,6 +61,10 @@ class ThemuseCfg:
     retry_attempts: int = 3
     backoff_start: float = 1.0
     backoff_max: float = 8.0
+    # Перепроверка пустой страницы — семантика himalayas.py::_get_page, см. _get_page ниже.
+    empty_retries: int = 3
+    empty_retry_delay: float = 2.0
+    empty_retry_max: float = 8.0
 
 
 CFG = ThemuseCfg()
@@ -97,6 +101,19 @@ def _is_remote(it: dict[str, Any]) -> bool:
     return any("remote" in str(x.get("name") or "").lower()
                or "flexible" in str(x.get("name") or "").lower()
                for x in (it.get("locations") or []))
+
+
+def _warn_if_hole(query: str, pages: list[int], chunks: list[list[dict[str, Any]]]) -> None:
+    """Обход комбинации прерывается на первой пустой странице. Если ПОСЛЕ неё в той же пачке
+    страница отдала данные, пустая была ДЫРОЙ, а не концом выдачи: комбинация не исчерпана,
+    а обход всё равно остановлен, и хвост за пачкой не собран. Молчать про это нельзя —
+    именно молчание превратило троттлинг himalayas в «успешный» сбор 40 % портала."""
+    empty = [p for p, c in zip(pages, chunks) if not c]
+    last_full = max((p for p, c in zip(pages, chunks) if c), default=0)
+    if empty and empty[0] < last_full:
+        log.warning("themuse [{}]: обход оборван на ПУСТОЙ странице {}, но страница {} той же "
+                    "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана",
+                    query, empty[0], last_full)
 
 
 def _normalize(it: dict[str, Any]) -> VacancyRecord:
@@ -137,7 +154,9 @@ class ThemuseSource(Source):
     def __init__(self, **_: Any) -> None:
         pass
 
-    async def _get_page(self, query: str, page: int) -> list[dict[str, Any]]:
+    async def _fetch_once(self, query: str, page: int) -> list[dict[str, Any]]:
+        """Одна страница с ретраями ТРАНСПОРТА (сбой curl / битый JSON). Пустой список от
+        отвечающего портала здесь не ретраится — это делает `_get_page`."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
         url = f"{CFG.api_url}?page={page}"
         if query:
@@ -156,6 +175,33 @@ class ThemuseSource(Source):
             delay = min(delay * 2, CFG.backoff_max)
         return []
 
+    async def _get_page(self, query: str, page: int) -> list[dict[str, Any]]:
+        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — та же семантика, что в
+        `himalayas.py::_get_page` (3 попытки с паузами 2/4/8 с).
+
+        Урок инцидента 07.08.2026 (himalayas: 12 043 из 26 216 легли в кеш под видом полного
+        среза): портал под троттлингом отдаёт HTTP 200 с пустым списком, внешне неотличимый
+        от «выдача кончилась», и ретраи транспорта на это не срабатывают — ответ-то пришёл.
+        Пришли данные со второй-четвёртой попытки — это был троттлинг; пусто после всех —
+        выдача комбинации фильтров действительно кончилась.
+
+        ЦЕНА ОСОЗНАННАЯ: каждая честно пустая страница теперь стоит 2+4+8 = 14 с, и такая
+        встречается в конце каждой комбинации `THEMUSE_QUERIES` (их 9) — плюс ~2 минуты к
+        прогону. Дешевле подождать, чем недособрать половину портала."""
+        results = await self._fetch_once(query, page)
+        if results:
+            return results
+        delay = CFG.empty_retry_delay
+        for attempt in range(CFG.empty_retries):
+            await asyncio.sleep(delay)
+            results = await self._fetch_once(query, page)
+            if results:
+                log.debug("themuse {} page={}: пусто было троттлингом, ответ с попытки {}",
+                          query, page, attempt + 2)
+                return results
+            delay = min(delay * 2, CFG.empty_retry_max)
+        return []
+
     async def collect(self) -> list[VacancyRecord]:
         if not THEMUSE_QUERIES:
             log.warning("themuse: список запросов пуст — собирать нечего")
@@ -166,32 +212,37 @@ class ThemuseSource(Source):
         raw_total = dupes = stale = dropped = 0
         limit = min(CFG.max_pages, PAGE_CEILING)
 
+        def _one_card(it: dict[str, Any]) -> VacancyRecord | None:
+            """Карточка -> запись или None, если она отсеяна штатно (дубль, старьё, не-IT)."""
+            nonlocal dupes, stale, dropped
+            vid = str(it.get("id") or "")
+            if not vid:
+                return None
+            if vid in seen:
+                dupes += 1
+                return None
+            seen.add(vid)
+            # Возраст считает ДОМЕН (freshness.age_days). Своя копия здесь была не
+            # просто дублем: она падала TypeError на дате без таймзоны («can't subtract
+            # offset-naive and offset-aware»), а исключение отсюда рвёт весь сбор
+            # источника. parse_dt защищён от этого и понимает ISO, «Z» и unix-секунды.
+            age = freshness.age_days(it.get("publication_date"))
+            if CFG.max_age_days and age is not None and age > CFG.max_age_days:
+                stale += 1                   # сортировки по дате нет — режем у себя
+                return None
+            rec = _normalize(it)
+            if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
+                dropped += 1
+                return None
+            return rec
+
         def _take(batch: list[dict[str, Any]]) -> None:
             """Нормализация и отсев ПАЧКАМИ: сырые карточки с полным HTML не копятся до
-            конца обхода (та же схема, что в himalayas.py после замера на 731 МБ)."""
-            nonlocal raw_total, dupes, stale, dropped
-            for it in batch:
-                raw_total += 1
-                vid = str(it.get("id") or "")
-                if not vid:
-                    continue
-                if vid in seen:
-                    dupes += 1
-                    continue
-                seen.add(vid)
-                # Возраст считает ДОМЕН (freshness.age_days). Своя копия здесь была не
-                # просто дублем: она падала TypeError на дате без таймзоны («can't subtract
-                # offset-naive and offset-aware»), а исключение отсюда рвёт весь сбор
-                # источника. parse_dt защищён от этого и понимает ISO, «Z» и unix-секунды.
-                age = freshness.age_days(it.get("publication_date"))
-                if CFG.max_age_days and age is not None and age > CFG.max_age_days:
-                    stale += 1               # сортировки по дате нет — режем у себя
-                    continue
-                rec = _normalize(it)
-                if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
-                    dropped += 1
-                    continue
-                out.append(rec)
+            конца обхода (та же схема, что в himalayas.py после замера на 731 МБ).
+            Изоляция НА ЭЛЕМЕНТЕ (normalize_each): кривая карточка не роняет источник."""
+            nonlocal raw_total
+            raw_total += len(batch)
+            out.extend(normalize_each(batch, _one_card, source="themuse"))
 
         sem = asyncio.Semaphore(CFG.page_conc)
 
@@ -206,7 +257,8 @@ class ThemuseSource(Source):
                 chunks = await asyncio.gather(*(_one(query, p) for p in pages))
                 for c in chunks:
                     _take(c)
-                if any(not c for c in chunks):   # выдача этого фильтра кончилась
+                if any(not c for c in chunks):   # пусто ПОСЛЕ перепроверок — фильтр исчерпан
+                    _warn_if_hole(query, pages, chunks)
                     break
                 page = pages[-1] + 1
 

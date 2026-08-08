@@ -5,6 +5,7 @@
 проверяется: один и тот же «senior» с любого портала обязан попасть в одну корзину, иначе
 поедут и отбор кандидатов, и срезы аналитики.
 """
+import asyncio
 import datetime
 
 import pytest
@@ -93,6 +94,22 @@ def test_themuse_has_no_salary():
     assert themuse._normalize(_muse()).vacancy.salary is None
 
 
+def test_themuse_broken_card_is_skipped_without_killing_the_source(monkeypatch):
+    # РЕГРЕСС 08.08.2026: исключение из _normalize пробивало до hh.py::_run_source, источник
+    # отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов. Кривая карточка — чужие данные:
+    # пропускается поштучно. Здесь ломается locations (список строк вместо объектов).
+    batch = [_muse(id="1"), _muse(id="2", locations=["New York, NY"]), _muse(id="3")]
+
+    async def fake_page(query, page):
+        return batch if page == 1 else []
+
+    src = themuse.ThemuseSource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+
+    out = asyncio.run(src.collect())
+    assert [r.vacancy.id for r in out] == ["themuse_1", "themuse_3"]
+
+
 # ── jobicy ─────────────────────────────────────────────────────────────────────
 
 def test_jobicy_maps_card_to_domain():
@@ -120,7 +137,10 @@ def test_jobicy_level_maps_to_experience(level, expected):
 
 
 @pytest.mark.parametrize("geo, expected", [
-    ("Anywhere", "Anywhere"),
+    # «Anywhere» = ограничений нет, и подпись у этого случая одна на все порталы — доменная
+    # REMOTE_CITY (см. jobicy.py::_city и test_himalayas_no_restrictions_...). Своя строка
+    # давала ВТОРОЙ бакет в фасете городов ленты рядом с «Remote» от остальных источников.
+    ("Anywhere", "Remote"),
     ("USA", "USA"),
     ("APAC,  Australia", "APAC, Australia"),      # лишние пробелы схлопываются
     ("", "Remote"),

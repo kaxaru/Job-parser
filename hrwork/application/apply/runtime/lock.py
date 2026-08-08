@@ -72,6 +72,50 @@ def _lock_holder() -> tuple[str | int, int] | None:
     return None
 
 
+def _try_acquire() -> bool:
+    """Создать lock-файл АТОМАРНО (O_CREAT|O_EXCL). False — файл уже существует.
+
+    ИНЦИДЕНТ-КЛАСС (аудит 08.08.2026): до этого захват был check-then-write — `_lock_holder()`
+    и следом безусловный `write_text`. Крон-слот и ручной `hh.py forms` могли пройти проверку
+    в одно окно и оба «взять» lock -> два Chromium на один persistent-профиль (то, ради чего
+    lock и существует) + потерянный инкремент квоты. Окно узаконил watchdog-путь: `_kill_own_tree`
+    отдаёт lock ДО выстрела, пока Chromium ещё умирает. O_EXCL отдаёт файл ровно одному
+    претенденту — это гарантия ФС, а не порядка вызовов.
+
+    Восстановление: файл либо создан целиком (с pid+ts), либо не создан вовсе. Упавший между
+    созданием и записью тела оставит пустой файл — его подберёт ветка «битый lock» в
+    `_lock_holder` (свежий -> держим, старше TTL -> отдаём)."""
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    # Прочие OSError (нет каталога, нет прав) НЕ глушим: без lock браузер поднимать нельзя,
+    # и тихое «продолжаем» вернуло бы второй Chromium на persistent-профиль.
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(json.dumps({"pid": os.getpid(), "ts": time.time()}))
+    return True
+
+
+def _drop_stale() -> bool:
+    """Снять lock, который `_lock_holder` признал протухшим/осиротевшим. True — сняли.
+    Отдельным шагом от захвата: O_EXCL не перезаписывает, поэтому мёртвый файл сперва убираем,
+    а потом честно соревнуемся за создание нового.
+
+    Живость перепроверяем ПОВТОРНО, вплотную к unlink: пока мы решались, конкурент мог снять
+    тот же протухший файл и положить свой, ЖИВОЙ, — снести его значило бы пустить второй
+    Chromium на persistent-профиль. Остаточное окно (микросекунды между проверкой и unlink)
+    признано осознанным: закрыть его полностью можно только собственным арбитром, а прежний
+    код держал окно РАЗМЕРОМ С ВЕСЬ ЗАХВАТ и не имел даже атомарного создания."""
+    if _lock_holder() is not None:
+        return False
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+        return True
+    except OSError as e:
+        log.warning("протухший lock не удалось снять ({})", e)
+        return False
+
+
 def release_if_mine() -> bool:
     """Снять lock, если его держит ЭТОТ процесс. True — сняли.
 
@@ -93,20 +137,26 @@ def _single_instance(wait_retries: int = 0, wait_s: float = 60) -> Iterator[None
     Протухший/осиротевший lock перезаписываем.
 
     wait_retries>0 — не падать сразу, а ЖДАТЬ освобождения (для крона: сервер ленты держит
-    ТОТ ЖЕ lock ~300с после отклика — иначе крон-цикл пропускался бы впустую)."""
+    ТОТ ЖЕ lock ~300с после отклика — иначе крон-цикл пропускался бы впустую).
+
+    Захват АТОМАРЕН (`_try_acquire`, O_EXCL): проверка живости и создание файла больше не
+    разнесены во времени, поэтому два претендента не могут «оба взять» свободный lock."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     for attempt in range(wait_retries + 1):
+        if _try_acquire():                             # свободен — взяли, гонки нет
+            break
         held = _lock_holder()
-        if held is None:
-            break                                      # свободен/протух — берём
+        if held is None and _drop_stale() and _try_acquire():
+            break                                      # держал мёртвый/протухший — перезабрали
+        # held is None и захват не удался -> lock успел взять другой претендент: он и хозяин
+        pid, age = held if held is not None else ("?", 0)
         if attempt < wait_retries:
             log.info("lock занят (pid={}, {}с) — жду {}с и повторю ({}/{})",
-                     held[0], held[1], int(wait_s), attempt + 1, wait_retries)
+                     pid, age, int(wait_s), attempt + 1, wait_retries)
             time.sleep(wait_s)
         else:
             raise SystemExit(
-                f"autoclick уже выполняется (lock, pid={held[0]}, {held[1]}с) — выходим")
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    LOCK_FILE.write_text(json.dumps({"pid": os.getpid(), "ts": time.time()}), encoding="utf-8")
+                f"autoclick уже выполняется (lock, pid={pid}, {age}с) — выходим")
     try:
         yield
     finally:

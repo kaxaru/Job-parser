@@ -10,6 +10,7 @@
 источники), поэтому существующий vacancies_raw.json читается без пере-сбора. Замена на
 `PgVacancyRepository` не трогает потребителей — они зависят от протокола, не от файла.
 """
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -46,7 +47,8 @@ class VacancyRepository(Protocol):
 
     def exists(self) -> bool: ...
     def load(self) -> list[VacancyRecord]: ...
-    def save(self, records: list[VacancyRecord]) -> None: ...
+    def save(self, records: list[VacancyRecord], *,
+             pre_dedup_by_source: Mapping[str, int] | None = None) -> None: ...
 
 
 class JsonVacancyRepository:
@@ -62,10 +64,16 @@ class JsonVacancyRepository:
         data = read_json_or(self._path, [])
         return [self._from_dict(d) for d in data]
 
-    def save(self, records: list[VacancyRecord]) -> None:
+    def save(self, records: list[VacancyRecord], *,
+             pre_dedup_by_source: Mapping[str, int] | None = None) -> None:
+        """`pre_dedup_by_source` — объёмы источников ДО кросс-портального дедупа, база
+        санити-гейта следующего прогона (`files.py::PRE_DEDUP_META_KEY`). Дефолт None —
+        «состав источников не менялся» (так зовёт `hh.py::enrich`): прошлую базу сохраняет
+        сам `save_meta`. Параметр keyword-only и необязательный, чтобы вызов `save(records)`
+        остался валидным."""
         # Атомарно (tmp + os.replace): крэш посреди записи не портит файл многочасового сбора.
         atomic_write_json(self._path, [self._to_dict(r) for r in records])
-        save_meta(len(records))
+        save_meta(len(records), pre_dedup_by_source)
 
     # ── ACL: сырой dict <-> record (единственная точка, где живёт raw-схема) ──
     @staticmethod

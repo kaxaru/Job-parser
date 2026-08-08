@@ -11,6 +11,12 @@ import time
 
 from hrwork.config import DATA_DIR, log
 
+# Разбор HTTP-кода из write-out curl берём у сетевого примитива, а не копируем сюда третьим
+# экземпляром: формат `-w` и регексп хвоста — одно знание на процесс (`net/http.py`).
+# Имена приватные, потому что до сегодняшнего дня у них был один потребитель; их публикация —
+# правка владельца http.py, здесь важнее не разводить копию.
+from hrwork.infrastructure.net.http import _STATUS_FMT, _http_status
+
 FX_CACHE_FILE = DATA_DIR / "fx_rates.json"
 FX_TTL_HOURS = 24
 FX_API = "https://open.er-api.com/v6/latest/USD"
@@ -45,11 +51,23 @@ def to_rub(amount: float | None, currency: str | None,
 
 
 def _fetch() -> dict[str, float] | None:
-    """Свежие курсы per-USD из API (dict) или None при сбое/невалидном ответе."""
+    """Свежие курсы per-USD из API (dict) или None при сбое/не-200/невалидном ответе.
+
+    Поведение приведено к `net/http.py::_curl_fetch` (находки 10 и 48), хотя тот async и
+    напрямую отсюда не зовётся:
+      * `--` перед адресом: без разделителя значение, начинающееся с дефиса, стало бы опцией
+        curl. Сейчас `FX_API` — константа модуля, так что это единообразие, а не дефект;
+      * проверка HTTP-кода: тело 4xx/5xx не должно доезжать до `json.loads`. Гейт
+        `result == 'success'` его и так отсекает, но курс, собранный из тела ошибки, хуже
+        отсутствия курса — а фолбэков на этот случай ниже целых два (старый кеш, хардкод)."""
     try:
-        out = subprocess.run([CURL, "-s", "--max-time", "15", FX_API],
-                             capture_output=True, timeout=20).stdout
-        data = json.loads(out or b"{}")
+        proc = subprocess.run([CURL, "-s", "--max-time", "15", "-w", _STATUS_FMT, "--", FX_API],
+                              capture_output=True, timeout=20)
+        status = _http_status(proc.stderr)
+        if status != 200:
+            log.warning("FX-курсы не получены: HTTP {}", status)
+            return None
+        data = json.loads(proc.stdout or b"{}")
         if data.get("result") == "success" and data.get("rates"):
             return {k: float(v) for k, v in data["rates"].items()}
     except Exception as e:

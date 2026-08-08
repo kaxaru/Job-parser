@@ -1,13 +1,42 @@
 """Тесты источника hirify: ACL hirify-API -> VacancyRecord (домен напрямую, без сети)."""
 import asyncio
 
+import pytest
+
 from hrwork.infrastructure import sources, storage
+from hrwork.infrastructure.sources import base, hirify
+from hrwork.infrastructure.sources.base import ListIncomplete, check_list_complete
 from hrwork.infrastructure.sources.hirify import (
+    CFG,
     HirifyCfg,
     HirifySource,
     _clean_company,
+    _meta_header,
     _normalize,
 )
+
+
+def _check_list_complete(got, *, total, per_page, failed):
+    """Сверка глазами hirify: общая функция `base.check_list_complete` с порогом ПОРТАЛА.
+    Порог — часть спецификации адаптера, поэтому берётся из его конфига, а не из литерала."""
+    check_list_complete(got, total=total, per_page=per_page, failed=failed,
+                        source="hirify", max_lost_ratio=CFG.list_loss_max_ratio)
+
+
+class _Log:
+    """Перехват строк лога: у loguru формат — str.format с позиционными аргументами."""
+
+    def __init__(self):
+        self.warnings: list[str] = []
+
+    def warning(self, msg, *args):
+        self.warnings.append(msg.format(*args))
+
+    def debug(self, msg, *args):
+        pass
+
+    def info(self, msg, *args):
+        pass
 
 ITEM = {
     "id": 712795, "slug": "712795-python-developer-middlejunior",
@@ -191,6 +220,230 @@ def test_stale_cache_triggers_refetch(monkeypatch):
     out = asyncio.run(src.collect())
     assert fetched == ["z"]                                     # протухла -> дозагрузка
     assert "fresh" in out[0].description_html
+
+
+# ── Мета-шапка: гейт по типу, а не по truthy ───────────────────────────────────
+
+def _header_parts(header: str) -> list[str]:
+    """Сегменты мета-шапки без эмодзи-префиксов (консоль проекта — cp1251)."""
+    body = header.removeprefix("<p>").removesuffix("</p>")
+    return [p.split(" ", 1)[1] if " " in p else p for p in body.split(" · ")]
+
+
+@pytest.mark.parametrize("salary_in_usd, expected", [
+    (120000, ["Remote", "~$120,000 USD (норм.)", "hirify.me"]),
+    # БАГ 08.08.2026: строковое значение из выдачи уходило в спецификатор `:,` и давало
+    # ValueError («Cannot specify ',' with 's'») — падала нормализация ВСЕЙ страницы.
+    ("120000", ["Remote", "~$120,000 USD (норм.)", "hirify.me"]),
+    (120000.4, ["Remote", "~$120,000 USD (норм.)", "hirify.me"]),
+    (None, ["Remote", "hirify.me"]),
+    ("мусор", ["Remote", "hirify.me"]),
+    (0, ["Remote", "hirify.me"]),               # 0 у портала значит «нет данных»
+])
+def test_meta_header_reads_usd_as_a_number_whatever_the_portal_sent(salary_in_usd, expected):
+    header = _meta_header({"salary": {"salary_in_usd": salary_in_usd, "currency": "USD"}})
+    assert _header_parts(header) == expected
+
+
+def test_broken_card_is_skipped_without_killing_the_source(monkeypatch):
+    # РЕГРЕСС 08.08.2026: исключение из _normalize пробивало до hh.py::_run_source, источник
+    # отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов. Кривая карточка — чужие данные:
+    # пропускается поштучно. Здесь ломается regions (список строк вместо объектов).
+    items = [
+        {"id": 1, "slug": "a", "title": "A", "grades": [], "work_format": [],
+         "created_at": "2026-07-01T00:00:00Z"},
+        {"id": 2, "slug": "b", "title": "B", "grades": [], "work_format": [],
+         "created_at": "2026-07-02T00:00:00Z", "regions": ["United Kingdom"]},
+        {"id": 3, "slug": "c", "title": "C", "grades": [], "work_format": [],
+         "created_at": "2026-07-03T00:00:00Z"},
+    ]
+
+    async def fake_page(page):
+        return {"data": items, "last_page": 1, "total": 3, "per_page": 3}
+
+    async def fake_one(slug):
+        return {"text": f"<p>full {slug}</p>"}
+
+    src = HirifySource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+    monkeypatch.setattr(src, "_get_one", fake_one)
+    monkeypatch.setattr(storage, "load_desc_cache", dict)
+
+    out = asyncio.run(src.collect())
+    assert sorted(r.vacancy.id for r in out) == ["hirify_1", "hirify_3"]
+
+
+# ── Сверка списка с total: сбойная страница != пустая страница ─────────────────
+
+def test_list_without_failed_pages_passes_silently(monkeypatch):
+    # Недобор без сбойных страниц — норма: выдача сдвигается между запросами
+    fake = _Log()
+    monkeypatch.setattr(base, "log", fake)
+    _check_list_complete(17990, total=18000, per_page=100, failed=[])
+    assert fake.warnings == []
+
+
+@pytest.mark.parametrize("failed_pages", [1, 2, 3])
+def test_page_loss_below_two_percent_is_reported_but_the_run_survives(monkeypatch, failed_pages):
+    # Порог 2 %: одна страница — 100 записей из 18 000 (0.55 %). Ронять весь прогон из-за
+    # одного транзиентного сбоя нельзя — записи вернутся следующим сбором.
+    fake = _Log()
+    monkeypatch.setattr(base, "log", fake)
+    pages = list(range(1, failed_pages + 1))
+    _check_list_complete(18000 - failed_pages * 100, total=18000, per_page=100, failed=pages)
+    assert len(fake.warnings) == 1
+
+
+def test_page_loss_warning_names_the_lost_pages(monkeypatch):
+    fake = _Log()
+    monkeypatch.setattr(base, "log", fake)
+    _check_list_complete(17900, total=18000, per_page=100, failed=[41])
+    assert fake.warnings == [
+        "hirify: страниц не отдалось 1 (~100 записей, 0.6% от 18000) — срез неполный, "
+        "страницы: 41"]
+
+
+@pytest.mark.parametrize("failed_pages", [4, 10, 40])
+def test_page_loss_above_two_percent_discards_the_run(failed_pages):
+    # 4 страницы = 400 записей = 2.2 % — усечённый срез дороже пропуска прогона: он затирает
+    # кеш, а восстановление описаний не уложится в дневной HIRIFY_ENRICH_MAX=600.
+    with pytest.raises(ListIncomplete):
+        _check_list_complete(18000 - failed_pages * 100, total=18000, per_page=100,
+                             failed=list(range(1, failed_pages + 1)))
+
+
+def test_collect_refuses_a_truncated_list_instead_of_returning_it(monkeypatch):
+    # РЕГРЕСС 08.08.2026: страница, не отдавшаяся после всех ретраев, превращалась в пустой
+    # кусок, обход шёл дальше, и усечённый срез затирал кеш — потеря меньше 50 %-порога
+    # санити-гейта, поэтому сбор считался успешным.
+    page_data = {
+        1: {"data": [{"id": 1, "slug": "a", "title": "A", "grades": [], "work_format": []}],
+            "last_page": 3, "total": 3, "per_page": 1},
+        3: {"data": [{"id": 3, "slug": "c", "title": "C", "grades": [], "work_format": []}]},
+    }
+
+    async def fake_page(page):
+        return page_data.get(page)              # страница 2 не отдалась после ретраев
+
+    async def fake_one(slug):
+        return {"text": f"<p>full {slug}</p>"}
+
+    src = HirifySource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+    monkeypatch.setattr(src, "_get_one", fake_one)
+    monkeypatch.setattr(storage, "load_desc_cache", dict)
+
+    with pytest.raises(ListIncomplete):
+        asyncio.run(src.collect())
+
+
+# ── Протухший кеш вместо tldr, когда бюджет enrich исчерпан ────────────────────
+
+#: мета-шапка карточки без регионов/английского/вилки. Эмодзи записаны escape'ами
+#: намеренно: консоль проекта в cp1251, и упавший тест иначе печатается ошибкой кодека.
+BARE_HEADER = "<p>\U0001f30d Remote · \U0001f4cc hirify.me</p>"
+
+
+def _stale_hit(desc, at):
+    return {"sig": "2026-07-01T00:00:00Z", "description_html": desc, "requirement": "", "at": at}
+
+
+def test_stale_description_survives_when_the_enrich_budget_is_spent(monkeypatch):
+    # РЕГРЕСС 08.08.2026: протухшая по времени запись уходила в todo, не влезала в бюджет и
+    # перезаписывалась шапкой+tldr — уже скачанное описание ТЕРЯЛОСЬ. Протухшее лучше tldr.
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(tz=timezone.utc) - timedelta(days=20)).isoformat()
+    items = [
+        {"id": 1, "slug": "a", "title": "A", "updated_at": "2026-07-01T00:00:00Z",
+         "created_at": "2026-07-01T00:00:00Z", "grades": [], "work_format": [], "tldr": "tldr A"},
+        {"id": 2, "slug": "b", "title": "B", "updated_at": "2026-07-01T00:00:00Z",
+         "created_at": "2026-07-02T00:00:00Z", "grades": [], "work_format": [], "tldr": "tldr B"},
+    ]
+    monkeypatch.setattr(hirify, "CFG", HirifyCfg(enrich_max=1))
+
+    async def fake_page(page):
+        return {"data": items, "last_page": 1, "total": 2, "per_page": 2}
+
+    fetched = []
+
+    async def fake_one(slug):
+        fetched.append(slug)
+        return {"text": f"<p>fresh {slug}</p>"}
+
+    src = HirifySource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+    monkeypatch.setattr(src, "_get_one", fake_one)
+    monkeypatch.setattr(storage, "load_desc_cache", lambda: {
+        "hirify_1": _stale_hit("<p>old A</p>", old),
+        "hirify_2": _stale_hit("<p>old B</p>", old)})
+
+    out = asyncio.run(src.collect())
+    by = {r.vacancy.id: r for r in out}
+    assert fetched == ["b"]                                   # бюджет 1 -> свежайшей
+    assert by["hirify_2"].description_html == BARE_HEADER + "<p>fresh b</p>"
+    assert by["hirify_1"].description_html == "<p>old A</p>"  # НЕ шапка+tldr
+    assert by["hirify_1"].enriched is True
+    assert by["hirify_1"].enriched_at == old                  # метка не обнуляется: обновим позже
+
+
+def test_never_enriched_card_gets_the_budget_before_the_stale_one(monkeypatch):
+    # Арифметика: 18k вакансий при бюджете 600/день и жизни записи 14 дней. Если бюджет
+    # съедает экспирация, никогда-не-обогащённый хвост не доходит до enrich НИКОГДА.
+    # У протухшей описание переживает прогон, у новой альтернатива — tldr.
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(tz=timezone.utc) - timedelta(days=20)).isoformat()
+    items = [
+        {"id": 1, "slug": "stale", "title": "A", "updated_at": "2026-07-01T00:00:00Z",
+         "created_at": "2026-07-09T00:00:00Z", "grades": [], "work_format": []},   # СВЕЖЕЕ
+        {"id": 2, "slug": "new", "title": "B", "updated_at": "2026-07-02T00:00:00Z",
+         "created_at": "2026-07-01T00:00:00Z", "grades": [], "work_format": []},   # старее
+    ]
+    monkeypatch.setattr(hirify, "CFG", HirifyCfg(enrich_max=1))
+
+    async def fake_page(page):
+        return {"data": items, "last_page": 1, "total": 2, "per_page": 2}
+
+    fetched = []
+
+    async def fake_one(slug):
+        fetched.append(slug)
+        return {"text": f"<p>fresh {slug}</p>"}
+
+    src = HirifySource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+    monkeypatch.setattr(src, "_get_one", fake_one)
+    monkeypatch.setattr(storage, "load_desc_cache", lambda: {
+        "hirify_1": _stale_hit("<p>old A</p>", old)})
+
+    out = asyncio.run(src.collect())
+    by = {r.vacancy.id: r for r in out}
+    assert fetched == ["new"]
+    assert by["hirify_2"].description_html == BARE_HEADER + "<p>fresh new</p>"
+    assert by["hirify_1"].description_html == "<p>old A</p>"
+
+
+def test_changed_vacancy_never_reuses_the_description_of_the_old_version(monkeypatch):
+    # sig другой -> вакансию переписали. Старое описание относится к другой версии и как
+    # fallback не годится: показать его было бы враньём, tldr честнее.
+    from datetime import datetime, timedelta, timezone
+    old = (datetime.now(tz=timezone.utc) - timedelta(days=20)).isoformat()
+    items = [{"id": 1, "slug": "a", "title": "A", "updated_at": "2026-07-30T00:00:00Z",
+              "created_at": "2026-07-01T00:00:00Z", "grades": [], "work_format": [],
+              "tldr": "tldr A"}]
+    monkeypatch.setattr(hirify, "CFG", HirifyCfg(enrich_max=0))
+
+    async def fake_page(page):
+        return {"data": items, "last_page": 1, "total": 1, "per_page": 1}
+
+    src = HirifySource()
+    monkeypatch.setattr(src, "_get_page", fake_page)
+    monkeypatch.setattr(storage, "load_desc_cache", lambda: {
+        "hirify_1": _stale_hit("<p>old A</p>", old)})     # sig записи — 2026-07-01, вакансии — 07-30
+
+    out = asyncio.run(src.collect())
+    assert out[0].enriched is False
+    assert "old A" not in out[0].description_html
+    assert "tldr A" in out[0].description_html
 
 
 def test_collect_caps_enrich_at_limit(monkeypatch):

@@ -28,13 +28,20 @@ const RESUME_WEIGHTS = {
   Python: 30, FastAPI: 12, Docker: 6, PostgreSQL: 5, MySQL: 3, SQLite: 2,
   'C#': 1, React: 1,
 };
-const EXP_SCORE = { 'Без опыта': 25, '1–3 года': 25, '3–6 лет': 10, '6+ лет': 0 };
+/* Ключи — доменные КОДЫ грейда (domain/experience.py::Experience), а не подписи. Раньше
+   тут стояли строки 'Без опыта'/'1–3 года'/…, то есть третья копия config.EXP_LABELS (после
+   самого конфига и чипов шаблона): правка подписи молча обнуляла бы баллы за опыт у ВСЕХ
+   карточек — скоринг тихо стал бы «неизвестный опыт -> 12». Карточка несёт код в `exp_id`
+   (feed.py::build_feed), набор кодов пришпилен стражем test_feed_bridge.py. */
+const EXP_SCORE = { noExperience: 25, between1And3: 25, between3And6: 10, moreThan6: 0 };
 
 export function resumeMatch(v) {
   let stack = 0;
   for (const t of v.techs) stack += RESUME_WEIGHTS[t] || 0;
   stack = Math.min(stack, 60);
-  const exp    = (v.exp in EXP_SCORE) ? EXP_SCORE[v.exp] : 12;  /* неизвестный опыт — нейтрально */
+  /* грейда нет или портал его не отдал -> нейтральные 12 (не 0: пустое поле у arbeitnow
+     и web3 — это качество данных портала, а не несоответствие резюме) */
+  const exp    = (v.exp_id in EXP_SCORE) ? EXP_SCORE[v.exp_id] : 12;
   const remote = v.remote_any ? 15 : 0;
   return { pct: Math.round(stack + exp + remote), stack, exp, remote };
 }

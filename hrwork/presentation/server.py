@@ -40,6 +40,12 @@ _API_CHATS = "/api/chats"          # переписка: что ответил �
 _SRC_DIR = DATA_DIR.parent / "src"          # фронт-исходники (страница поиска)
 _GZIP_EXT = {".html", ".js", ".css", ".json", ".svg", ".txt"}   # текст -> жмём
 _MAX_BODY = 1 << 20                          # 1 МБ — потолок тела POST (marks.json мал)
+_MAX_EMPLOYER = 200                          # потолок работодателя (см. _clean_line)
+
+# Управляющие символы: C0 + DEL + C1 и bidi-переопределения (U+202A..U+202E, U+2066..U+2069).
+# Первые ломают построчный разбор журнала откликов, вторые переворачивают показ названия
+# компании в ленте — и то, и другое приезжает из тела POST, то есть снаружи.
+_CTRL_RX = re.compile(r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]")
 
 # ─────────────────────── Гарды: что отдаём и кого слушаем ───────────────────────
 # Раздаём из data/ ТОЛЬКО артефакты ленты и дашборда — белым списком, а не по расширению.
@@ -102,6 +108,18 @@ def _hostname(value: str) -> str:
         return (urlsplit(v).hostname or "").lower()
     except ValueError:            # мусорный заголовок — считаем чужим
         return ""
+
+
+def _clean_line(raw: Any, limit: int) -> str:
+    """Однострочное поле из тела POST -> строка, пригодная для журнала откликов.
+
+    Не-строка (число, объект, null) -> "": тело запроса — ЧУЖИЕ данные, деградируем молча,
+    а не падаем. Управляющий символ заменяется ПРОБЕЛОМ, а не выкусывается: «ООО<LF>Ромашка»
+    должно остаться «ООО Ромашка», а не склеиться в «ОООРомашка». Длина ограничена не из
+    вкуса: целостность `applied_log.jsonl` держится на том, что запись остаётся ОДНОЙ
+    КОРОТКОЙ строкой одного `write` (`followup.py::append_applied`)."""
+    s = raw if isinstance(raw, str) else ""
+    return " ".join(_CTRL_RX.sub(" ", s).split())[:limit]
 
 
 class _Handler(SimpleHTTPRequestHandler):
@@ -213,7 +231,7 @@ class _Handler(SimpleHTTPRequestHandler):
         return Resp(204)
 
     def _apply_post(self) -> Resp:
-        """POST /api/apply {id, url, cover} -> отклик на вакансию в фоне через Playwright.
+        """POST /api/apply {id, url, cover, name, employer} -> отклик в фоне через Playwright.
         Тело: JSON. Ответ: {status: applied|already|form|skip|busy|no-session|error, letter}.
         Отклик реальный и небыстрый (браузер + DDoS-Guard) — клиент ждёт."""
         try:
@@ -234,10 +252,17 @@ class _Handler(SimpleHTTPRequestHandler):
             # по простою (не поднимаем Playwright заново на каждый отклик).
             from hrwork.application.apply.autoclick import get_apply_worker
             url, cover, name = body.get("url", ""), body.get("cover", ""), body.get("name", "")
-            res = get_apply_worker().submit(vid, url, cover, name)
+            # Работодатель фиксируется В МОМЕНТ КЛИКА и уезжает в журнал: к дренажу очереди
+            # вакансия уходит из выдачи, и карточка-призрак ленты (`model.js::syntheticCard`)
+            # без него не ищется ни по компании, ни воронкой (инцидент 01.08.2026).
+            # Поле НЕОБЯЗАТЕЛЬНОЕ: клиент, который его не шлёт, работает как раньше.
+            # Компромисс: `name`/`url` уезжают в тот же журнал без `_clean_line` — это
+            # поведение существующих полей, менять его в правке про employer не стали.
+            employer = _clean_line(body.get("employer"), _MAX_EMPLOYER)
+            res = get_apply_worker().submit(vid, url, cover, name, employer)
             if res.get("status") == "busy":
                 # браузер занят кроном -> кладём в очередь ожидания, крон дожмёт (26+)
-                pos = store.enqueue(vid, url, name, cover)
+                pos = store.enqueue(vid, url, name, cover, employer)
                 return _json(200, {"status": "queued", "position": pos, "letter": False})
             return _json(200, res)
         except Exception as e:

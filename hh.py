@@ -18,6 +18,7 @@ HH.ru Job Market Analyzer — рынок труда для программис�
 import argparse
 import asyncio
 from collections import Counter
+from collections.abc import Collection
 from enum import Enum
 from typing import Any
 
@@ -35,17 +36,47 @@ from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.proxy import load_proxies, mask_proxy
 from hrwork.infrastructure.sources import get_source
 from hrwork.infrastructure.sources.hh import HHHtmlClient
-from hrwork.infrastructure.storage import JsonVacancyRepository
+from hrwork.infrastructure.storage import JsonVacancyRepository, VacancyRepository
 from hrwork.presentation.views.reporter import run_reports
 
 
-def _degraded_source(by_src: Counter[str], prior_by_src: Counter[str]) -> str | None:
-    """Первый источник, просевший ниже COLLECT_MIN_RATIO от прошлого среза (при заметном
-    прошлом объёме >= COLLECT_SANITY_MIN) — признак блока/сбоя. Иначе None."""
+def _degraded_source(by_src: Counter[str], prior_by_src: Counter[str],
+                     active: Collection[str]) -> str | None:
+    """Первый ВКЛЮЧЁННЫЙ источник, просевший ниже COLLECT_MIN_RATIO от прошлого среза (при
+    заметном прошлом объёме >= COLLECT_SANITY_MIN) — признак блока/сбоя. Иначе None.
+
+    `active` — сегодняшний config.SOURCES. Источник, которого там больше НЕТ, гейт не смотрит:
+    его сегодняшний ноль — следствие нашего же решения, а не блока портала. Без этой проверки
+    выключение портала запирало бы запись кеша НАВСЕГДА: meta обновляется только из repo.save,
+    до которого гейт не допускает, поэтому каждый крон-прогон часами собирал бы всё заново
+    и выбрасывал результат, а данные стояли бы до ручного --force.
+
+    Источник, который в `active` ЕСТЬ, а данных не дал (протух токен, блок, сужение фильтров),
+    просадкой остаётся: ради этого случая гейт и существует."""
+    enabled = set(active)
     for src, prev_n in prior_by_src.items():
+        if src not in enabled:
+            continue
         if prev_n >= COLLECT_SANITY_MIN and by_src.get(src, 0) < prev_n * COLLECT_MIN_RATIO:
             return src
     return None
+
+
+def _prior_source_counts(repo: VacancyRepository) -> Counter[str]:
+    """Прошлые объёмы по источникам ДЛЯ ГЕЙТА — до кросс-портального дедупа, потому что
+    сегодняшний by_src тоже считается до дедупа: сравнивать надо одноимённое с одноимённым.
+    Раньше здесь брались post-dedup счётчики файла, и порог получался мягче заявленного
+    (таланто собрал 40k, сохранено 30k -> просадка до 16k проходила как «> 50 % от 30k»).
+
+    Ключа в meta нет (кеш от версии без него) -> фолбэк на post-dedup счётчики самого кеша,
+    как было раньше. Они занижены на снятые дубли, поэтому порог мягче реального: первый
+    прогон после апдейта ложно НЕ блокирует, а правильную базу запишет по своим итогам."""
+    stored = storage.load_pre_dedup_counts()
+    if stored:
+        return Counter(stored)
+    log.info('В meta нет pre-dedup объёмов источников — гейт сравнивает с post-dedup кешем '
+             '(порог мягче заявленного); база запишется по итогам этого прогона.')
+    return Counter(r.vacancy.source for r in repo.load())
 
 
 async def collect(force: bool = False) -> list[Any]:
@@ -95,8 +126,12 @@ async def collect(force: bool = False) -> list[Any]:
     # Санити-гейт: транзиентный блок источника на этапе 1 даёт резко меньший срез. Не затираем
     # полный кеш деградированным (иначе теряем историю + ужимаем desc-кеш). --force обходит.
     if not force and repo.exists():
-        prior_by_src = Counter(r.vacancy.source for r in repo.load())
-        bad = _degraded_source(by_src, prior_by_src)
+        prior_by_src = _prior_source_counts(repo)
+        for src, prev_n in prior_by_src.items():
+            if src not in SOURCES:                # выключен нами -> из гейта исключён, но виден
+                log.info('Источник {} выключен из SOURCES (в прошлом срезе {} вакансий) — '
+                         'санити-гейт его не проверяет, его записи уйдут из кеша.', src, prev_n)
+        bad = _degraded_source(by_src, prior_by_src, SOURCES)
         if bad is not None:
             log.error('Источник {}: {} << {} (< {:.0%}) — вероятен блок/сбой, кеш НЕ '
                       'перезаписываю. Повтор при реальном спаде: --force.',
@@ -113,7 +148,9 @@ async def collect(force: bool = False) -> list[Any]:
     log.success('Всего уникальных: {} вакансий  ({})', len(items),
                 ', '.join(f'{k}: {v}' for k, v in Counter(
                     r.vacancy.source for r in items).items()))
-    repo.save(items)
+    # by_src — объёмы ДО дедупа: база сравнения для гейта следующего прогона (ключом
+    # cache_meta.json владеет storage/files.py::save_meta, оркестратор meta не пишет).
+    repo.save(items, pre_dedup_by_source=by_src)
     log.info('Сырые данные: {}', RAW_FILE)
     return items
 
@@ -139,7 +176,7 @@ async def enrich(only_empty: bool = False) -> None:
     client = HHHtmlClient(proxies=proxies)
     await client.run_enrich(records, skip_filled=only_empty)
 
-    repo.save(records)
+    repo.save(records)      # состав источников не менялся -> save_meta переносит базу гейта
     have = sum(1 for r in records if r.description_html)
     log.success('Описаний: {} из {} ({}%). Сохранено: {}',
                 have, len(records), have * 100 // len(records), RAW_FILE)

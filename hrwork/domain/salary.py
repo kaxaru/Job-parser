@@ -10,6 +10,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+# КОМПРОМИСС (08.08.2026): домен зависит от `hrwork.config`, хотя doc обещает ядро без
+# сети и диска. Отсюда берутся ЧИСТЫЕ числовые константы пересчёта — NET_FROM_GROSS (0.87),
+# WORK_HOURS_PER_MONTH (160), MONTHS_PER_YEAR (12) и пороги инференса периода
+# HIRIFY_HOURLY_MAX_USD / HIRIFY_YEARLY_MIN_USD. Но сам `config` на ИМПОРТЕ делает
+# DATA_DIR.mkdir() / LOGS_DIR.mkdir(), load_dotenv, log.remove()+log.add() и читает
+# resume_profile.json, поэтому `import hrwork.domain.salary` в чистом окружении создаёт
+# data/ и logs/ и переконфигурирует глобальный loguru.
+# Держим осознанно: альтернатива — вторая копия тех же чисел в домене, а разошедшийся порог
+# «это годовая?» ($25 000 у hirify против 15 000 у web3) — ровно то, ради чего этот модуль
+# и заводили. Правильное лечение — вынести чистые константы в модуль без side-effect'ов
+# (`config.py` правит только координатор), см. docs/domain.md «Известные компромиссы».
 from hrwork.config import (
     HIRIFY_HOURLY_MAX_USD,
     HIRIFY_YEARLY_MIN_USD,
@@ -132,11 +143,20 @@ class Salary:
         return self.frm if self.frm is not None else self.to
 
     def net(self) -> "Salary":
-        """gross -> net (−13% НДФЛ). Если уже net — возвращает себя."""
+        """gross -> net (−13% НДФЛ). Если уже net — возвращает себя.
+
+        `is not None`, а не truthiness: вилка from=0 ВАЛИДНА (тот же контракт, что у
+        `from_raw`). БАГ до 08.08.2026: `if self.frm` терял нулевую нижнюю границу, и
+        {"from": 0, "to": 100000, "gross": true} давал (None, 87000, 87000) — медиана
+        87 000 вместо 43 500.
+
+        `round`, а не `int`: усечение давало 4166 там, где верно 4167. Разница копеечная
+        (<= 1 руб.), но симметрия с `SalaryPeriod.to_monthly`, который уже округляет,
+        важнее — один и тот же пересчёт обязан вести себя одинаково."""
         if not self.gross:
             return self
-        f = int(self.frm * NET_FROM_GROSS) if self.frm else None
-        t = int(self.to * NET_FROM_GROSS) if self.to else None
+        f = round(self.frm * NET_FROM_GROSS) if self.frm is not None else None
+        t = round(self.to * NET_FROM_GROSS) if self.to is not None else None
         return Salary(f, t, self.currency, gross=False)
 
     def net_triple(self) -> tuple[int | None, int | None, int | None]:

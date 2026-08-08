@@ -200,6 +200,182 @@ def _practice_answer(question: str, ans: dict[str, Any], lang: str) -> tuple[str
     return None
 
 
+# ── Словарь синонимов технологий ──────────────────────────────────────────────────────
+# Нужен ровно для одного: НЕ сказать «нет, с этим не работал» про то, что в профиле ЕСТЬ,
+# но названо иначе — «Postgres» вместо «PostgreSQL», «Докером» вместо «Docker». «Нет» — тоже
+# УТВЕРЖДЕНИЕ о кандидате, и врать им нельзя так же, как «да» (находка аудита 08.08.2026:
+# stack=[PostgreSQL, Docker] -> «Есть ли опыт с Postgres?» -> «Нет, с этим не работал.»).
+#
+# Второе назначение — признак «это вообще технология». Кириллическое слово, которого здесь
+# НЕТ, движок технологией не считает и молчит: «нагрузочное тестирование» это практика,
+# а не продукт, и отвечать на неё «нет» значит утверждать о кандидате то, чего в профиле нет.
+#
+# Ключ — каноническое написание, значение — прочие: транслит, кириллица, сокращения.
+# СЛОВОФОРМЫ («докером», «постгресе», «кафке») перечислять НЕ надо — их ловит сравнение
+# по корню в _same_tech. Расширяется из профиля: answers.tech_synonyms.
+_TECH_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "python":        ("питон", "пайтон"),
+    "fastapi":       ("фастапи",),
+    "django":        ("джанго",),
+    "flask":         ("фласк",),
+    "celery":        ("селери",),
+    "airflow":       ("эйрфлоу", "аирфлоу"),
+    # «sql» и «api» вписаны отдельными формами: по началу слова они с «postgresql»/«restapi»
+    # не сходятся, а спросить «есть опыт с SQL?» у человека с PostgreSQL — обычное дело.
+    "postgresql":    ("postgres", "postgre", "psql", "sql", "постгрес", "постгре"),
+    "mysql":         ("мускул",),
+    "redis":         ("редис",),
+    "mongodb":       ("mongo", "монго", "монга"),
+    "clickhouse":    ("кликхаус",),
+    "elasticsearch": ("elastic", "эластик"),
+    "kafka":         ("кафка",),
+    "rabbitmq":      ("rabbit", "раббит", "кролик"),
+    "docker":        ("докер",),
+    "kubernetes":    ("k8s", "кубернетес", "кубер"),
+    "nginx":         ("энджинкс", "нжинкс"),
+    "linux":         ("линукс",),
+    "grafana":       ("графана",),
+    "prometheus":    ("прометеус", "прометей"),
+    "rest api":      ("rest", "api", "рест", "рестапи"),
+    "graphql":       ("графкуэль",),
+    "javascript":    ("джаваскрипт", "жаваскрипт"),
+    "typescript":    ("тайпскрипт",),
+    "react":         ("реакт",),
+    "angular":       ("ангуляр",),
+    "node.js":       ("nodejs", "нода"),
+    "java":          ("джава", "ява"),
+    "c#":            ("csharp", "шарп"),
+    ".net":          ("dotnet", "дотнет"),
+    "golang":        ("голанг",),
+    "php":           ("пхп",),
+    "bash":          ("баш",),
+    "spark":         ("спарк",),
+    "hadoop":        ("хадуп",),
+    "pandas":        ("пандас",),
+    "numpy":         ("нампай",),
+    "selenium":      ("селениум",),
+    "playwright":    ("плейрайт",),
+    "pytest":        ("пайтест",),
+    "jira":          ("джира",),
+    "confluence":    ("конфлюенс",),
+}
+
+# Слова-маркеры ПРАКТИКИ (процесса), а не технологии. Нужны там, где скрипт не помогает:
+# в английском вопросе латиницей написано всё, и «load testing» иначе прошло бы как название
+# продукта. Список только СНИМАЕТ право ответить «нет» — ошибка в нём даёт молчание.
+_PRACTICE_WORD = re.compile(
+    r"тест|автоматизац|нагрузочн|регрессионн|интеграцион|разработ|внедрен|сопровожден"
+    r"|поддержк|настройк|мониторинг|оптимизац|миграц|проектирован|документир|ревью"
+    r"|деплой|релиз|отладк|профилирован|рефакторинг|обучен|менторинг|наставнич|аналитик"
+    r"|testing|tests|automation|development|deployment|monitoring|migration|integration"
+    r"|optimi[sz]ation|maintenance|documentation|refactoring|debugging|profiling|review"
+    r"|mentoring|onboarding|agile|scrum|kanban|devops|methodolog|management|leadership"
+    r"|process|practice", re.I)
+
+_LATIN_WORD = re.compile(r"[a-z][a-z0-9+#_]*", re.I)
+_CYR_WORD = re.compile(r"[а-яё0-9]+")
+_NON_ALNUM = re.compile(r"[^0-9a-zа-яё]")
+
+
+def _norm_tech(name: str) -> str:
+    """Название технологии в сравнимом виде: нижний регистр без пунктуации и пробелов.
+    «Node.js» -> «nodejs», «REST API» -> «restapi»."""
+    return _NON_ALNUM.sub("", (name or "").lower())
+
+
+def _same_tech(a: str, b: str) -> bool:
+    """Два написания ОДНОЙ технологии? Три признака, все на нормализованных строках:
+    точное совпадение; одно — НАЧАЛО другого («postgres» -> «postgresql», «докер» ->
+    «докером»); общий корень ТОЛЬКО для кириллицы («кафка»/«кафке»).
+
+    Сравнение по НАЧАЛУ, а не по вхождению куда угодно: русские словоформы приписывают
+    окончание справа, а «вхождение» склеивало бы посторонние пары — «.NET» нормализуется
+    в «net», и «kubernetes» содержит «net» внутри, из-за чего честное «нет» про Kubernetes
+    гасилось стеком, где есть .NET.
+
+    Корень для латиницы намеренно не считаем: латиница не склоняется, а «postgres» и
+    «postgis» — разные продукты, и по корню они бы склеились."""
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if min(len(a), len(b)) >= 3 and (a.startswith(b) or b.startswith(a)):
+        return True
+    if not (_CYR_WORD.fullmatch(a) and _CYR_WORD.fullmatch(b)):
+        return False
+    p = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        p += 1
+    return p >= 4 and p >= 0.7 * max(len(a), len(b))
+
+
+def _spelling_groups(ans: dict[str, Any]) -> tuple[tuple[str, ...], ...]:
+    """Группы написаний одной технологии: дефолт _TECH_SYNONYMS + профильные из
+    `answers.tech_synonyms` ({"<канон>": ["<написание>", …]}). Профиль пишет человек:
+    кривую запись пропускаем, прогон не роняем (graceful degradation на ЧУЖИХ данных)."""
+    groups: dict[str, tuple[str, ...]] = {
+        _norm_tech(canon): tuple(dict.fromkeys(
+            [_norm_tech(canon)] + [_norm_tech(a) for a in alts]))
+        for canon, alts in _TECH_SYNONYMS.items()}
+    user = ans.get("tech_synonyms")
+    if isinstance(user, dict):
+        for canon, alts in user.items():
+            key = _norm_tech(str(canon))
+            if not key or not isinstance(alts, list):
+                continue
+            forms = [key] + [_norm_tech(str(a)) for a in alts]
+            groups[key] = tuple(dict.fromkeys(
+                list(groups.get(key, ())) + [f for f in forms if f]))
+    return tuple(groups.values())
+
+
+def _spellings(tech: str, groups: tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    """Все известные написания технологии (само имя + синонимы её группы)."""
+    n = _norm_tech(tech)
+    if not n:
+        return ()
+    for g in groups:
+        if any(_same_tech(n, form) for form in g):
+            return g
+    return (n,)
+
+
+def _in_known_stack(token: str, known: list[str], groups: tuple[tuple[str, ...], ...]) -> bool:
+    """Токен вопроса — это технология из stack/stack_past, названная любым её написанием?"""
+    t = _norm_tech(token)
+    return bool(t) and any(_same_tech(t, sp) for tech in known for sp in _spellings(tech, groups))
+
+
+def _is_tech_name(token: str, groups: tuple[tuple[str, ...], ...]) -> bool:
+    """Токен вообще похож на НАЗВАНИЕ технологии?
+
+    Да — если это латинское слово (в русском вопросе латиница почти всегда название
+    продукта; тем же признаком работает backstop в `_answer_years`) либо кириллическое имя
+    из словаря синонимов. Незнакомая кириллица -> НЕТ: default-deny, движок про неё ничего
+    не знает и молчит.
+
+    Компромисс: в АНГЛИЙСКОМ вопросе латиницей написано всё, и признак скрипта там
+    не работает — «нет» удерживает только `_PRACTICE_WORD`. Русский путь строже
+    английского осознанно: боты hh.ru пишут по-русски, английских вопросов единицы."""
+    if _PRACTICE_WORD.search(token):
+        return False
+    if _LATIN_WORD.fullmatch(token):
+        return True
+    t = _norm_tech(token)
+    return bool(t) and any(_same_tech(t, form) for g in groups for form in g)
+
+
+def _cyr_tech_mentioned(question: str, groups: tuple[tuple[str, ...], ...]) -> bool:
+    """В вопросе названа технология КИРИЛЛИЦЕЙ («с Докером», «на Постгресе»)?
+    Латиницу ловит отдельный backstop в `_answer_years`; без этой проверки «Сколько лет
+    работаете с Докером?» получало ОБЩИЙ стаж (на .NET/1С) — тот же класс, что БАГ 21.07
+    про React, просто написанный кириллицей."""
+    return any(not _LATIN_WORD.fullmatch(w) and _is_tech_name(w, groups)
+               for w in _PUNCT.sub(" ", question.lower()).split() if len(w) > 2)
+
+
 def _mentioned_tech(question: str, stack: list[str]) -> list[str]:
     """Какие технологии из нашего стека упомянуты в вопросе."""
     q = question.lower()
@@ -243,6 +419,8 @@ def _answer_years(q: str, ans: dict[str, Any], stack: list[str], past: list[str]
         return _answer_years_python(ans, lang)
     if _mentioned_tech(q, stack + past) or (lang == RU and re.search(r"[A-Za-z]{3,}", q)):
         return None
+    if _cyr_tech_mentioned(q, _spelling_groups(ans)):
+        return None                                   # «сколько лет с Докером» — не общий стаж
     val = _fact(ans, "years_text", lang)
     return _mk(val, "years", lang) if val else None
 
@@ -260,10 +438,37 @@ def _answer_has_exp(q: str, ans: dict[str, Any], stack: list[str], past: list[st
             return _mk(say["has_exp_yes"].format(techs=", ".join(hit)), "has_exp_yes", lang)
         return _mk(say["has_exp_past"].format(past=", ".join(pst), stack=", ".join(stack[:3])),
                    "has_exp_past", lang)
-    rest = _residual(q, [])
-    if ans.get("answer_negative") and 0 < len(rest.split()) <= _MAX_TECH_TOKENS:
-        return _mk(say["has_exp_no"], "has_exp_no", lang)
-    return None
+    if not ans.get("answer_negative"):
+        return None
+    rest = _residual(q, []).split()
+    if not (0 < len(rest) <= _MAX_TECH_TOKENS):
+        return None
+    return _mk(say["has_exp_no"], "has_exp_no", lang) \
+        if _negative_allowed(rest, stack + past, _spelling_groups(ans)) else None
+
+
+def _negative_allowed(rest: list[str], known: list[str],
+                      groups: tuple[tuple[str, ...], ...]) -> bool:
+    """Можно ли ответить «нет, с этим не работал». DEFAULT-DENY, три разных случая:
+
+    а) технология в профиле ЕСТЬ, но названа иначе (Postgres/PostgreSQL, Докером/Docker) ->
+       False. «Нет» тут прямая ложь, и никакая уверенность её не оправдывает;
+    б) технологию узнали и в профиле её точно нет -> True, честное «нет»;
+    в) вопрос не про технологию (нагрузочное тестирование, процессы, практики) -> False.
+       Молчание: тема уходит человеку.
+
+    Любая неуверенность попадает в (в) — незнакомое кириллическое слово технологией
+    не считается.
+
+    ОСОЗНАННЫЙ КОМПРОМИСС. Остаётся случай (б'), который здесь не различить: инструмент,
+    которым владелец профиля пользовался, но в `stack` не выписал (Alembic рядом с FastAPI).
+    Про такой уйдёт «нет». Гейт на это один и он не в коде — `answers.answer_negative`:
+    false выключает ветку целиком, и все «нет» становятся молчанием. В MANUAL_RULES правило
+    НЕ вносится намеренно: `_console_consent` требует tty, а в кроне его нет — там это было
+    бы не человек-гейт, а тихое отключение ветки. См. docs/chat.md."""
+    if any(_in_known_stack(t, known, groups) for t in rest):
+        return False                                  # (а) наше, просто написано иначе
+    return all(_is_tech_name(t, groups) for t in rest)  # (б) True / (в) False
 
 
 # Кластер меток, которыми управляет intent-роутер; прочие метки -> regex-путь без изменений.
