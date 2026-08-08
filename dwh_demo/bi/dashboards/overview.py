@@ -5,7 +5,7 @@ from etl.domain import EXPERIENCE, NO_EXPERIENCE_LABEL
 
 from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
-from .base import MIXED_CURRENCY, REMOTE_LIKE, bar, layout, text_tag
+from .base import REMOTE_LIKE, RUB, bar, layout, text_tag
 
 TITLE = "HH — рынок труда (Python / Data Engineer)"
 P_CITY, P_EXP = "p_city", "p_exp"
@@ -50,21 +50,27 @@ class OverviewDashboard:
                         f"JOIN core.skills s ON s.id=vs.skill_id "
                         f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                         f"GROUP BY s.name ORDER BY vacancies DESC LIMIT 15", "bar", bar("skill", "vacancies"))
-        c_exp = card(f"Зарплата по опыту{MIXED_CURRENCY}",
-                     f"SELECT coalesce(v.experience,'не указан') AS experience, "
-                     f"round(avg(v.salary_min)) AS avg_salary_min, round(avg(v.salary_max)) AS avg_salary_max "
+        # Обе средние — по ОДНОМУ множеству строк (известны обе рублёвые границы), иначе
+        # серии «нижняя» и «верхняя» считались бы по разным выборкам. До 09.08.2026 карточка
+        # усредняла СЫРЫЕ суммы прямо из факта, складывая 45 валют в одно число.
+        _RUB_ROWS = "v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL"
+        c_exp = card(f"Зарплата по опыту{RUB}",
+                     f"SELECT coalesce(nullif(v.experience,''),'{NO_EXPERIENCE_LABEL}') AS experience, "
+                     f"round(avg(v.salary_min_rub) FILTER (WHERE {_RUB_ROWS})) AS avg_salary_min_rub, "
+                     f"round(avg(v.salary_max_rub) FILTER (WHERE {_RUB_ROWS})) AS avg_salary_max_rub "
                      f"FROM core.vacancies v LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
-                     f"GROUP BY coalesce(v.experience,'не указан') ORDER BY avg_salary_max",
-                     "bar", bar("experience", "avg_salary_min", "avg_salary_max"))
+                     f"GROUP BY coalesce(nullif(v.experience,''),'{NO_EXPERIENCE_LABEL}') "
+                     f"ORDER BY avg_salary_max_rub",
+                     "bar", bar("experience", "avg_salary_min_rub", "avg_salary_max_rub"))
         c_emp = card("Топ-15 работодателей",
                      f"SELECT e.name AS employer, count(*) AS vacancies FROM core.vacancies v "
                      f"JOIN core.employers e ON e.id=v.employer_id "
                      f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                      f"GROUP BY e.name ORDER BY vacancies DESC LIMIT 15", "row", bar("employer", "vacancies"))
-        c_city = card(f"Города (топ-15): вакансии, з/п, «{REMOTE_LIKE}»{MIXED_CURRENCY}",
+        c_city = card(f"Города (топ-15): вакансии, з/п, «{REMOTE_LIKE}»{RUB}",
                       f"SELECT c.name AS city, count(*) AS vacancies, "
-                      f"count(*) FILTER (WHERE v.salary_min IS NOT NULL OR v.salary_max IS NOT NULL) AS with_salary, "
-                      f"round(avg(v.salary_max)) AS avg_salary_max, "
+                      f"count(*) FILTER (WHERE {_RUB_ROWS}) AS with_salary_rub, "
+                      f"round(avg(v.salary_max_rub) FILTER (WHERE {_RUB_ROWS})) AS avg_salary_max_rub, "
                       f"round(100.0*count(*) FILTER (WHERE v.is_remote)/count(*),1) AS remote_like_share_pct "
                       f"FROM core.vacancies v JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                       f"GROUP BY c.name ORDER BY vacancies DESC LIMIT 15", "table")

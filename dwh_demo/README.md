@@ -1,7 +1,10 @@
 # HH DWH — ETL → PostgreSQL / ClickHouse / MS SQL → Metabase + Airflow + Grafana/Loki
 
-Портфолио-проект уровня Data / Analytics Engineer на реальных данных вакансий HH
-(`../data/vacancies_raw.json`, ~92730 записей — три источника: hh/hirify/talanto).
+Портфолио-проект уровня Data / Analytics Engineer на реальных данных вакансий
+из кеша родительского проекта (`../data/vacancies_raw.json`, ~460 МБ). Порталы задаёт
+родитель — `hrwork/config.py::SOURCES`, по умолчанию их девять (hh, hirify, talanto,
+getmatch, arbeitnow, himalayas, web3, themuse, jobicy); стенд ничего не собирает сам
+и берёт срез как есть.
 
 Один и тот же extract + transform питает **три хранилища**, все показаны в одном BI,
 оркестрация — Airflow, наблюдаемость — Grafana + Loki.
@@ -13,12 +16,14 @@
   плюс строка в реестре
 - **Microsoft-стек** — MS SQL с T-SQL (`IDENTITY`, `MERGE`, `NVARCHAR`, views) в Docker;
   Power BI / DAX — отдельная инструкция, Desktop ставится вручную
-- **Автоматизация** — Airflow DAG `hh_etl` с fan-out `init → [load_postgres,
-  load_clickhouse, load_mssql]`
+- **Автоматизация** — Airflow DAG `hh_etl`: три независимые цепочки `init_<t> -> load_<t>`
+  по одной на бэкенд (6 тасок), выполняются по очереди
 - **BI как код** — дашборды Metabase провижатся скриптом, идемпотентно
 - **Observability как код** — Grafana + Loki + Promtail, Loki на S3 (MinIO) с retention;
   дашборд «здоровье пайплайна»
-- **Текст-майнинг** — разметка 37 навыков регэкспами и флаг удалёнки по тексту
+- **Текст-майнинг** — стек берётся из кеша родителя, когда сигнатура его словаря совпала
+  с пином, иначе размечается своими регэкспами (37 = 19 копий словаря родителя +
+  18 аналитических тегов стенда)
 - **Тесты** — unit без БД плюс integration на живых Postgres, ClickHouse и MS SQL (+ CI)
 
 > **Две ниши BI на одном проекте.** Metabase — аналитика данных (категориальные срезы),
@@ -28,9 +33,10 @@
 
 ```
                        ┌─ extract + transform (Python, ОДИН раз) ──┐
- vacancies_raw.json ──►│  Vacancy.from_raw: разбор зарплат,        │
-   (парсер HH)         │  опыт/график, regex-навыки, is_remote     │
-                       └──────┬──────────────┬──────────────┬──────┘
+ vacancies_raw.json ──►│  Vacancy.from_raw: разбор зарплат и их    │
+   (сбор родителя)     │  перевод в рубли, опыт/график, стек,      │
+ fx_rates.json ───────►│  is_remote (remote + гибрид)              │
+   (суточный кеш)      └──────┬──────────────┬──────────────┬──────┘
                           load (fan-out, один вход — три бэкенда)
               ┌───────────────▼───┐ ┌────────▼────────┐ ┌───────▼──────────┐
               │ PostgreSQL        │ │ ClickHouse      │ │ MS SQL (T-SQL)   │
@@ -70,23 +76,29 @@ python -m bi all                              # 4. дашборды Metabase
 python -m etl all                  # init схем + load во все бэкенды
 python -m etl -t postgres load     # только Postgres, только загрузка
 python -m bi overview              # пересобрать один дашборд
-python -m pytest                   # 40 unit; integration отфильтрованы
+python -m pytest                   # 220 unit; integration отфильтрованы
 docker compose down -v             # полный сброс, включая тома
 ```
 
-Ожидаемый вывод `python -m etl all`:
+Ожидаемый вывод `python -m etl all` (N — сколько уникальных вакансий дал кеш родителя
+на этом прогоне, D — сколько повторов id отсеял дедуп, K — курсов в кеше, M — вакансий
+с рублёвой вилкой):
 
 ```
 [etl] [postgres] schema ready
 [etl] [clickhouse] schema ready
 [etl] [mssql] schema ready
-[etl] prepare: 92730 вакансий (extract+transform)
-[etl] [postgres] loaded: 92730
-[etl] [clickhouse] loaded: 92730
-[etl] [mssql] loaded: 92730
+[etl] prepare: N вакансий (extract+transform); пропущено: no_id=0 broken=0 dup=D; FX: K курсов, вилка в рублях у M
+[etl] [postgres] loaded: N
+[etl] [clickhouse] loaded: N
+[etl] [mssql] loaded: N
+[etl] verify: prepare=N, в факте {'postgres': N, 'clickhouse': N, 'mssql': N}
 ```
 
-Совпадение чисел по всем бэкендам — главная проверка согласованности адаптеров.
+Одинаковое N во всех строках — главная проверка согласованности адаптеров, и с 09.08.2026
+её делает не глаз, а `Pipeline._verify`: расхождение роняет прогон и называет отставший
+движок. Счётчик `broken` в норме близок к нулю: доля неразобранных выше 1 % означает смену
+формата данных у родителя, и прогон падает, не перезаливая факт.
 
 ## Документация
 
@@ -112,8 +124,9 @@ dwh_demo/
 ├─ docker-compose.yml   12 сервисов: 3×DWH + BI + Airflow + Grafana/Loki/Promtail/MinIO
 ├─ etl/                 ETL (Ports & Adapters)
 │  ├─ domain.py         Vacancy + from_raw, навыки — БЕЗ БД
+│  ├─ rates.py          курсы валют из суточного кеша родителя, БЕЗ СЕТИ
 │  ├─ source.py         JsonSource
-│  ├─ pipeline.py       Pipeline + REGISTRY + build_pipeline
+│  ├─ pipeline.py       Pipeline + REGISTRY + build_pipeline + санити-гейты и verify
 │  ├─ config.py         Settings.from_env
 │  ├─ cli.py            python -m etl
 │  ├─ warehouse/        base (порт) + postgres · clickhouse · mssql
@@ -129,5 +142,6 @@ dwh_demo/
 ├─ postgres/init/       авто-создание БД airflow
 ├─ tests/               unit + integration + fixtures
 ├─ docs/                документация
+├─ conftest.py          sys.path + синтетические курсы в юнит-прогоне + авто-маркер unit
 └─ ruff.toml · pytest.ini · requirements*.txt
 ```

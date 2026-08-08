@@ -11,6 +11,10 @@
 Дашборд строится на фейковом фасаде — HTTP и Metabase не нужны (это закрывает пробел
 docs/testing.md «bi/dashboards/* не тестируются»).
 """
+import inspect
+import re
+from pathlib import Path
+
 import pytest
 
 from bi.registry import REGISTRY
@@ -48,9 +52,9 @@ OVERVIEW_CARDS = [
     "Удалённо или гибрид",
     "С указанной зарплатой",
     "Спрос на навыки (топ-15)",
-    "Зарплата по опыту · валюта портала (суммы не сравнимы)",
+    "Зарплата по опыту · ₽ (пересчёт по курсу)",
     "Топ-15 работодателей",
-    "Города (топ-15): вакансии, з/п, «Удалённо или гибрид» · валюта портала (суммы не сравнимы)",
+    "Города (топ-15): вакансии, з/п, «Удалённо или гибрид» · ₽ (пересчёт по курсу)",
 ]
 
 COMPARISON_CARDS = [
@@ -62,12 +66,12 @@ COMPARISON_CARDS = [
     "С зарплатой · ClickHouse",
     "Спрос на навыки · Postgres (mart REFRESH)",
     "Спрос на навыки · ClickHouse (AggregatingMergeTree)",
-    "Зарплата по опыту · Postgres · валюта портала (суммы не сравнимы)",
-    "Зарплата по опыту · ClickHouse (avgMerge) · валюта портала (суммы не сравнимы)",
+    "Зарплата по опыту · Postgres · ₽ (пересчёт по курсу)",
+    "Зарплата по опыту · ClickHouse (avgMerge) · ₽ (пересчёт по курсу)",
     "Топ-15 работодателей · Postgres",
     "Топ-15 работодателей · ClickHouse",
-    "Города · Postgres · валюта портала (суммы не сравнимы)",
-    "Города · ClickHouse · валюта портала (суммы не сравнимы)",
+    "Города · Postgres · ₽ (пересчёт по курсу)",
+    "Города · ClickHouse · ₽ (пересчёт по курсу)",
 ]
 
 COOCCURRENCE_CARDS = [
@@ -80,14 +84,14 @@ MSSQL_CARDS = [
     "Удалённо или гибрид",
     "С зарплатой",
     "Спрос на навыки (топ-15)",
-    "Зарплата по опыту · валюта портала (суммы не сравнимы)",
+    "Зарплата по опыту · ₽ (пересчёт по курсу)",
     "Топ-15 работодателей",
-    "Города (топ-15) · валюта портала (суммы не сравнимы)",
+    "Города (топ-15) · ₽ (пересчёт по курсу)",
 ]
 
 SOURCES_CARDS = [
     "Вакансий по источникам",
-    "Медиана нижней и верхней границы з/п по источникам · валюта портала (суммы не сравнимы)",
+    "Средняя нижняя и верхняя граница з/п по источникам · ₽ (пересчёт по курсу)",
     "Доля «Удалённо или гибрид» по источникам, %",
     "Покрытие зарплатой по источникам",
     "Топ-12 навыков рынка — в разрезе источника",
@@ -122,3 +126,27 @@ def test_dashboard_title_is_the_idempotency_key(key, title):
     client = FakeMetabase()
     REGISTRY[key]().build(client)
     assert client.dashboard_titles == [title]
+
+
+# ─── Колонки карточек существуют в витринах (инцидент 09.08.2026) ────────────────
+# Схемы переименовали зарплатные метрики в `*_rub`, а SQL карточек остался на старых
+# именах: шесть карточек вернули бы «колонки нет» на живом Metabase. Юниты этого не
+# ловили — страж выше проверяет ПОДПИСИ, а SQL исполняется только против БД.
+# Здесь тот же вопрос решается статически: каждое зарплатное имя, которое карточка
+# селектит, обязано встречаться хотя бы в одной schema.sql.
+_SALARY_COL = re.compile(r"\b(?:avg|median|with)_salary\w*|\bavg_(?:min|max)\w*")
+_SCHEMA_TEXT = "\n".join(
+    p.read_text(encoding="utf-8")
+    for p in (Path(__file__).resolve().parents[1] / "etl" / "sql").rglob("schema.sql"))
+
+
+def _salary_columns(key: str) -> set[str]:
+    """Зарплатные имена, которые селектит модуль дашборда (SQL живёт в нём строками)."""
+    src = Path(inspect.getfile(REGISTRY[key])).read_text(encoding="utf-8")
+    return set(_SALARY_COL.findall(src))
+
+
+@pytest.mark.parametrize("key", sorted(REGISTRY))
+def test_every_salary_column_a_card_selects_exists_in_some_mart(key):
+    missing = sorted(c for c in _salary_columns(key) if c not in _SCHEMA_TEXT)
+    assert missing == []

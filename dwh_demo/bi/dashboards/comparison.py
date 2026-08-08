@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from ..client import MetabaseClient
 from ..config import CH_ENGINE, CH_NAME, PG_ENGINE, PG_NAME
-from .base import MIXED_CURRENCY, REMOTE_LIKE, bar, layout
+from .base import REMOTE_LIKE, RUB, bar, layout
 
 TITLE = "HH — Postgres vs ClickHouse (один BI, два движка)"
-_SAL_VIZ = {"graph.dimensions": ["experience"], "graph.metrics": ["avg_salary_min", "avg_salary_max"]}
+_SAL_VIZ = {"graph.dimensions": ["experience"],
+            "graph.metrics": ["avg_salary_min_rub", "avg_salary_max_rub"]}
 
 
 class ComparisonDashboard:
@@ -30,12 +31,12 @@ class ComparisonDashboard:
             "ch_sal": ("С зарплатой · ClickHouse", ch, "SELECT countIf(isNotNull(salary_min) OR isNotNull(salary_max)) AS vacancies FROM hh.vacancies", "scalar", None),
             "pg_skills": ("Спрос на навыки · Postgres (mart REFRESH)", pg, "SELECT skill, vacancies FROM mart.skill_demand ORDER BY vacancies DESC LIMIT 15", "bar", skl),
             "ch_skills": ("Спрос на навыки · ClickHouse (AggregatingMergeTree)", ch, "SELECT skill, countMerge(vacancies) AS vacancies FROM hh.skill_demand GROUP BY skill ORDER BY vacancies DESC LIMIT 15", "bar", skl),
-            "pg_exp": (f"Зарплата по опыту · Postgres{MIXED_CURRENCY}", pg, "SELECT experience, avg_salary_min, avg_salary_max FROM mart.salary_by_experience ORDER BY avg_salary_max", "bar", _SAL_VIZ),
-            "ch_exp": (f"Зарплата по опыту · ClickHouse (avgMerge){MIXED_CURRENCY}", ch, "SELECT exp_bucket AS experience, round(avgMerge(avg_min)) AS avg_salary_min, round(avgMerge(avg_max)) AS avg_salary_max FROM hh.salary_by_exp GROUP BY exp_bucket ORDER BY avg_salary_max", "bar", _SAL_VIZ),
+            "pg_exp": (f"Зарплата по опыту · Postgres{RUB}", pg, "SELECT experience, avg_salary_min_rub, avg_salary_max_rub FROM mart.salary_by_experience ORDER BY avg_salary_max_rub", "bar", _SAL_VIZ),
+            "ch_exp": (f"Зарплата по опыту · ClickHouse (avgMerge){RUB}", ch, "SELECT exp_bucket AS experience, floor(avgMerge(avg_min_rub) + 0.5) AS avg_salary_min_rub, floor(avgMerge(avg_max_rub) + 0.5) AS avg_salary_max_rub FROM hh.salary_by_exp GROUP BY exp_bucket ORDER BY avg_salary_max_rub", "bar", _SAL_VIZ),
             "pg_emp": ("Топ-15 работодателей · Postgres", pg, "SELECT employer, vacancies FROM mart.top_employers ORDER BY vacancies DESC LIMIT 15", "row", emp),
             "ch_emp": ("Топ-15 работодателей · ClickHouse", ch, "SELECT employer, count() AS vacancies FROM hh.vacancies WHERE isNotNull(employer) GROUP BY employer ORDER BY vacancies DESC LIMIT 15", "row", emp),
-            "pg_cit": (f"Города · Postgres{MIXED_CURRENCY}", pg, "SELECT city, vacancies, with_salary, avg_salary_max, remote_share_pct AS remote_like_share_pct FROM mart.city_stats ORDER BY vacancies DESC LIMIT 15", "table", None),
-            "ch_cit": (f"Города · ClickHouse{MIXED_CURRENCY}", ch, "SELECT city, count() AS vacancies, countIf(isNotNull(salary_min) OR isNotNull(salary_max)) AS with_salary, round(avg(salary_max)) AS avg_salary_max, round(100.0*countIf(is_remote=1)/count(),1) AS remote_like_share_pct FROM hh.vacancies WHERE isNotNull(city) GROUP BY city ORDER BY vacancies DESC LIMIT 15", "table", None),
+            "pg_cit": (f"Города · Postgres{RUB}", pg, "SELECT city, vacancies, with_salary_rub, avg_salary_max_rub, remote_share_pct AS remote_like_share_pct FROM mart.city_stats ORDER BY vacancies DESC LIMIT 15", "table", None),
+            "ch_cit": (f"Города · ClickHouse{RUB}", ch, "SELECT city, count() AS vacancies, countIf(isNotNull(salary_min_rub) AND isNotNull(salary_max_rub)) AS with_salary_rub, floor(avgIf(salary_max_rub, isNotNull(salary_min_rub) AND isNotNull(salary_max_rub)) + 0.5) AS avg_salary_max_rub, round(100.0*countIf(is_remote=1)/count(),1) AS remote_like_share_pct FROM hh.vacancies WHERE isNotNull(city) GROUP BY city ORDER BY vacancies DESC LIMIT 15", "table", None),
         }
         ids = {k: client.create_card(n, db, sql, disp, viz) for k, (n, db, sql, disp, viz) in cards.items()}
 

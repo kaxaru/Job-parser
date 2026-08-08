@@ -10,6 +10,7 @@
 
 ```python
 data_file: Path        DATA_FILE     -> ../data/vacancies_raw.json
+fx_file:   Path        FX_FILE       -> ../data/fx_rates.json
 pg_dsn:    dict        PGHOST        -> localhost
                        PGPORT        -> 5433
                        PGDATABASE    -> hh
@@ -25,6 +26,24 @@ mssql_dsn: dict        MSSQL_HOST    -> localhost
 
 `DATA_FILE` по умолчанию указывает на данные родительского проекта:
 `dwh_demo/../data/vacancies_raw.json`. То есть DWH питается тем, что собрал парсер.
+
+**`FX_FILE` (с 09.08.2026)** — суточный кеш курсов валют, который ведёт родитель
+(`hrwork/infrastructure/net/rates.py::get_rates`). Стенд его только читает, в сеть за
+курсами не ходит: из этих курсов считаются `salary_min_rub`/`salary_max_rub`, а на них
+держатся все зарплатные витрины. Отдельная переменная, а не путь рядом с `DATA_FILE`,
+потому что в контейнере Airflow каталог данных примонтирован в другое место и дефолт
+`etl/config.py::FX_DEFAULT`, посчитанный от каталога пакета `etl`, там указал бы не туда.
+Файла нет или он битый -> предупреждение `[etl] FX: ...`, рублёвые колонки пустые,
+**прогон продолжается**: курсы — чужие данные, и деградация по ним graceful.
+
+**`DATA_FILE` в Airflow — это ДРУГОЙ путь.** В контейнерах он равен
+`/opt/airflow/data/vacancies_raw.json`, и за этим путём стоит не `../data`, а
+`../data/export` (`docker-compose.yml`, `volumes` общего блока `x-airflow-common`). Рядом
+с выгрузкой в `../data` лежат куки живой сессии, профиль браузера и контакты рекрутёров,
+а Airflow исполняет произвольный Python — поэтому в контейнер уезжает срез, а не каталог
+целиком. Расхождение двух дефолтов осознанное: локальный `FX_DEFAULT`/`DATA_DEFAULT`
+ведут в `../data`, контейнерные переменные — в смонтированный `../data/export`, который
+наполняет хост (шаг 3a в `cron/cron_collect.bat`). Подробности — [`deployment.md`](deployment.md).
 
 **`PGPORT` по умолчанию 5433, а не 5432** — снаружи контейнера порт проброшен именно так,
 чтобы не конфликтовать с локально установленным Postgres.
@@ -43,7 +62,26 @@ PGHOST=hh-postgres        CH_URL=http://hh-clickhouse:8123/     MSSQL_HOST=hh-ms
 ## BI — `bi/config.py`
 
 Настройки подключения к Metabase и параметры трёх источников данных, которые Metabase
-должен видеть. Учётные данные демо-стенда: `demo@hh.local` / `DwhDemo2026!`.
+должен видеть:
+
+```python
+base:           MB_URL            -> http://localhost:3000
+admin_email:    MB_ADMIN_EMAIL    -> demo@hh.local
+admin_password: MB_ADMIN_PASSWORD -> DwhDemo2026!
+```
+
+Этих трёх переменных в `docker-compose.yml` нет: провижининг запускается с хоста
+(`python -m bi`), а не из контейнера, и ходит в Metabase на проброшенный порт.
+
+**Читаются на импорте, а не при вызове.** `bi/config.py::Settings` — датакласс, у которого
+`os.getenv` стоит в значении поля по умолчанию, поэтому окружение считывается один раз,
+в момент импорта модуля. Это не то же самое, что `etl/config.py::Settings.from_env()`,
+который читает окружение на каждом вызове: `os.environ["MB_URL"] = ...` после импорта
+`bi.config` уже ни на что не влияет.
+
+Имена подключений в Metabase (`PG_NAME`, `CH_NAME`, `MS_NAME`) — константы того же модуля,
+а не окружение: дашборды ищут БД по имени (`find_database`), и переименование в одном месте
+не должно молча ломать карточки.
 
 ## Константы, вынесенные в код
 
@@ -52,9 +90,31 @@ PGHOST=hh-postgres        CH_URL=http://hh-clickhouse:8123/     MSSQL_HOST=hh-ms
 - `postgres.py::BATCH_SIZE = 1000` — строк в многострочном INSERT
 - `clickhouse.py::BATCH = 2000` — строк в одном `JSONEachRow`
 - `mssql.py::BATCH_SIZE = 1000` — размер `executemany`
-- `domain.py::SKILL_PATTERNS` — 37 навыков регэкспами
+- `domain.py::STACK_SKILL_PATTERNS` — 19 тегов общего стека, **дословная копия** части
+  `hrwork/config.py::TECH_PATTERNS` (там их 55). Копия, а не импорт: `etl/` монтируется
+  в контейнер Airflow без пакета `hrwork`. Посимвольное совпадение стережёт
+  `tests/test_domain.py::test_stack_patterns_are_verbatim_copies_of_parent`
+- `domain.py::ETL_SKILL_PATTERNS` — 18 аналитических тегов самого стенда (SQL, ETL, Airflow,
+  dbt, BI-инструменты…). У родителя их нет, поэтому они считаются всегда — и поверх его
+  кеша тоже; непересечение ключей стережёт `test_etl_specific_tags_do_not_shadow_parent_tags`
+- `domain.py::PARENT_DETECT_SIG` — пин сигнатуры словаря стека родителя
+  (`hrwork/domain/parsing.py::DETECT_SIG`). Совпала с полем `_dv` записи -> стек берётся
+  из готового `_techs`, не совпала -> размечаем сами по двум словарям выше. Именно пин,
+  а не вычисление: посчитать сигнатуру можно только по `hrwork.config.TECH_PATTERNS`,
+  которого в контейнере нет. Протухание ловит `test_parent_detect_sig_pin_is_current`
+- `domain.py::REMOTE_LIKE_CODES = ("remote", "flexible")` — что считается удалёнкой
+  в витринах. Копия `hrwork/domain/schedule.py::REMOTE_LIKE_CODES`; до 09.08.2026 у стенда
+  был свой, третий ответ на этот вопрос, и доля удалёнки в Metabase не сходилась с отчётами
+  родителя по одной и той же выборке
+- `domain.py::REMOTE_MARKERS` — текстовые признаки удалёнки. Питают **отдельное** поле
+  `remote_mentioned`, а не `is_remote`: слово «удалённо» в описании — это не формат работы
 - `domain.py::EXPERIENCE`, `SCHEDULE` — справочники нормализации кодов
-- `domain.py::REMOTE_MARKERS` — текстовые признаки удалёнки
+- `rates.py::CURRENCY_ALIAS` — `RUR->RUB`, `BYR->BYN`, `USDT->USD`. Тоже копия родителя
+  (`hrwork/infrastructure/net/rates.py`) под стражем `test_currency_alias_matches_parent`:
+  без канонизации рубль двоится в любом фасете, потому что hh шлёт `RUR`, а getmatch `RUB`
+- `pipeline.py::LOAD_MIN_RATIO`, `SANITY_MIN_ROWS`, `MAX_BROKEN_RATIO` — пороги санити-гейтов
+  перезалива. В окружение не вынесены сознательно: это политика конвейера, одинаковая на всех
+  стендах, тогда как `Settings` описывает параметры конкретной среды
 - `pipeline.py::REGISTRY` / `TARGETS` — реестр бэкендов
 
 ## Линтер

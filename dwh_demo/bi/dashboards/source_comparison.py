@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
-from .base import MIXED_CURRENCY, REMOTE_LIKE, layout
+from .base import REMOTE_LIKE, RUB, layout
 
 # Заголовок нейтральный: до 09.08.2026 он перечислял 4 портала, а витрина рисовала 9.
 # ВНИМАНИЕ: TITLE — ключ идемпотентности `client.upsert_dashboard`, поэтому первый прогон
@@ -41,13 +41,16 @@ class SourceComparisonDashboard:
         # Слово «вилка» из подписи убрано намеренно: две серии считаются на РАЗНЫХ
         # множествах строк (percentile_cont игнорирует NULL, а нижняя и верхняя границы
         # заполнены у разных вакансий), и такой вилки нет ни у одной вакансии.
-        # MIXED_CURRENCY здесь особенно важен: у hh вилки рублёвые, у himalayas —
-        # долларовые, и без подписи график читается как «hh платит в 25 раз больше».
-        c_sal = card(f"Медиана нижней и верхней границы з/п по источникам{MIXED_CURRENCY}",
-                     "SELECT source, median_salary_min, median_salary_max "
-                     "FROM mart.source_stats ORDER BY median_salary_max DESC NULLS LAST",
+        # Именно эта карточка и была главным симптомом: у hh вилки рублёвые, у himalayas
+        # долларовые, и без пересчёта график читался как «hh платит в 25 раз меньше».
+        # С 09.08.2026 витрина отдаёт рубли, поэтому источники наконец сравнимы. Медианы
+        # витрина больше не считает (перцентиль по смешанным валютам не имел смысла) —
+        # карточка показывает средние по множеству строк с известной рублёвой вилкой.
+        c_sal = card(f"Средняя нижняя и верхняя граница з/п по источникам{RUB}",
+                     "SELECT source, avg_salary_min_rub, avg_salary_max_rub "
+                     "FROM mart.source_stats ORDER BY avg_salary_max_rub DESC NULLS LAST",
                      "bar", {"graph.dimensions": ["source"],
-                             "graph.metrics": ["median_salary_min", "median_salary_max"]})
+                             "graph.metrics": ["avg_salary_min_rub", "avg_salary_max_rub"]})
         c_rem = card(f"Доля «{REMOTE_LIKE}» по источникам, %",
                      "SELECT source, remote_share_pct AS remote_like_share_pct "
                      "FROM mart.source_stats ORDER BY remote_share_pct DESC",

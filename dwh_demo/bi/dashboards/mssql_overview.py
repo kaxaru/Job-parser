@@ -7,10 +7,11 @@ from __future__ import annotations
 
 from ..client import MetabaseClient
 from ..config import MS_ENGINE, MS_NAME
-from .base import MIXED_CURRENCY, REMOTE_LIKE, bar, layout
+from .base import REMOTE_LIKE, RUB, bar, layout
 
 TITLE = "HH — MS SQL (T-SQL DWH)"
-_SAL_VIZ = {"graph.dimensions": ["experience"], "graph.metrics": ["avg_salary_min", "avg_salary_max"]}
+_SAL_VIZ = {"graph.dimensions": ["experience"],
+            "graph.metrics": ["avg_salary_min_rub", "avg_salary_max_rub"]}
 
 
 class MssqlOverviewDashboard:
@@ -32,15 +33,15 @@ class MssqlOverviewDashboard:
         c_skills = card("Спрос на навыки (топ-15)",
                         "SELECT TOP 15 skill, vacancies FROM mart.skill_demand ORDER BY vacancies DESC",
                         "bar", bar("skill", "vacancies"))
-        c_exp = card(f"Зарплата по опыту{MIXED_CURRENCY}",
-                     "SELECT experience, avg_salary_min, avg_salary_max "
-                     "FROM mart.salary_by_experience ORDER BY avg_salary_max",
+        c_exp = card(f"Зарплата по опыту{RUB}",
+                     "SELECT experience, avg_salary_min_rub, avg_salary_max_rub "
+                     "FROM mart.salary_by_experience ORDER BY avg_salary_max_rub",
                      "bar", _SAL_VIZ)
         c_emp = card("Топ-15 работодателей",
                      "SELECT TOP 15 employer, vacancies FROM mart.top_employers ORDER BY vacancies DESC",
                      "row", bar("employer", "vacancies"))
-        c_city = card(f"Города (топ-15){MIXED_CURRENCY}",
-                      "SELECT TOP 15 city, vacancies, with_salary, avg_salary_max, "
+        c_city = card(f"Города (топ-15){RUB}",
+                      "SELECT TOP 15 city, vacancies, with_salary_rub, avg_salary_max_rub, "
                       "remote_share_pct AS remote_like_share_pct "
                       "FROM mart.city_stats ORDER BY vacancies DESC", "table")
 
