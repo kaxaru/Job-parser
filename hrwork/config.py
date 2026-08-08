@@ -304,14 +304,17 @@ def _profile_list_or_default(key: str, default: list[str]) -> list[str]:
 # вшиты в candidates.py, и человеку с другим профилем пришлось бы править исходник, а его
 # правки конфликтовали бы при каждом обновлении из апстрима.
 #
-# Значение — СТРОКА-РЕГЕКС (как `q` в form_answers), собирается через `|`. Ключ отсутствует
-# в профиле -> берётся дефолт из candidates.py. Пустая строка -> правило ВЫКЛЮЧЕНО:
-# «"qa": ""» означает «QA меня интересуют».
+# Значение — СПИСОК СЛОВ (`["QA", "тестировщ*"]`); хвост `*` = совпадение по началу, под
+# русскую морфологию. Регулярку писать не нужно: её собирает `candidates._words_to_rx`.
+# Строка тоже принимается и трактуется как готовый регекс — так записаны дефолты и так
+# удобно тем, кому нужен lookaround. Ключ отсутствует в профиле -> берётся дефолт из
+# candidates.py. Пустой список -> правило ВЫКЛЮЧЕНО: «"qa": []» означает «QA меня интересуют».
 # Пример со всеми ключами — в resume_profile.example.json.
 _bl_raw = _rp.get("blacklists")
-APPLY_BLACKLISTS: dict[str, str] = {
-    str(k): v for k, v in _bl_raw.items()
-    if isinstance(v, str) and not str(k).startswith("_")   # _help-ключи — пояснения, не правила
+APPLY_BLACKLISTS: dict[str, str | list[str]] = {
+    str(k): ([str(x) for x in v] if isinstance(v, list) else v)
+    for k, v in _bl_raw.items()
+    if isinstance(v, (str, list)) and not str(k).startswith("_")  # _help-ключи — пояснения
 } if isinstance(_bl_raw, dict) else {}                     # профиль пишет человек: не dict -> игнор
 # Шаблон сопроводительного письма для КРОН-откликов (cover.py). У ленты свой набор —
 # src/feed/cover.js::COVER_TEMPLATES; этот уходит с автооткликами.

@@ -19,8 +19,11 @@
 <body>
 <header>
   <div>
-    <h1>HR Market Dashboard &mdash; Рынок труда программистов РФ</h1>
-    <p>Данные: hh.ru &nbsp;|&nbsp; {{ total_vacancies }} вакансий &nbsp;|&nbsp; {{ total_cities }} городов &nbsp;|&nbsp; {{ year }}</p>
+    {# Подпись источников СЧИТАЕТСЯ, а не пишется словами: после добавления глобальных
+       порталов «Рынок труда РФ / Данные: hh.ru» разошлись с реальностью (в топе городов
+       оказались United States и Remote), и заметили это только по скриншоту. #}
+    <h1>HR Market Dashboard &mdash; рынок труда разработчиков</h1>
+    <p>Источников: {{ source_count }} &nbsp;|&nbsp; {{ total_vacancies }} вакансий &nbsp;|&nbsp; {{ total_cities }} городов &nbsp;|&nbsp; {{ year }}</p>
   </div>
   <button id="theme-toggle" class="theme-toggle" type="button"
           title="Переключить тему" aria-label="Включить светлую тему">

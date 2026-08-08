@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-1628%20py%20%2B%20129%20js-success)](docs/testing.md)
+[![Tests](https://img.shields.io/badge/tests-1708%20py%20%2B%20148%20js-success)](docs/testing.md)
 [![Ruff](https://img.shields.io/badge/lint-ruff%20%2B%20biome%20%2B%20mypy%20strict-informational)](ruff.toml)
 
 Агрегатор IT-вакансий с **9 порталов** (hh.ru, hirify.me, talanto.work, getmatch.ru,
@@ -33,17 +33,19 @@ ETL (Ports & Adapters) в три хранилища **PostgreSQL / ClickHouse / 
   <img alt="Дашборд рынка" src="docs/img/dashboard-dark.png">
 </picture>
 
-> Скриншоты следуют теме GitHub — светлая версия у обоих своя.
-> **CRM-слой на кадрах сгенерирован**: отклики, отказы и переписка синтетические, реальная
-> история откликов в репозиторий не попадает. Вакансии — обычная публичная выдача.
+> Скриншоты следуют теме GitHub — светлая версия у обоих своя. Пересборка —
+> `python tools/make_screenshots.py`: срез реальных вакансий со всех порталов,
+> **CRM-слой синтетический** (отклики, отказы и переписка генерятся детерминированным
+> сидом — реальная история откликов в репозиторий не попадает).
 
 ## Возможности
 
-- **Сбор** — 9 порталов (`config.SOURCES`): HH.ru (34 города × ~35 запросов, публичные
-  HTML-страницы: API закрыт DDoS-Guard) плюс JSON-API hirify.me, talanto.work, getmatch.ru,
+- **Сбор** — 9 порталов (`config.SOURCES`): HH.ru (34 города × ~35 запросов, набор
+  настраивается профилем; публичные HTML-страницы — API закрыт DDoS-Guard)
+  плюс JSON-API hirify.me, talanto.work, getmatch.ru,
   arbeitnow.com, himalayas.app, web3.career, themuse.com, jobicy.com. Порталы собираются
   параллельно, дедуп по id внутри портала и кросс-портальный (`domain/dedup.py`).
-  В кеше 109 798 вакансий (`data/vacancies_raw.json`, ~494 МБ; замер 07.08.2026).
+  В кеше 104 890 вакансий (`data/vacancies_raw.json`, ~460 МБ; замер 08.08.2026).
 - **Аналитика** — зарплаты по языкам / опыту / городам, топ-стеки, доля удалёнки -> CSV.
 - **Свежесть вакансий** — возраст по `creationTime` vs `publicationTime`: отделяет свежие
   (<=30 дн) от гост-вакансий (>60 дн, месяцами переоткрываемых). Бейдж «👻 82д · переопубл.»
@@ -244,8 +246,9 @@ python hh.py serve                                # http://127.0.0.1:8000/search
 - [`security.md`](docs/security.md) — секреты, XSS, анти-бот, prompt injection
 - [`testing.md`](docs/testing.md) — тесты и критерии приёмки
 - [`nfr.md`](docs/nfr.md) — нефункциональные требования
-- `docs/history/` — внутренний архив закрытых аудитов (обоснования решений, цепочка
-  «симптом -> причина -> фикс»). Локальный, в `.gitignore` — в репозиторий не входит.
+- `docs/audits/` — отчёты аудитов с 07.07: находки, обоснования решений, цепочка
+  «симптом -> причина -> фикс». Локальный каталог, в `.gitignore` — в незакрытых отчётах
+  перечислены ещё не починенные дефекты, в репозиторий это не выкладывается.
 
 Шаблоны: [`spec-template.md`](docs/spec-template.md) — техническая спека для обычной фичи;
 [`rfc-template.md`](docs/rfc-template.md) — для крупного или необратимого (альтернативы,
@@ -288,14 +291,15 @@ hr_work/
 │  ├─ dashboard.js       статика дашборда (копируется как есть)
 │  └─ search.html        страница поиска
 ├─ templates/            Jinja: feed.css/html, dashboard.css/html (.j2)
-├─ tests/                1628 pytest (backend/) + 129 node:test (feed/)
+├─ tests/                1708 pytest (backend/) + 148 node:test (feed/)
 ├─ tools/                инфраструктура сборки, версионируется целиком: check_venv.py
-│                        (гейт интерпретатора, первый хук pre-commit)
+│                        (гейт интерпретатора, первый хук pre-commit) · make_screenshots.py
+│                        (скриншоты README на синтетическом CRM-слое)
 ├─ scripts/              ЛОКАЛЬНАЯ отладочная песочница: в репо только chat_stats ·
 │                        chat_review, остальные 4 (check_proxies · peek · visualize ·
 │                        dbg_search) — в .gitignore
 ├─ docs/                 документация
-│  └─ history/           архив закрытых аудитов (локальный, в .gitignore)
+│  └─ audits/            отчёты аудитов, закрытые и текущие (локальный, в .gitignore)
 ├─ cron/                 обёртки для планировщика задач Windows (*.bat + run_hidden.vbs)
 ├─ observability/        свой стек Loki+Promtail+Grafana для мониторинга крон-логов
 ├─ logs/                 ВСЕ логи: hr_work_<PID>.log + cron_*.log (в .gitignore)
@@ -313,8 +317,8 @@ hr_work/
 ## Разработка
 
 ```bash
-pytest -q                    # Python: 1628 тестов (6 opt-in skip)
-npm test                     # JS: node --test tests/feed/**/*.test.js — 129 тестов
+pytest -q                    # Python: 1708 тестов (6 opt-in skip)
+npm test                     # JS: node --test tests/feed/**/*.test.js — 148 тестов
 python -m ruff check .       # линтер Python (dwh_demo линтится отдельно)
 python -m mypy               # строгая проверка типов (hrwork + hh.py), ноль ошибок
 npm run lint                 # biome, src/**
@@ -357,7 +361,8 @@ npm test -> biome. `language: system` — инструменты берутся 
 
 **Какие вакансии НЕ брать** — блок `blacklists` того же файла. Это предпочтения соискателя,
 а не логика приложения: «не беру QA» и «беру только QA» — одинаково законные настройки,
-поэтому править исходник не нужно. Девять ключей, значение — регекс по ТАЙТЛУ:
+поэтому править исходник не нужно. Девять ключей, значение — **список слов**, ищутся
+в ТАЙТЛЕ без учёта регистра:
 
 | ключ | что отсекает |
 |---|---|
@@ -376,11 +381,16 @@ npm test -> biome. `language: system` — инструменты берутся 
 
 ```jsonc
 "blacklists": {
-  "qa": "",                       // пусто = правило ВЫКЛЮЧЕНО, QA вам интересны
-  "devops": "\\bsre\\b",          // сузить до одного SRE
-  "senior": "\\bstaff\\b|\\bprincipal\\b"
+  "qa": [],                                   // пустой список = правило ВЫКЛЮЧЕНО, QA вам интересны
+  "devops": ["sre"],                          // сузить до одного SRE
+  "senior": ["staff", "principal", "ведущ*"]  // * в конце = совпадение по началу слова
 }
 ```
+
+Слово матчится целиком («qa» не поймает «Aqua»), хвост `*` закрывает русскую морфологию:
+`тестировщ*` — это и «тестировщик», и «тестировщика». Регулярки писать не нужно. Кому
+всё-таки нужен lookaround — строка вместо списка трактуется как готовый регекс (так сделан
+дефолт `other_lang`, чтобы `java` не ловила `javascript`).
 
 Ключ отсутствует — берётся дефолт из `candidates.py::_rx`. Битый регекс не роняет сбор:
 предупреждение в лог и дефолт, потому что тихо отключённый фильтр отбора хуже чужого.
@@ -399,7 +409,7 @@ npm test -> biome. `language: system` — инструменты берутся 
 `extra_exp_ids` нужен потому, что вилку «3–6 лет» массово ставят на мидл-позиции: откликаться
 уместно, а задирать сам `exp_ids` нельзя — поедет процент совпадения в ленте.
 
-**Пустой список = настройка снята** (как пустая строка в `blacklists`), ключ отсутствует =
+**Пустой список = настройка снята** (тот же контракт, что в `blacklists`), ключ отсутствует =
 дефолт из `config.py`. Исключение — `search_queries` и `cities` ниже: там пусто уходит
 в дефолт, потому что «искать нечего» это не предпочтение, а сломанный конфиг.
 

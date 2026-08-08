@@ -165,6 +165,7 @@ def build_dashboard() -> None:
         keys=keys,
         labels=labels,
         sources=sources,
+        source_count=len(present),            # порталов в выборке — для подписи в шапке
         source_labels=source_labels,
         variants=variants,
         first_key=keys[0],
