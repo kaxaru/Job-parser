@@ -69,15 +69,21 @@ def test_skips_already_answered_same_question():
     assert _one(chats, answered=frozenset({_answer_key("1", q)})) == []
 
 
-def test_answers_new_question_in_same_chat():
+def test_answers_new_question_in_same_chat(monkeypatch):
     # бот-интервьюер ведёт цепочку: на первый вопрос ответили, второй — новый.
     # Дедуп по vid запирал бы диалог; дедуп по вопросу пропускает новый.
+    #
+    # АУДИТ 09.08.2026: тест сверял НАБЛЮДАЕМЫЙ текст ответа, но профиль не подменял —
+    # значит читал живой `resume_profile.json` ЗАПУСКАЮЩЕГО (см. шапку файла). У владельца
+    # FastAPI в стеке -> зелено; у форка с другим стеком движок ответил бы «нет» или молчал.
+    # Плюс вхождение «FastAPI» проходило и на ответе с лишними, выдуманными технологиями.
     from hrwork.application.apply.chat.chat_reply import _answer_key
+    monkeypatch.setattr(chat_answer, "load_profile", lambda: PROF_FE)
     answered = frozenset({_answer_key("1", "Есть ли опыт с Docker?")})
     chats = {"1": _chat("А есть ли опыт с FastAPI?", bot=True)}
     out = _one(chats, answered=answered)
     assert [p.rule for p in out] == ["has_exp_yes"]
-    assert "FastAPI" in out[0].text
+    assert out[0].text == "Да, есть опыт: FastAPI."
 
 
 def test_same_question_with_extra_spaces_is_not_answered_twice(monkeypatch):

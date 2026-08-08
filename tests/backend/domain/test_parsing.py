@@ -153,76 +153,74 @@ def test_detect_role_title_wins_over_fallback():
     assert _detect_role("Специалист по тестированию", []) is Role.QA
 
 
-def test_detect_role_support_teaching_sales_are_non_it():
-    # поддержка / преподавание / продажи — не инженерные, даже с Python (кейсы Яндекс Крауд и др.)
-    assert _detect_role("Специалист поддержки пользователей Yandex Obs", ["Python"]) is Role.NON_IT
-    assert _detect_role("Специалист технической поддержки", ["Python"]) is Role.NON_IT  # слово между
-    assert _detect_role("Специалист технической поддержки в службу Дост", ["Python"]) is Role.NON_IT
-    assert _detect_role("Преподаватель программирования C++", ["Python", "C++"]) is Role.NON_IT
-    assert _detect_role("Преподаватель-программист", ["Python"]) is Role.NON_IT
-    assert _detect_role("Репетитор по Python", ["Python"]) is Role.NON_IT
-    assert _detect_role("Менеджер по продажам (горячие лиды)", ["Python"]) is Role.NON_IT
+# АУДИТ 09.08.2026: сорок два случая стояли цепочкой assert в ОДНОМ теле — тот же дефект,
+# что и запрещённый docs/testing.md цикл: падение на первом тайтле прятало сорок один
+# остальной, а отчёт называл имя теста вместо виновной вакансии. Роль решает, уйдёт ли
+# необратимый отклик, поэтому знать надо КАЖДЫЙ разошедшийся тайтл, а не первый.
+@pytest.mark.parametrize(("title", "techs", "expected"), [
+    # поддержка / преподавание / продажи — не инженерные, даже с Python (Яндекс Крауд и др.)
+    ("Специалист поддержки пользователей Yandex Obs", ["Python"], Role.NON_IT),
+    ("Специалист технической поддержки", ["Python"], Role.NON_IT),          # слово между
+    ("Специалист технической поддержки в службу Дост", ["Python"], Role.NON_IT),
+    ("Преподаватель программирования C++", ["Python", "C++"], Role.NON_IT),
+    ("Преподаватель-программист", ["Python"], Role.NON_IT),
+    ("Репетитор по Python", ["Python"], Role.NON_IT),
+    ("Менеджер по продажам (горячие лиды)", ["Python"], Role.NON_IT),
     # академическая подработка: предметная область в тайтле делала её «технической»
-    assert _detect_role("Автор студенческих работ по направлению «Математическое "
-                        "моделирование и численные методы»", ["Python"]) is Role.NON_IT
+    ("Автор студенческих работ по направлению «Математическое моделирование "
+     "и численные методы»", ["Python"], Role.NON_IT),
     # образование/методология: учат программированию -> тех-слова в JD, но роль не инженерная
-    assert _detect_role("Педагог дополнительного образования (Программирование)",
-                        ["Python"]) is Role.NON_IT
-    assert _detect_role("Практикант IT Методист (написание IT-кейсов и заданий)",
-                        ["Python"]) is Role.NON_IT
-    assert _detect_role("Программист - Тьютор / Наставник Школы Программирования",
-                        ["Python"]) is Role.NON_IT
+    ("Педагог дополнительного образования (Программирование)", ["Python"], Role.NON_IT),
+    ("Практикант IT Методист (написание IT-кейсов и заданий)", ["Python"], Role.NON_IT),
+    ("Программист - Тьютор / Наставник Школы Программирования", ["Python"], Role.NON_IT),
     # SEO/маркетинг: скриптуют выдачу -> Python/JS в JD, но роль не инженерная
-    assert _detect_role("Automation-first SEO Operator", ["Python"]) is Role.NON_IT
-    assert _detect_role("Middle SEO-специалист / SEO - оптимизатор", ["Python"]) is Role.NON_IT
-    assert _detect_role("SEO - специалист (AI)", ["Python"]) is Role.NON_IT
-    assert _detect_role("Специалист по SEO", ["Python"]) is Role.NON_IT
+    ("Automation-first SEO Operator", ["Python"], Role.NON_IT),
+    ("Middle SEO-специалист / SEO - оптимизатор", ["Python"], Role.NON_IT),
+    ("SEO - специалист (AI)", ["Python"], Role.NON_IT),
+    ("Специалист по SEO", ["Python"], Role.NON_IT),
     # контроль: программист, автоматизирующий SEO-отдел — НАСТОЯЩАЯ dev-вакансия
-    assert _detect_role("Программист для автоматизации задач SEO-отдела",
-                        ["Python"]) is Role.DEVELOPER
+    ("Программист для автоматизации задач SEO-отдела", ["Python"], Role.DEVELOPER),
     # физбезопасность/инженерные системы зданий: роль Security ловила их по слову «безопасн»
-    assert _detect_role("Младший инженер отдела эксплуатации систем и средств безопасности",
-                        ["Python", "PostgreSQL"]) is Role.NON_IT
-    assert _detect_role("Инженер по эксплуатации систем жизнеобеспечения", ["1С"]) is Role.NON_IT
+    ("Младший инженер отдела эксплуатации систем и средств безопасности",
+     ["Python", "PostgreSQL"], Role.NON_IT),
+    ("Инженер по эксплуатации систем жизнеобеспечения", ["1С"], Role.NON_IT),
     # финансовый/бизнес-аудит — не инженерная роль
-    assert _detect_role("Специалист по цифровым технологиям аудита", ["Python"]) is Role.NON_IT
-    assert _detect_role("Старший внутренний аудитор", ["Python"]) is Role.NON_IT
-    assert _detect_role("Аудитор бизнес-процессов", ["Python"]) is Role.NON_IT
+    ("Специалист по цифровым технологиям аудита", ["Python"], Role.NON_IT),
+    ("Старший внутренний аудитор", ["Python"], Role.NON_IT),
+    ("Аудитор бизнес-процессов", ["Python"], Role.NON_IT),
     # КОНТРОЛЬ: технический аудит остаётся IT
-    assert _detect_role("Аудитор смарт-контрактов / Blockchain auditor (Solidity)",
-                        ["Python"]) is Role.DEVELOPER
-    assert _detect_role("Аудитор защищенности приложений (Application Security)",
-                        ["Python"]) is Role.SECURITY
-    assert _detect_role("Аудитор информационной безопасности", ["Python"]) is Role.SECURITY
+    ("Аудитор смарт-контрактов / Blockchain auditor (Solidity)", ["Python"], Role.DEVELOPER),
+    ("Аудитор защищенности приложений (Application Security)", ["Python"], Role.SECURITY),
+    ("Аудитор информационной безопасности", ["Python"], Role.SECURITY),
     # юристы/кадры/маркетинг
-    assert _detect_role("Младший юрисконсульт", ["Python"]) is Role.NON_IT
-    assert _detect_role("IT-рекрутер", ["Python"]) is Role.NON_IT
-    assert _detect_role("Начальник отдела кадров", ["Python"]) is Role.NON_IT
+    ("Младший юрисконсульт", ["Python"], Role.NON_IT),
+    ("IT-рекрутер", ["Python"], Role.NON_IT),
+    ("Начальник отдела кадров", ["Python"], Role.NON_IT),
     # КОНТРОЛЬ: аналитик в HR-Tech продукте — настоящая IT-роль
-    assert _detect_role("Функциональный аналитик в HR-Tech", ["Python"]) is Role.ANALYST
+    ("Функциональный аналитик в HR-Tech", ["Python"], Role.ANALYST),
     # медиа/маркетинг: «в IT» в тайтле не делает роль инженерной
-    assert _detect_role("Рилсмейкер / Монтажер коротких роликов в IT", ["Python"]) is Role.NON_IT
-    assert _detect_role("Контент-менеджер", ["Python"]) is Role.NON_IT
-    assert _detect_role("SMM-специалист (gamedev)", ["Python"]) is Role.NON_IT
-    assert _detect_role("B2B-копирайтер", ["Python"]) is Role.NON_IT
-    assert _detect_role("Таргетолог", ["Python"]) is Role.NON_IT
+    ("Рилсмейкер / Монтажер коротких роликов в IT", ["Python"], Role.NON_IT),
+    ("Контент-менеджер", ["Python"], Role.NON_IT),
+    ("SMM-специалист (gamedev)", ["Python"], Role.NON_IT),
+    ("B2B-копирайтер", ["Python"], Role.NON_IT),
+    ("Таргетолог", ["Python"], Role.NON_IT),
     # контроль: «монтаж» в промышленном смысле — не медиа-роль
-    assert _detect_role("Ведущий инженер-технолог по сборке и электромонтажу",
-                        ["Python"]) is Role.DEVELOPER
+    ("Ведущий инженер-технолог по сборке и электромонтажу", ["Python"], Role.DEVELOPER),
     # добыча/финучёт: доменная роль, а не инженерная
-    assert _detect_role("Инженер-аналитик по разработке месторождений", ["Python"]) is Role.NON_IT
-    assert _detect_role("Аналитик нефтегаза", ["Python"]) is Role.NON_IT
-    assert _detect_role("Бухгалтер по основным средствам", ["Python"]) is Role.NON_IT
+    ("Инженер-аналитик по разработке месторождений", ["Python"], Role.NON_IT),
+    ("Аналитик нефтегаза", ["Python"], Role.NON_IT),
+    ("Бухгалтер по основным средствам", ["Python"], Role.NON_IT),
     # контроль: IT в добывающей отрасли остаётся IT (целимся в роль, не в отрасль)
-    assert _detect_role("Инженер - программист по сопровождению автоматизации бурения",
-                        ["Python"]) is Role.DEVELOPER
-    assert _detect_role("Аналитик данных по направлению Геологоразведка и добыча",
-                        ["Python"]) is Role.ANALYST
+    ("Инженер - программист по сопровождению автоматизации бурения", ["Python"], Role.DEVELOPER),
+    ("Аналитик данных по направлению Геологоразведка и добыча", ["Python"], Role.ANALYST),
     # контроль: «инженер-наставник» в продуктовой команде — НЕ образование
-    assert _detect_role("Backend-разработчик", ["Python"]) is Role.BACKEND
+    ("Backend-разработчик", ["Python"], Role.BACKEND),
     # контроль: настоящий разработчик/QA по тайтлу не задет
-    assert _detect_role("Python разработчик", ["Python"]) is Role.DEVELOPER
-    assert _detect_role("Специалист по тестированию", ["Python"]) is Role.QA
+    ("Python разработчик", ["Python"], Role.DEVELOPER),
+    ("Специалист по тестированию", ["Python"], Role.QA),
+])
+def test_detect_role_support_teaching_sales_are_non_it(title, techs, expected):
+    assert _detect_role(title, techs) is expected
 
 
 # ── роль: ритейл-продажи всегда Не-IT, даже если прилип тех-тег из текста ──

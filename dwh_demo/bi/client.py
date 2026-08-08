@@ -34,8 +34,11 @@ class MetabaseClient:
     # ── аутентификация ──
     def connect(self) -> None:
         """Первичный setup (если инстанс пустой) либо логин."""
+        # Ошибку `/api/session/properties` НЕ считаем фатальной: инстанс может быть
+        # настроен, и обычный логин ниже сам скажет, что не так. Важно лишь не звать
+        # `.get` на теле-строке 4xx/5xx — до 09.08.2026 это падало AttributeError.
         _, props = self._api("GET", "/api/session/properties")
-        token = (props or {}).get("setup-token")
+        token = props.get("setup-token") if isinstance(props, dict) else None
         if token:
             st, res = self._api("POST", "/api/setup", {
                 "token": token,
@@ -104,12 +107,24 @@ class MetabaseClient:
 
     def upsert_dashboard(self, title: str) -> int:
         """Вернуть id дашборда; если уже есть — очистить (старые карточки в архив).
-        Делает повторный провижининг идемпотентным."""
-        _, dl = self._api("GET", "/api/dashboard")
+        Делает повторный провижининг идемпотентным.
+
+        Fail fast на ошибке HTTP — как в `find_database`: `_api` отдаёт тело 4xx/5xx
+        СТРОКОЙ, и она молча уезжала в `d.get(...)`/`res["id"]`, роняя провижининг
+        на `AttributeError: 'str' object has no attribute 'get'` и `TypeError: string
+        indices must be integers` вместо статуса и ответа Metabase."""
+        st, dl = self._api("GET", "/api/dashboard")
+        if st != 200:
+            raise RuntimeError(f"dashboard list failed: {st} {dl}")
         items = dl.get("data", dl) if isinstance(dl, dict) else dl
+        if not isinstance(items, list):
+            raise RuntimeError(f"dashboard list: неожиданный формат ответа: {dl!r}")
         d_id = next((d["id"] for d in items if d.get("name") == title), None)
         if d_id is None:
-            _, res = self._api("POST", "/api/dashboard", {"name": title})
+            # 202 — асинхронное создание, такой же успех, как 200 (см. create_card).
+            st, res = self._api("POST", "/api/dashboard", {"name": title})
+            if st not in (200, 202):
+                raise RuntimeError(f"dashboard '{title}' failed: {st} {res}")
             return res["id"]
         _, full = self._api("GET", f"/api/dashboard/{d_id}")
         for dc in (full or {}).get("dashcards", []):

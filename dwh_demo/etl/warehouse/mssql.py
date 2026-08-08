@@ -19,7 +19,7 @@ _GO = re.compile(r"(?im)^\s*GO\s*$")   # разделитель батчей T-S
 STG_COLUMNS = ["id", "source", "name", "city_name", "employer_name", "salary_min", "salary_max",
                "salary_min_rub", "salary_max_rub",
                "salary_currency", "salary_gross", "experience", "schedule", "is_remote",
-               "remote_mentioned", "url", "query"]
+               "remote_mentioned", "url"]
 
 # справочники (MERGE = upsert) -> факт -> мост. Витрины — views, REFRESH не нужен.
 LOAD_SQL = """
@@ -43,10 +43,10 @@ DELETE FROM core.vacancies;
 
 INSERT INTO core.vacancies(id,source,name,city_id,employer_id,salary_min,salary_max,
                            salary_min_rub,salary_max_rub,salary_currency,
-                           salary_gross,experience,schedule,is_remote,remote_mentioned,url,query)
+                           salary_gross,experience,schedule,is_remote,remote_mentioned,url)
 SELECT s.id, s.source, s.name, c.id, e.id, s.salary_min, s.salary_max,
        s.salary_min_rub, s.salary_max_rub, s.salary_currency, s.salary_gross,
-       s.experience, s.schedule, s.is_remote, s.remote_mentioned, s.url, s.query
+       s.experience, s.schedule, s.is_remote, s.remote_mentioned, s.url
 FROM staging.stg_vacancies s
 LEFT JOIN core.cities c    ON c.name = s.city_name
 LEFT JOIN core.employers e ON e.name = s.employer_name;
@@ -118,7 +118,7 @@ class MSSQLWarehouse:
              v.salary_min_rub, v.salary_max_rub,
              v.salary_currency, None if v.salary_gross is None else int(v.salary_gross),
              v.experience, v.schedule, int(v.is_remote), int(v.remote_mentioned),
-             v.url, v.query)
+             v.url)
             for v in vacancies
         ]
         skill_rows = [(v.id, s) for v in vacancies for s in v.skills]

@@ -145,10 +145,16 @@ def main():
     # и его пропажа вернула бы Seq Scan по всем строкам (замер 01.08.2026: 138 мс vs 1.3 мс).
     cur.execute("CREATE INDEX ix_salmidrub_page ON search_demo.vacancies "
                 "(sal_mid_rub DESC NULLS LAST, id);")
-    # ix_created окупается только на САРГАБЕЛЬНОМ предикате свежести
-    # (`created_at > now() - interval '31 days'`). Сегодняшний search.py::_FRESH_WHERE
-    # оборачивает колонку в floor(extract(...)), и планировщик индекс не подставляет.
-    cur.execute("CREATE INDEX ix_created   ON search_demo.vacancies (created_at);")
+    # Индекса по created_at здесь НЕТ намеренно (был `ix_created`, убран 09.08.2026).
+    # Единственный запрос по дате — фильтр свежести `search.py::_FRESH_WHERE`, и он
+    # оборачивает колонку в `floor(extract(epoch from now() - created_at) / 86400)`:
+    # планировщик не знает, что выражение монотонно по created_at, и btree по голой
+    # колонке под него не подставляет. То есть индекс не использовался НИ ОДНИМ запросом
+    # стенда и прод-пути, а заливку удорожал. Выражение-индекс тоже невозможен —
+    # `now()` не IMMUTABLE.
+    # ВЕРНУТЬ строкой ниже, когда предикат станет саргабельным
+    # (`created_at > now() - interval '31 days'` — тождественно `floor(...) <= 30`):
+    #   cur.execute("CREATE INDEX ix_created   ON search_demo.vacancies (created_at);")
     cur.execute("CREATE INDEX ix_source    ON search_demo.vacancies (source);")
     cur.execute("ANALYZE search_demo.vacancies;")
 

@@ -73,16 +73,18 @@ def test_remote_by_city_counts_remote_and_flexible():
 # (`Vacancy.is_remote_like`). Семантика срезов при этом НЕ менялась — это и фиксируется:
 # remote и гибрид считаются удалёнкой, офис и «формат не назван» — нет.
 
-@pytest.mark.parametrize(("schedule", "remote", "onsite"), [
-    ("remote", 1, 0),
-    ("flexible", 1, 0),      # гибрид = удалёнка (был им и до перевода на доменный предикат)
-    ("fullDay", 0, 1),
-    (None, 0, 1),            # портал формат не назвал -> удалёнку не домысливаем
+@pytest.mark.parametrize(("schedule", "remote", "onsite", "pct"), [
+    ("remote", 1, 0, 100.0),
+    ("flexible", 1, 0, 100.0),  # гибрид = удалёнка (был им и до перевода на доменный предикат)
+    ("fullDay", 0, 1, 0.0),
+    (None, 0, 1, 0.0),          # портал формат не назвал -> удалёнку не домысливаем
 ])
-def test_remote_by_city_counts_remote_and_hybrid_as_remote(schedule, remote, onsite):
+def test_remote_by_city_counts_remote_and_hybrid_as_remote(schedule, remote, onsite, pct):
+    # Процент — ЛИТЕРАЛОМ в кортеже случая, а не `float(remote * 100)`: вычисление из того же
+    # параметра повторяло формулу реализации и прошло бы на любом правиле округления.
     row = Analyzer.with_live_rates([_vac("1", "Москва", 100, schedule=schedule)]).remote_by_city()[0]
     assert (row["total"], row["remote"], row["onsite"]) == (1, remote, onsite)
-    assert row["pct"] == float(remote * 100)
+    assert row["pct"] == pct
 
 
 @pytest.mark.parametrize(("schedule", "remote", "office"), [

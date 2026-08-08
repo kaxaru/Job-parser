@@ -15,8 +15,8 @@ python dwh_demo/search_demo/bench.py   # измеряет -> REPORT.md (UTF-8)
 
 Что строится в `search_demo.vacancies`: `tsvector` (заголовок весом A, описание B) + GIN,
 trigram-GIN (`pg_trgm`) по `name`, btree по `city`/`sal_mid`, постраничные индексы
-`ix_salmid_page`/`ix_salmidrub_page` под `ORDER BY … DESC NULLS LAST, id`, а также колонки
-`source`/`created_at` с индексами `ix_source`/`ix_created`.
+`ix_salmid_page`/`ix_salmidrub_page` под `ORDER BY … DESC NULLS LAST, id`, а также колонка
+`source` с индексом `ix_source` (фильтр портала на `/search`).
 
 **Зарплата хранится дважды.** `sal_from`/`sal_to`/`sal_mid` — как пришло, в валюте портала:
 это годится только для показа в карточке. Сравнивать и сортировать можно ТОЛЬКО по
@@ -25,9 +25,13 @@ trigram-GIN (`pg_trgm`) по `name`, btree по `city`/`sal_mid`, постран
 (50 000 000 UZS), а фильтр «з/п от 200 000» выбрасывал все долларовые. Нет курса или нет
 валюты -> `sal_mid_rub IS NULL`: вакансия выпадает из сравнения, но остаётся в выдаче.
 
-**`ix_created`** окупается только на саргабельном предикате свежести
-(`created_at > now() - interval '31 days'`). Пока `search.py::_FRESH_WHERE` считает возраст
-через `floor(extract(epoch from now() - created_at) / 86400)`, планировщик индекс не берёт.
+**Индекса по `created_at` нет** (был `ix_created`, убран 09.08.2026). Единственный запрос
+по дате — фильтр свежести `search.py::_FRESH_WHERE`, и он считает возраст выражением
+`floor(extract(epoch from now() - created_at) / 86400)`: btree по голой колонке под такой
+предикат планировщик не подставляет, а выражение-индекс невозможен — `now()` не IMMUTABLE.
+Индекс не использовался ни одним запросом и только удорожал заливку. Вернуть его имеет
+смысл вместе с саргабельной формой предиката (`created_at > now() - interval '31 days'`,
+тождественно `floor(...) <= 30`) — правка на стороне родителя.
 
 ## Что показали измерения (PG 16)
 

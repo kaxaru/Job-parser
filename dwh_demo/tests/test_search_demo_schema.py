@@ -47,6 +47,11 @@ EXPECTED_COLUMNS = [
     "url", "techs", "created_at", "description", "doc",
 ]
 
+# Ровно те индексы, которые обслуживают ХОТЬ ОДИН запрос `hrwork/infrastructure/search.py`.
+# `ix_created` в наборе НЕТ: 09.08.2026 btree по голой `created_at` убран — фильтр свежести
+# ищет по выражению `floor(extract(epoch from now() - created_at) / 86400)`, под которое
+# планировщик индекс по колонке не подставляет (замеров «до/после» нет и быть не может:
+# индекс не выбирался ни разу). Вернуть вместе с саргабельным предикатом, не раньше.
 EXPECTED_INDEXES = {
     "ix_doc_gin": "USING GIN (doc)",
     "ix_name_trgm": "USING GIN (name gin_trgm_ops)",
@@ -54,7 +59,6 @@ EXPECTED_INDEXES = {
     "ix_salmid": "(sal_mid)",
     "ix_salmid_page": "(sal_mid DESC NULLS LAST, id)",
     "ix_salmidrub_page": "(sal_mid_rub DESC NULLS LAST, id)",
-    "ix_created": "(created_at)",
     "ix_source": "(source)",
 }
 

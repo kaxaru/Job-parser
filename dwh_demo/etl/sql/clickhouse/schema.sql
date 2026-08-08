@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS hh.vacancies
     id              String,
     source          String,
     name            String,
+    -- city — подпись ЛОКАЦИИ портала (город ИЛИ страна: «Москва», «United States»);
+    -- сентинел родителя `Remote` в измерение не попадает (`domain.py::_location`).
     city            Nullable(String),
     employer        Nullable(String),
     salary_min      Nullable(Float64),
@@ -27,7 +29,6 @@ CREATE TABLE IF NOT EXISTS hh.vacancies
     -- словесный маркер удалёнки в тексте — ОТДЕЛЬНОЕ понятие, не формат работы
     remote_mentioned UInt8,
     url             Nullable(String),
-    query           Nullable(String),
     skills          Array(String)
 )
 ENGINE = MergeTree
@@ -38,6 +39,11 @@ ORDER BY id;
 ALTER TABLE hh.vacancies ADD COLUMN IF NOT EXISTS salary_min_rub   Nullable(Float64);
 ALTER TABLE hh.vacancies ADD COLUMN IF NOT EXISTS salary_max_rub   Nullable(Float64);
 ALTER TABLE hh.vacancies ADD COLUMN IF NOT EXISTS remote_mentioned UInt8;
+-- `query` (из какого поискового запроса пришла вакансия) УДАЛЁН 09.08.2026: родитель это
+-- поле больше не пишет — перепись ключей по всем 109 597 записям кеша даёт 19 имён, `_query`
+-- среди них нет. Колонка была гарантированно NULL и обещала срез, которого не существует;
+-- на поднятом томе `CREATE TABLE IF NOT EXISTS` её бы не убрал.
+ALTER TABLE hh.vacancies DROP COLUMN IF EXISTS query;
 
 -- ── единица измерения и округление (общая спецификация трёх схем) ──
 -- Полностью выписана в sql/postgres/schema.sql. Здесь важны два отличия ClickHouse:
@@ -49,6 +55,18 @@ ALTER TABLE hh.vacancies ADD COLUMN IF NOT EXISTS remote_mentioned UInt8;
 --    `floor(avgMerge(avg_min_rub) + 0.5)`, а не `round(avgMerge(avg_min_rub))` —
 --    иначе три движка разойдутся на единицу на одном и том же входе.
 --    Расхождение неустранимо в самой схеме: округление живёт в запросе потребителя.
+
+-- ── набор витрин по движкам: ClickHouse ОСОЗНАННО держит ТРИ из пяти ──
+--   есть здесь: skill_demand, salary_by_exp, source_stats
+--   НЕТ здесь:  city_stats, top_employers (есть только в PostgreSQL и MS SQL)
+-- Причина: CH в стенде существует ради сравнения «один BI, два движка» на витринах, где
+-- интересна скорость агрегации широкого денормализованного факта (навыки через ARRAY JOIN,
+-- зарплата по опыту). Измерения-справочники (2 789 локаций, 28 380 работодателей) в звезду
+-- CH не выносятся, поэтому «города» и «работодатели» здесь и не считаются.
+-- Обратная сторона, о которой обязана честно говорить docs/warehouses.md: любая карточка
+-- по city_stats/top_employers существует только для PG и MS SQL, и обещание «одна витрина =
+-- одно число во всех трёх движках» относится к тем трём, что перечислены выше.
+-- Та же таблица соответствия продублирована в sql/postgres/schema.sql перед mart.city_stats.
 
 -- витрина «спрос на навыки» (countState/countMerge + ARRAY JOIN)
 CREATE TABLE IF NOT EXISTS hh.skill_demand

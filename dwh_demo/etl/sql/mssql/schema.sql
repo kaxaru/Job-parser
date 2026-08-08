@@ -34,6 +34,44 @@ BEGIN
 END
 GO
 
+-- ───────── догон уже поднятой БД: коллация измерений (09.08.2026) ─────────
+-- Контейнер mssql поднимается с дефолтной SQL_Latin1_General_CP1_CI_AS, то есть сравнение
+-- имён БЕЗ УЧЁТА РЕГИСТРА. PostgreSQL (TEXT UNIQUE) и ClickHouse (String) сравнивают
+-- побайтово, и на одном входе измерения схлопывались по-разному: 806 имён работодателей
+-- и 90 локаций отличаются ТОЛЬКО регистром, поэтому mart.top_employers и mart.city_stats
+-- давали разное число строк и разные счётчики в PG и MS SQL. Сторона выбрана в пользу
+-- PG/CH (два движка из трёх, и это же поведение у ленты родителя): на колонках измерений
+-- и на их источниках в staging стоит явный COLLATE Latin1_General_100_CS_AS. Нормализация
+-- регистра, если понадобится, — в ЕДИНОМ transform `etl/domain.py`, а не в правилах БД.
+-- Коллация колонки меняется только через ALTER с пересозданием UNIQUE-индекса, поэтому
+-- узкое место закрывается так же, как ширина ключа выше: таблицы ПЕРЕСОЗДАЮТСЯ. Данных
+-- это не теряет — staging и core перезаливаются целиком на каждом load, а справочники
+-- восстанавливает MERGE из staging (`mssql.py::LOAD_SQL`).
+IF EXISTS (SELECT 1 FROM sys.columns
+           WHERE object_id = OBJECT_ID('staging.stg_vacancies')
+             AND name IN ('city_name', 'employer_name')
+             AND collation_name <> 'Latin1_General_100_CS_AS')
+    DROP TABLE staging.stg_vacancies;
+GO
+IF EXISTS (SELECT 1 FROM sys.columns
+           WHERE object_id = OBJECT_ID('staging.stg_skills')
+             AND name = 'skill' AND collation_name <> 'Latin1_General_100_CS_AS')
+    DROP TABLE staging.stg_skills;
+GO
+IF EXISTS (SELECT 1 FROM sys.columns
+           WHERE object_id IN (OBJECT_ID('core.cities'), OBJECT_ID('core.employers'),
+                               OBJECT_ID('core.skills'))
+             AND name = 'name' AND collation_name <> 'Latin1_General_100_CS_AS')
+BEGIN
+    -- порядок обязателен: мост -> факт -> справочники (FK держат обратный)
+    IF OBJECT_ID('core.vacancy_skills') IS NOT NULL DROP TABLE core.vacancy_skills;
+    IF OBJECT_ID('core.vacancies')      IS NOT NULL DROP TABLE core.vacancies;
+    IF OBJECT_ID('core.cities')         IS NOT NULL DROP TABLE core.cities;
+    IF OBJECT_ID('core.employers')      IS NOT NULL DROP TABLE core.employers;
+    IF OBJECT_ID('core.skills')         IS NOT NULL DROP TABLE core.skills;
+END
+GO
+
 -- ───────── STAGING ─────────
 -- id — NVARCHAR(200): основной проект неймспейсит id по источникам (hirify_733072,
 -- talanto_<uuid>), а himalayas/arbeitnow — слагом вакансии; замер по кешу даёт максимум
@@ -46,8 +84,12 @@ CREATE TABLE staging.stg_vacancies (
     name            NVARCHAR(500) NOT NULL,
     -- city_name NVARCHAR(450): домен режет city до 200 code points, но эмодзи-флаги
     -- (🇦🇩 = 2 суррогатные пары) раздувают строку до ~400 UTF-16 юнитов; 450 с запасом.
-    city_name       NVARCHAR(450),
-    employer_name   NVARCHAR(400),
+    -- Это подпись ЛОКАЦИИ портала (город ИЛИ страна); сентинел родителя `Remote`
+    -- в измерение не попадает (`domain.py::_location`).
+    -- COLLATE ..._CS_AS — чтобы MERGE/JOIN на core.cities схлопывали имена так же
+    -- побайтово, как PostgreSQL и ClickHouse (обоснование — в блоке догона выше).
+    city_name       NVARCHAR(450) COLLATE Latin1_General_100_CS_AS,
+    employer_name   NVARCHAR(400) COLLATE Latin1_General_100_CS_AS,
     salary_min      DECIMAL(18,2),
     salary_max      DECIMAL(18,2),
     -- вилка, приведённая к рублям в домене (`domain.py::Vacancy.from_raw` -> `rates.to_rub`).
@@ -61,26 +103,30 @@ CREATE TABLE staging.stg_vacancies (
     is_remote       BIT,
     -- словесный маркер удалёнки в тексте — ОТДЕЛЬНОЕ понятие, не формат работы
     remote_mentioned BIT,
-    url             NVARCHAR(500),
-    query           NVARCHAR(200)
+    url             NVARCHAR(500)
 );
 GO
 IF OBJECT_ID('staging.stg_skills') IS NULL
 CREATE TABLE staging.stg_skills (
     vacancy_id NVARCHAR(200) NOT NULL,
-    skill      NVARCHAR(100) NOT NULL
+    skill      NVARCHAR(100) COLLATE Latin1_General_100_CS_AS NOT NULL
 );
 GO
 
 -- ───────── CORE (звезда) ─────────
+-- COLLATE ..._CS_AS на всех трёх измерениях: схлопывание имён обязано быть побайтовым,
+-- как в PostgreSQL и ClickHouse (обоснование и догон поднятой БД — в блоке выше).
 IF OBJECT_ID('core.cities') IS NULL
-CREATE TABLE core.cities (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(450) NOT NULL UNIQUE);
+CREATE TABLE core.cities (id INT IDENTITY(1,1) PRIMARY KEY,
+    name NVARCHAR(450) COLLATE Latin1_General_100_CS_AS NOT NULL UNIQUE);
 GO
 IF OBJECT_ID('core.employers') IS NULL
-CREATE TABLE core.employers (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(400) NOT NULL UNIQUE);
+CREATE TABLE core.employers (id INT IDENTITY(1,1) PRIMARY KEY,
+    name NVARCHAR(400) COLLATE Latin1_General_100_CS_AS NOT NULL UNIQUE);
 GO
 IF OBJECT_ID('core.skills') IS NULL
-CREATE TABLE core.skills (id INT IDENTITY(1,1) PRIMARY KEY, name NVARCHAR(100) NOT NULL UNIQUE);
+CREATE TABLE core.skills (id INT IDENTITY(1,1) PRIMARY KEY,
+    name NVARCHAR(100) COLLATE Latin1_General_100_CS_AS NOT NULL UNIQUE);
 GO
 IF OBJECT_ID('core.vacancies') IS NULL
 CREATE TABLE core.vacancies (
@@ -100,7 +146,6 @@ CREATE TABLE core.vacancies (
     is_remote       BIT,
     remote_mentioned BIT,
     url             NVARCHAR(500),
-    query           NVARCHAR(200),
     loaded_at       DATETIME2 NOT NULL DEFAULT SYSUTCDATETIME()
 );
 GO
@@ -127,6 +172,16 @@ IF COL_LENGTH('core.vacancies', 'salary_max_rub') IS NULL
     ALTER TABLE core.vacancies ADD salary_max_rub DECIMAL(18,2) NULL;
 IF COL_LENGTH('core.vacancies', 'remote_mentioned') IS NULL
     ALTER TABLE core.vacancies ADD remote_mentioned BIT NULL;
+GO
+
+-- `query` (из какого поискового запроса пришла вакансия) УДАЛЁН 09.08.2026: родитель это
+-- поле больше не пишет — перепись ключей по всем 109 597 записям кеша даёт 19 имён, `_query`
+-- среди них нет. Колонка была гарантированно NULL и обещала срез, которого не существует;
+-- `IF OBJECT_ID ... IS NULL CREATE TABLE` её бы не убрал никогда.
+IF COL_LENGTH('staging.stg_vacancies', 'query') IS NOT NULL
+    ALTER TABLE staging.stg_vacancies DROP COLUMN query;
+IF COL_LENGTH('core.vacancies', 'query') IS NOT NULL
+    ALTER TABLE core.vacancies DROP COLUMN query;
 GO
 
 -- ───────── MART (views; в T-SQL materialized = indexed view с ограничениями, для демо обычные) ─────────
@@ -160,8 +215,12 @@ SELECT e.name AS employer, COUNT(*) AS vacancies
 FROM core.vacancies v JOIN core.employers e ON e.id = v.employer_id
 GROUP BY e.name;
 GO
+-- Локация НЕИЗВЕСТНА (city_id IS NULL) — бакет, а не выпадение из среза: факт грузится
+-- LEFT JOIN'ом на измерения, и INNER JOIN здесь молча терял 1 301 вакансию — сумма
+-- `vacancies` по city_stats не сходилась с mart.source_stats на одном дашборде.
+-- Подпись бакета дословно та же, что в PostgreSQL (`domain.py::NO_CITY_LABEL`).
 CREATE OR ALTER VIEW mart.city_stats AS
-SELECT c.name AS city,
+SELECT COALESCE(c.name, N'не указана') AS city,
        COUNT(*) AS vacancies,
        SUM(CASE WHEN v.salary_min IS NOT NULL OR v.salary_max IS NOT NULL THEN 1 ELSE 0 END) AS with_salary,
        SUM(CASE WHEN v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL THEN 1 ELSE 0 END) AS with_salary_rub,
@@ -170,8 +229,8 @@ SELECT c.name AS city,
        CAST(ROUND(AVG(CASE WHEN v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL
                            THEN v.salary_max_rub END), 0) AS BIGINT) AS avg_salary_max_rub,
        CAST(100.0 * SUM(CASE WHEN v.is_remote = 1 THEN 1 ELSE 0 END) / COUNT(*) AS DECIMAL(5,1)) AS remote_share_pct
-FROM core.vacancies v JOIN core.cities c ON c.id = v.city_id
-GROUP BY c.name;
+FROM core.vacancies v LEFT JOIN core.cities c ON c.id = v.city_id
+GROUP BY COALESCE(c.name, N'не указана');
 GO
 -- Метрика — СРЕДНЕЕ, как в PostgreSQL и ClickHouse: до 09.08.2026 одноимённая витрина
 -- в PG отдавала медиану, а здесь среднее, и сравнивать движки по ней было нельзя.

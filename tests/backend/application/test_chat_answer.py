@@ -68,7 +68,9 @@ def test_past_stack_without_particle_li():
     prof = {"answers": {"stack": ["Python"], "stack_past": ["C#", ".NET"]}}
     a = suggest("У вас есть опыт с C#?", prof)
     assert a["rule"] == "has_exp_past"
-    assert "C#" in a["text"]
+    # Текст ЦЕЛИКОМ, как у соседей по файлу: `"C#" in text` не смотрел на ВТОРУЮ половину
+    # фразы, а именно она называет работодателю ТЕКУЩИЙ стек — соврать там дороже всего.
+    assert a["text"] == "Да, работал ранее с C#, сейчас основной стек — Python."
 
 
 def test_negative_answers_disabled_by_default():
@@ -176,7 +178,9 @@ def test_ru_money_and_place_holes_closed(question):
 def test_english_stack_enumeration():
     a = suggest("What frameworks have you worked with?", PROF_EN)
     assert a["rule"] == "stack_list"
-    assert a["text"].startswith("I've worked with:")
+    # startswith проверял только шапку фразы: САМ перечень стека — то, ради чего правило
+    # существует, — оставался неописанным (как и у русского близнеца, там уже литерал).
+    assert a["text"] == "I've worked with: Python, FastAPI, PostgreSQL, Docker."
 
 
 def test_english_specific_practice_still_silent():
@@ -232,7 +236,9 @@ def test_place_remote_for_other_city():
     a = suggest("Здравствуйте, Вы готовы работать в г. Шатура ?", SAL,
                 VacancyContext(name="Инженер", experience="between1And3", city="Шатура"))
     assert a["rule"] == "place_remote"
-    assert "Приволжск" in a["text"]
+    # Вхождение города проходило и на ответе, потерявшем «Работаю удалённо» — то есть
+    # ровно на противоположном по смыслу обещании работодателю.
+    assert a["text"] == "Работаю удалённо. Офис рассматриваю только в Приволжск."
 
 
 def test_place_own_city_offers_office():
@@ -248,7 +254,7 @@ def test_salary_and_place_english():
     a = suggest("Are you willing to relocate to Berlin?", SAL,
                 VacancyContext(name="Dev", experience="between1And3", city="Berlin"))
     assert a["rule"] == "place_remote"
-    assert "Privolzhsk" in a["text"]
+    assert a["text"] == "I work remotely. On-site is an option only in Privolzhsk."
 
 
 def test_polite_preamble_does_not_block_simple_question():
@@ -258,7 +264,8 @@ def test_polite_preamble_does_not_block_simple_question():
     a = suggest("Здравствуйте, Антон! Спасибо за отклик. Есть ли у вас опыт работы с Docker?",
                 PROF)
     assert a["rule"] == "has_exp_yes"
-    assert "Docker" in a["text"]
+    # Вхождение прошло бы и на «Да, есть опыт: Docker, Kubernetes.» — на выдуманном факте.
+    assert a["text"] == "Да, есть опыт: Docker."
 
 
 def test_polite_preamble_does_not_weaken_residual_guard():
@@ -274,7 +281,9 @@ def test_bot_interviewer_preamble_stripped():
     a = suggest("Понял, спасибо за подробный ответ. Следующий вопрос: работали ли "
                 "вы с Jira или Confluence в проектах?", prof)
     assert a["rule"] == "has_exp_yes"
-    assert "Jira" in a["text"]
+    # Обе названные технологии и НИ ОДНОЙ лишней: `"Jira" in text` не заметил бы ни потери
+    # Confluence, ни приписанного сверху Docker из того же стека.
+    assert a["text"] == "Да, есть опыт: Jira, Confluence."
 
 
 def test_bot_preamble_does_not_weaken_residual_guard():
@@ -432,7 +441,9 @@ def test_intent_years_tech_unknown_is_silent():
 def test_intent_years_general_answers_general():
     a = suggest("а сколько всего?", PROF_FE, intent=_i("years"))
     assert a["rule"] == "years"
-    assert "5 лет" in a["text"]
+    # Факт из профиля отдаётся ДОСЛОВНО: подстрока «5 лет» прошла бы и на обрезанном,
+    # и на склеенном с чужим фактом тексте.
+    assert a["text"] == "Общий опыт 5 лет 9 мес: EPAM (.NET), Коралл (1С)."
 
 
 def test_intent_years_backstop_silences_tech_in_question():
@@ -454,7 +465,8 @@ def test_intent_depth_no_tech_is_human():
 def test_intent_has_exp_yes():
     a = suggest("работали?", PROF_FE, intent=_i("has_exp", "FastAPI"))
     assert a["rule"] == "has_exp_yes"
-    assert "FastAPI" in a["text"]
+    # intent НЕ расширяет отвечаемое: в тексте ровно названная метка, без соседей по стеку.
+    assert a["text"] == "Да, есть опыт: FastAPI."
 
 
 def test_intent_has_exp_no_lie_about_tech_present_under_another_name():

@@ -1,6 +1,7 @@
 """Тесты чистого домена: разбор сырой вакансии без какой-либо БД."""
 import ast
 import hashlib
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -9,6 +10,7 @@ import pytest
 
 from etl import domain, rates
 from etl.domain import (
+    NO_CITY_LABEL,
     NO_EXPERIENCE_LABEL,
     PARENT_DETECT_SIG,
     REMOTE_LIKE_CODES,
@@ -165,7 +167,6 @@ def test_schedule_mapped(code, expected):
     ("employer", {"employer": None}),
     ("city", {"area": {"name": ""}, "_city": ""}),
     ("url", {"alternate_url": ""}),
-    ("query", {"_query": ""}),
 ])
 def test_empty_string_from_source_is_absence(field, patch):
     # 09.08.2026: пустое имя работодателя доезжало до измерения строкой и собирало вокруг
@@ -265,9 +266,11 @@ def test_analytics_tags_added_on_top_of_parent_cache():
 
 # ── прочее ───────────────────────────────────────────────────────────────────
 
-def test_city_fallback_to_query_city():
-    rec = {**FULL, "area": {}}
-    assert Vacancy.from_raw(rec, fx=FX).city == "Москва"  # из _city
+def test_location_without_a_name_is_absence():
+    # 09.08.2026: фолбэк на служебное `_city` убран вместе с `_query` — родитель этих
+    # полей больше не пишет ни в одной из 109 597 записей, и фолбэк на пустоту
+    # притворялся бы данными. Пусто -> None, бакет витрины подпишет `NO_CITY_LABEL`.
+    assert Vacancy.from_raw({**FULL, "area": {}}, fx=FX).city is None
 
 
 def test_id_is_string_namespaced():
@@ -401,3 +404,14 @@ def test_marts_bucket_unknown_experience_under_the_same_label(schema):
     """SQL импортировать константу не умеет, поэтому равенство стережёт тест.
     Разойдись эти две строки — фильтр «Опыт» в Metabase перестанет доставать бакет."""
     assert NO_EXPERIENCE_LABEL in schema.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "schema", [p for p in _SCHEMAS
+               if re.search(r"(?is)create[^;]*city_stats", p.read_text(encoding="utf-8"))],
+    ids=lambda p: p.parent.name)
+def test_marts_bucket_unknown_location_under_the_same_label(schema):
+    """Тот же приём, что и с опытом: SQL импортировать константу не умеет, поэтому
+    равенство подписи стережёт тест. ClickHouse в набор не входит намеренно — city_stats
+    там нет, и это расхождение зафиксировано комментарием в самих схемах."""
+    assert NO_CITY_LABEL in schema.read_text(encoding="utf-8")

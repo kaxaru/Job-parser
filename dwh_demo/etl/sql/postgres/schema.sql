@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS staging.stg_vacancies (
     id               TEXT PRIMARY KEY,
     source           TEXT,
     name             TEXT NOT NULL,
+    -- city_name — подпись ЛОКАЦИИ портала (город ИЛИ страна: «Москва», «United States»);
+    -- сентинел родителя `Remote` в измерение не попадает (`domain.py::_location`).
     city_name        TEXT,
     employer_name    TEXT,
     salary_min       NUMERIC,
@@ -28,8 +30,7 @@ CREATE TABLE IF NOT EXISTS staging.stg_vacancies (
     is_remote        BOOLEAN,
     -- словесный маркер удалёнки в тексте — ОТДЕЛЬНОЕ понятие, не формат работы
     remote_mentioned BOOLEAN,
-    url              TEXT,
-    query            TEXT
+    url              TEXT
 );
 
 CREATE TABLE IF NOT EXISTS staging.stg_skills (
@@ -40,6 +41,13 @@ CREATE TABLE IF NOT EXISTS staging.stg_skills (
 -- ─────────────────────────── CORE ────────────────────────────
 CREATE SCHEMA IF NOT EXISTS core;
 
+-- Схлопывание измерений — ПОБАЙТОВОЕ (регистр значим): «ACME» и «Acme» станут двумя
+-- работодателями. Это ЭТАЛОН для трёх движков: ClickHouse сравнивает String так же, а MS SQL
+-- по умолчанию поднимается с CI-коллацией и схлопнул бы 806 имён работодателей и 90 городов,
+-- отличающихся ТОЛЬКО регистром, — «Топ работодателей» на одном входе давал бы разные ответы.
+-- Поэтому в sql/mssql/schema.sql на колонках измерений стоит явный COLLATE ..._CS_AS.
+-- Нормализация регистра, если она когда-нибудь понадобится, делается в ЕДИНОМ transform
+-- (`etl/domain.py`, как `_cap`/`_location`), а не тремя разными правилами сравнения в БД.
 CREATE TABLE IF NOT EXISTS core.cities    (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS core.employers (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL);
 CREATE TABLE IF NOT EXISTS core.skills    (id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL);
@@ -61,7 +69,6 @@ CREATE TABLE IF NOT EXISTS core.vacancies (
     is_remote        BOOLEAN,
     remote_mentioned BOOLEAN,
     url              TEXT,
-    query            TEXT,
     loaded_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ix_vac_city     ON core.vacancies(city_id);
@@ -85,6 +92,15 @@ ALTER TABLE staging.stg_vacancies ADD COLUMN IF NOT EXISTS remote_mentioned BOOL
 ALTER TABLE core.vacancies        ADD COLUMN IF NOT EXISTS salary_min_rub   NUMERIC;
 ALTER TABLE core.vacancies        ADD COLUMN IF NOT EXISTS salary_max_rub   NUMERIC;
 ALTER TABLE core.vacancies        ADD COLUMN IF NOT EXISTS remote_mentioned BOOLEAN;
+
+-- `query` (из какого поискового запроса пришла вакансия) УДАЛЁН 09.08.2026: родитель это
+-- поле больше не пишет — перепись ключей по всем 109 597 записям кеша даёт 19 имён, `_query`
+-- среди них нет. Колонка была гарантированно NULL во всех трёх хранилищах и обещала срез,
+-- которого не существует. На поднятом томе она осталась бы навсегда: `CREATE TABLE
+-- IF NOT EXISTS` колонок не убирает. Дедуп по id при этом никуда не делся — его причина
+-- теперь в `pipeline.py::prepare`.
+ALTER TABLE staging.stg_vacancies DROP COLUMN IF EXISTS query;
+ALTER TABLE core.vacancies        DROP COLUMN IF EXISTS query;
 
 -- ─────────────────────────── MART ────────────────────────────
 CREATE SCHEMA IF NOT EXISTS mart;
@@ -113,16 +129,31 @@ CREATE SCHEMA IF NOT EXISTS mart;
 --    (round(0.5) = 0), поэтому потребитель CH-витрины обязан писать
 --    `floor(avgMerge(avg_min_rub) + 0.5)` — см. комментарий в sql/clickhouse/schema.sql.
 
+-- ── набор витрин по движкам (обещание «одна витрина = одно число» действует ТОЛЬКО там,
+-- где витрина есть у обоих) ──
+--   city_stats  · source_stats · salary_by_experience · skill_demand · top_employers  — PG
+--   city_stats  · source_stats · salary_by_experience · skill_demand · top_employers  — MS SQL
+--                  source_stats · salary_by_exp        · skill_demand                 — ClickHouse
+-- В ClickHouse city_stats и top_employers НЕТ ОСОЗНАННО: стенд держит CH ради сравнения
+-- «один BI, два движка» на витринах, где интересна скорость агрегации (навыки и зарплата
+-- по опыту), а измерения-справочники (2 789 локаций, 28 380 работодателей) в звезду CH
+-- не выносятся — там широкий денормализованный факт. Обратная сторона: любая карточка
+-- «города» или «работодатели» существует только для PG и MS SQL. То же расхождение
+-- отмечено в sql/clickhouse/schema.sql; в docs/warehouses.md должна стоять эта же таблица.
+
+-- Локация НЕИЗВЕСТНА (city_id IS NULL) — это бакет, а не выпадение из среза: факт грузится
+-- LEFT JOIN'ом на измерения, и до 09.08.2026 INNER JOIN здесь молча терял 1 301 вакансию —
+-- сумма `vacancies` по city_stats не сходилась с mart.source_stats на одном дашборде.
 DROP MATERIALIZED VIEW IF EXISTS mart.city_stats;
 CREATE MATERIALIZED VIEW mart.city_stats AS
-SELECT c.name AS city, count(*) AS vacancies,
+SELECT coalesce(c.name, 'не указана') AS city, count(*) AS vacancies,
        count(*) FILTER (WHERE v.salary_min IS NOT NULL OR v.salary_max IS NOT NULL) AS with_salary,
        count(*) FILTER (WHERE v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL) AS with_salary_rub,
        round(avg(v.salary_min_rub) FILTER (WHERE v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL)) AS avg_salary_min_rub,
        round(avg(v.salary_max_rub) FILTER (WHERE v.salary_min_rub IS NOT NULL AND v.salary_max_rub IS NOT NULL)) AS avg_salary_max_rub,
        round(100.0 * count(*) FILTER (WHERE v.is_remote) / count(*), 1) AS remote_share_pct
-FROM core.vacancies v JOIN core.cities c ON c.id = v.city_id
-GROUP BY c.name;
+FROM core.vacancies v LEFT JOIN core.cities c ON c.id = v.city_id
+GROUP BY coalesce(c.name, 'не указана');
 
 DROP MATERIALIZED VIEW IF EXISTS mart.skill_demand;
 CREATE MATERIALIZED VIEW mart.skill_demand AS

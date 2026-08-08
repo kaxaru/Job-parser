@@ -69,7 +69,7 @@ class ClickHouseWarehouse:
                 "salary_gross": None if v.salary_gross is None else int(v.salary_gross),
                 "experience": v.experience, "schedule": v.schedule,
                 "is_remote": int(v.is_remote), "remote_mentioned": int(v.remote_mentioned),
-                "url": v.url, "query": v.query,
+                "url": v.url,
                 "skills": list(v.skills),
             }, ensure_ascii=False))
             if len(batch) >= BATCH:

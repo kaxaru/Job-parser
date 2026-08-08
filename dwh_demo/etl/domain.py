@@ -38,6 +38,11 @@ SCHEDULE = {
 #: поэтому равенство стережёт тест, а не надежда.
 NO_EXPERIENCE_LABEL = "не указан"
 
+#: Подпись бакета «локация не указана» в `mart.city_stats`. Та же механика, что у
+#: `NO_EXPERIENCE_LABEL`: литерал продублирован в SQL двух движков, равенство стережёт
+#: тест `test_city_mart_buckets_missing_location_under_the_same_label`.
+NO_CITY_LABEL = "не указана"
+
 # Что считается удалёнкой в витринах: коды remote + flexible (гибрид). ЕДИНСТВЕННЫЙ ответ
 # на вопрос «это удалёнка?» — дословная копия `hrwork/domain/schedule.py::REMOTE_LIKE_CODES`
 # (`Schedule.is_remote_like` = REMOTE + HYBRID). До 09.08.2026 у стенда был СВОЙ, третий
@@ -175,9 +180,29 @@ def detect_skills(text: str, cached: list[str] | None = None) -> tuple[str, ...]
 # core.cities (лимит ключа ~1700 байт). Реальные города < 50 симв. — под кап не попадают.
 CITY_MAX = 200
 
+# Сентинел родителя (`hrwork/domain/models.py::REMOTE_CITY`): «привязки к месту НЕТ» —
+# полностью удалённая вакансия либо портал не назвал локацию. Это НЕ город, и в измерении
+# локаций ему не место: до 09.08.2026 «Remote» шёл третьей строкой топа «городов»
+# (12 177 записей после United States и Москвы), и в той же строке считалась
+# `remote_share_pct` — «доля удалёнки в городе Remote». Факт удалёнки при этом не теряется:
+# его несёт `is_remote`/`schedule`, а локация честно становится «не указана».
+# Копия, а не импорт (причина — в комментарии к REMOTE_LIKE_CODES); от расхождения
+# защищает страж-тест `tests/test_domain.py::test_remote_city_sentinel_matches_parent_domain`.
+REMOTE_CITY = "Remote"
+
 
 def _cap(s, n=CITY_MAX):
     return s[:n] if isinstance(s, str) and len(s) > n else s
+
+
+def _location(label):
+    """Подпись локации портала -> значение измерения. Пусто и сентинел `Remote` -> None.
+
+    Измерение НАЗЫВАЕТСЯ городом (`core.cities`, `mart.city_stats`), но портал кладёт сюда
+    подпись локации любого масштаба: в срезе есть и «Москва», и «United States» (19 401),
+    и «Canada». Переименование измерения в «локацию» — правка, выходящая за ETL (витрины,
+    дашборды Metabase, powerbi/README.md), поэтому пока это зафиксировано здесь."""
+    return None if not label or label == REMOTE_CITY else _cap(label)
 
 
 @dataclass(frozen=True)
@@ -186,7 +211,7 @@ class Vacancy:
     id: str
     source: str          # портал-источник из `_source`; реестр порталов ведёт родитель
     name: str
-    city: str | None
+    city: str | None     # подпись ЛОКАЦИИ портала (город или страна); см. `_location`
     employer: str | None
     salary_min: float | None
     salary_max: float | None
@@ -199,7 +224,6 @@ class Vacancy:
     is_remote: bool                # удалёнкоподобность = remote + flexible (как у родителя)
     remote_mentioned: bool         # словесный маркер удалёнки в тексте — отдельное понятие
     url: str | None
-    query: str | None
     skills: tuple[str, ...]
 
     @classmethod
@@ -216,7 +240,13 @@ class Vacancy:
         ПУСТАЯ СТРОКА внешнего источника = ОТСУТСТВИЕ значения (None), и приводится она
         здесь, один раз, а не в SQL-гейтах каждого движка: гейты вида
         `WHERE employer_name IS NOT NULL` пустую строку пропускали, и в измерении заводился
-        безымянный работодатель, к которому джойнилась каждая седьмая вакансия."""
+        безымянный работодатель, к которому джойнилась каждая седьмая вакансия.
+
+        Поля `query` (из какого поискового запроса пришла вакансия) в контракте БОЛЬШЕ НЕТ:
+        родитель его не пишет — перепись ключей по всем 109 597 записям кеша даёт 19 имён,
+        и `_query` среди них не встречается ни разу, как и фолбэк `_city`. Колонка,
+        гарантированно равная NULL во всех трёх хранилищах, — худшее, что может быть
+        на демо-стенде: она обещает срез, которого не существует."""
         sal = rec.get("salary") or {}
         area = rec.get("area") or {}
         emp = rec.get("employer") or {}
@@ -235,7 +265,7 @@ class Vacancy:
             id=str(rec["id"]),
             source=rec.get("_source") or "hh",
             name=rec.get("name") or "",
-            city=_cap(area.get("name") or rec.get("_city") or None),
+            city=_location(area.get("name")),
             employer=emp.get("name") or None,
             salary_min=smin,
             salary_max=smax,
@@ -248,6 +278,5 @@ class Vacancy:
             is_remote=sch in REMOTE_LIKE_CODES,
             remote_mentioned=any(m in low for m in REMOTE_MARKERS),
             url=rec.get("alternate_url") or None,
-            query=rec.get("_query") or None,
             skills=detect_skills(text, cached),
         )

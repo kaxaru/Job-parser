@@ -39,6 +39,24 @@ def test_connect_logs_in_when_no_setup_token():
     assert seen == [("GET", "/api/session/properties"), ("POST", "/api/session")]
 
 
+def test_connect_falls_back_to_login_when_properties_unavailable():
+    # Регрессия 09.08.2026: /api/session/properties отвечает 5xx, тело приходит СТРОКОЙ,
+    # и `(props or {}).get(...)` падал AttributeError ДО попытки логина — вместо того,
+    # чтобы просто пойти обычным путём аутентификации.
+    c = make_client()
+
+    def fake(method, path, data=None):
+        if path == "/api/session/properties":
+            return 500, "internal error"
+        if path == "/api/session":
+            return 200, {"id": "tok-9"}
+        return 200, None
+
+    c._api = fake
+    c.connect()
+    assert c.token == "tok-9"
+
+
 def test_connect_raises_on_auth_failure():
     c = make_client()
 
@@ -190,3 +208,42 @@ def test_upsert_dashboard_creates_when_absent():
 
     c._api = fake
     assert c.upsert_dashboard("New") == 99
+
+
+def test_dashboard_list_error_names_status_and_body():
+    # Регрессия 09.08.2026, тот же класс, что и у `database list`: тело ошибки приходит
+    # СТРОКОЙ и уезжало в `d.get(...)` — провижининг падал «AttributeError: 'str' object
+    # has no attribute 'get'», не назвав ни статуса, ни ответа Metabase.
+    c = make_client()
+    c.token = "t"
+    c._api = lambda *a, **k: (502, "gateway boom")
+    with pytest.raises(RuntimeError, match=r"dashboard list failed: 502 gateway boom"):
+        c.upsert_dashboard("Demo")
+
+
+def test_dashboard_create_error_names_the_title():
+    c = make_client()
+    c.token = "t"
+
+    def fake(method, path, data=None):
+        if (method, path) == ("GET", "/api/dashboard"):
+            return 200, []
+        return 400, "name is required"
+
+    c._api = fake
+    with pytest.raises(RuntimeError, match=r"dashboard 'Demo' failed: 400"):
+        c.upsert_dashboard("Demo")
+
+
+def test_dashboard_created_asynchronously_returns_id():
+    """202 — асинхронное создание дашборда, такой же успех, как 200 (см. create_card)."""
+    c = make_client()
+    c.token = "t"
+
+    def fake(method, path, data=None):
+        if (method, path) == ("GET", "/api/dashboard"):
+            return 200, {"data": []}
+        return 202, {"id": 77}
+
+    c._api = fake
+    assert c.upsert_dashboard("Demo") == 77
