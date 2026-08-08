@@ -38,11 +38,15 @@ def test_imperative_ask_without_question_mark():
 
 
 # ── бот-интервью в чужом мессенджере: полумёртвая ветка, фриз ──
+# Текст снят с живого письма, но токены deep-link ЗАМЕНЕНЫ на синтетические (08.08.2026):
+# настоящий `?start=…` — одноразовый инвайт, привязанный к кандидатуре, и в публичной
+# фикстуре он приглашал бы постороннего в чужую интервью-сессию. Детекту важна только
+# форма ссылки (`?start=`), а не значение токена.
 _GIGA = ("Здравствуйте! Пройдите короткое первичное интервью с ГигаРекрутером на вакансию "
          "\"Инженер по нагруженному тестированию\". Это позволит быстрее рассмотреть вашу "
          "кандидатуру. Вы можете пройти интервью в Максе: "
-         "https://max.ru/giga_recruiter_bot?start=c472oovjC2Kp в Telegram: "
-         "https://t.me/Giga_recruiter_bot?start=nAIEDYoHe85GqGKd9ExBByqG")
+         "https://max.ru/giga_recruiter_bot?start=Mx7kQp2v в Telegram: "
+         "https://t.me/Giga_recruiter_bot?start=Tg9wZr4nLs6b")
 
 
 @pytest.mark.parametrize("txt", [
