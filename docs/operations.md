@@ -117,8 +117,13 @@ foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
 `search_demo/load.py` (переиндексация поиска), `hh.py dashboard` (Plotly),
 `python -m etl all` (DWH).
 
-**Что делает.** Пересбор вакансий четырёх источников (hh + hirify + talanto + getmatch) ->
-`data/vacancies_raw.json`, следом освежает ленту, поиск, дашборд и DWH из этого же среза.
+**Что делает.** Пересбор вакансий ДЕВЯТИ источников (hh, hirify, talanto, getmatch,
+arbeitnow, himalayas, web3, themuse, jobicy — фактический список всегда в `config.py::SOURCES`)
+-> `data/vacancies_raw.json`, следом освежает ленту, поиск, дашборд и DWH из этого же среза.
+
+Число источников важно для планирования: задача стоит с `ExecutionTimeLimit PT2H`, и до
+08.08.2026 дока с крон-обёрткой обещали четыре портала и «hh + hirify» соответственно —
+оператор недооценивал длительность вдвое и не понимал, почему прогон упирается в лимит.
 
 **Почему лента идёт первым шагом.** `feed-data.js` — снимок на диске, а не живое чтение
 кеша: `serve` его только раздаёт. Пока шаг отсутствовал (до 01.08.2026), лента застывала
@@ -183,6 +188,23 @@ python, node и chromium сиротами.
 ### `hh_chat`
 
 **Расписание.** Каждые 90 минут в окне 10:30–23:30, лимит 80 мин.
+
+**⚠️ Единственная задача, которая НЕ РАБОТАЕТ ОТ БАТАРЕИ.** У `hh_chat` стоят
+`DisallowStartIfOnBatteries=true` и `StopIfGoingOnBatteries=true`, у остальных трёх
+(`hh_apply`, `hh_collect`, `hh_sync`) — `false`. Проверить:
+
+```powershell
+foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
+  $x = [xml](schtasks /Query /TN $n /XML)
+  "{0,-12} {1,-6} {2}" -f $n, $x.Task.Settings.DisallowStartIfOnBatteries, `
+                            $x.Task.Settings.StopIfGoingOnBatteries
+}
+```
+
+Отсюда ловушка на ноутбуке: вынули из розетки — **отклики продолжают уходить, а автоответы
+молча не стартуют**. Симптом со стороны владельца — «бот откликается, но перестал отвечать
+рекрутёрам», причём в логах `cron_chat.log` за это время НЕТ НИ СТРОКИ: задача не
+запускалась, а не падала. Асимметрия не документировалась до 08.08.2026.
 
 **Команда.** `cron/cron_chat.bat` — два шага последовательно:
 1. `hh.py autoclick --sync-status` — инкрементальный синк чатов: терминальные (отказ) без

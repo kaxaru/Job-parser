@@ -1106,7 +1106,7 @@ def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> i
 
     НАБЛЮДАЕМОСТЬ: строка «Очередь ленты: обработано N, откликов +K, возвращено R, осталось Q».
     Систематическая поломка = R>0 при неубывающем Q от прогона к прогону."""
-    applied = failed = 0
+    applied = returned = 0        # returned — сколько записей легло обратно в очередь
     seen: set[str] = set()
     while store.applied_today() < daily_cap:
         rec = store.pop_pending()
@@ -1123,7 +1123,7 @@ def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> i
             res = _apply_one_vacancy(page, vid, rec.get("url", ""), text,
                                      rec.get("name", ""), rec.get("employer", ""))
         except Exception as e:
-            failed += 1
+            returned += 1
             left = store.requeue_pending(rec)
             log.error("Очередь ленты: {} НЕ обработана ({}: {}) — возвращена в очередь, в ней {}",
                       vid, type(e).__name__, e, left)
@@ -1133,6 +1133,7 @@ def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> i
         if status == ApplyOutcome.APPLIED.code:
             applied += 1
         elif status == ApplyOutcome.CAPTCHA.code:
+            returned += 1          # в счётчик тоже: строка ниже — сигнал здоровья очереди
             store.requeue_pending(rec)
             log.error("Очередь ленты: HH показал капчу — дренаж ОСТАНОВЛЕН, {} возвращена "
                       "в очередь", vid)
@@ -1142,7 +1143,7 @@ def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> i
         time.sleep(random.uniform(*APPLY_PAUSE))
     if seen:
         log.info("Очередь ленты: обработано {}, откликов +{}, возвращено в очередь {}, "
-                 "осталось {}", len(seen), applied, failed, len(store.pending()))
+                 "осталось {}", len(seen), applied, returned, len(store.pending()))
     if applied:
         log.success("Очередь ленты дренажирована: +{} доп. откликов (26+)", applied)
     return applied
