@@ -24,8 +24,10 @@ def test_textarea_keeps_code_angle_brackets():
 
 
 def test_text_strips_url():
-    out = F._sanitize("резюме тут http://evil.io/x", FieldType.TEXT)
-    assert "http" not in out and "evil" not in out
+    # Ожидаемое — ВЕСЬ ответ целиком: отрицание «ссылки нет» не отличало «вырезали ссылку»
+    # от «утопили ответ», хотя у коротких полей это ровно то различие, ради которого
+    # URL режется, а не отклоняется целиком (аудит 09.08.2026).
+    assert F._sanitize("резюме тут http://evil.io/x", FieldType.TEXT) == "резюме тут"
 
 
 def test_control_chars_and_fences_stripped():
@@ -51,9 +53,12 @@ def test_wordy_decline_never_reaches_the_form(raw):
     assert F._sanitize(raw, FieldType.TEXTAREA) is None
 
 
-def test_over_length_bounded():
-    from hrwork.config import FORM_MAX_ANSWER_LEN
-    assert len(F._sanitize("x" * (FORM_MAX_ANSWER_LEN + 500), FieldType.TEXTAREA)) == FORM_MAX_ANSWER_LEN
+def test_over_length_bounded(monkeypatch):
+    # Лимит прибит к дефолту спеки (RFC-003: 1500), а не взят из той же env-настраиваемой
+    # константы, которой режет реализация: иначе обе стороны равенства — одно значение,
+    # и тест зелёный хоть при 5, хоть при 200000 (аудит 09.08.2026).
+    monkeypatch.setattr(F, "FORM_MAX_ANSWER_LEN", 1500)
+    assert len(F._sanitize("x" * 2000, FieldType.TEXTAREA)) == 1500
 
 
 # ── денилист свободного текста: инъекция не доезжает до анкеты работодателя ──
@@ -188,16 +193,42 @@ def test_quiz_no_options_no_network(monkeypatch):
 
 
 def test_quiz_uses_expert_prompt(monkeypatch):
+    # Утверждение одно и о ВЫБОРЕ промпта, как у соседа test_code_task_uses_code_prompt…:
+    # три вхождения через `and` пересказывали текст промпта (любая переформулировка красит
+    # тест) и падали одним ассертом без имени виновника. Поведение самого квиза —
+    # номер -> опция и DECLINE -> None — закрыто отдельными тестами выше.
     seen = {}
     _mock(monkeypatch, "1", seen)
     F.answer_quiz("Q?", ("A", "B"), "ctx")
-    assert "оценку" in seen["system"] and "DECLINE" in seen["system"] and "номер" in seen["system"]
+    assert seen["system"] == F._QUIZ_SYSTEM
 
 
 # ── приватность: allowlist-контекст + скраб PII из resume.md ──
-def test_resume_ctx_excludes_salary_and_citizenship():
-    ctx = F.build_resume_ctx().lower()
-    assert "salary" not in ctx and "граждан" not in ctx
+# ПЕРЕПИСАНО 09.08.2026 (аудит). Прежний страж искал в проекции ИМЯ JSON-КЛЮЧА («salary»),
+# которого в ней не бывает никогда: build_resume_ctx склеивает ЗНАЧЕНИЯ полей и русские
+# заголовки. Вилка ушла бы провайдеру числами, гражданство — словами, и обе проверки остались
+# бы зелёными. Плюс страж читал ЛИЧНЫЙ профиль запускающего, то есть проверял его настройки.
+#
+# Значения ниже подобраны так, чтобы их НЕ ловил `_scrub_pii`: иначе тест давил бы на второй
+# рубеж (скраб), а защищается здесь ПЕРВЫЙ — allowlist `_CTX_KEYS`.
+_PRIVATE_PROFILE = {"answers": {
+    "years_text": "6 лет коммерческой разработки.",            # единственный allowlist-ключ
+    "salary_by_grade": {"middle": "150 000 — 170 000"},        # вилка
+    "citizenship_text": "РФ и Сербия, работаю по трудовому договору.",
+    "office_city": "Тольятти",
+}}
+
+
+@pytest.fixture
+def profile_with_private_facts(monkeypatch):
+    monkeypatch.setattr(F, "load_profile", lambda: _PRIVATE_PROFILE)
+    monkeypatch.setattr(F, "_RESUME_MD", pathlib.Path("nonexistent.md"))
+
+
+def test_salary_citizenship_and_city_never_reach_the_provider(profile_with_private_facts):
+    # Равенство ЦЕЛИКОМ — единственная форма, которая закрывает всё сразу: чего в литерале
+    # нет, того в проекции нет, включая сумму, подданство и город.
+    assert F.build_resume_ctx() == "6 лет коммерческой разработки."
 
 
 # Синтетический CV вместо личного personal/resume.md: тест герметичен (на чистом клоне/CI
@@ -320,11 +351,14 @@ def test_pii_written_into_an_allowlist_field_is_scrubbed_too(monkeypatch):
     assert F.build_resume_ctx() == "Английский — B1 (средний)."
 
 
-def test_payload_has_no_salary_citizenship(monkeypatch):
+def test_provider_payload_carries_only_the_allowlisted_facts(monkeypatch,
+                                                             profile_with_private_facts):
+    # Вторая сторона того же стража: до провайдера доезжает РОВНО проекция и текст поля.
     seen = {}
     _mock(monkeypatch, "ok", seen)
     F.answer_field("вопрос", FieldType.TEXTAREA, (), F.build_resume_ctx())
-    assert "salary" not in seen["user"].lower() and "граждан" not in seen["user"].lower()
+    assert seen["user"] == ("ФАКТЫ РЕЗЮМЕ:\n6 лет коммерческой разработки."
+                            "\n\nПОЛЕ АНКЕТЫ:\nвопрос")
 
 
 # ── разметка form_answers как LLM-контекст: DEFAULT-DENY ──
@@ -521,7 +555,8 @@ def test_injection_output_is_inert_string(monkeypatch):
     payload = "__" + "import__('os').system('rm -rf ~')"
     _mock(monkeypatch, payload)
     out = F.answer_field("любой вопрос", FieldType.TEXTAREA, (), "ctx")
-    assert out == payload and isinstance(out, str)
+    assert out == payload
+    assert isinstance(out, str) is True
 
 
 @pytest.mark.parametrize("prompt", [

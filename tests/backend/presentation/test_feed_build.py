@@ -14,7 +14,6 @@ from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
 from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net import rates
 from hrwork.infrastructure.storage import VacancyRecord, followup
 from hrwork.presentation.views import feed
 
@@ -193,7 +192,16 @@ def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
     "FEED_COVER_TEMPLATES_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
-    # Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
+    """Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
+
+    ПРИСУТСТВИЕ — не весь договор: мост, инжектящий `{}` вместо словаря, этот тест
+    оставлял бы зелёным (аудит 09.08.2026). ЗНАЧЕНИЕ каждого моста проверяется отдельными
+    тестами литералами ниже (`test_state_labels_bridge_*`, `test_portal_sites_bridge_*`,
+    `test_response_state_sets_bridge_*`, `test_schedule_bridge_*`, `CHAT_FROZEN_PY`,
+    `MARK_VALUES_PY`, `FEED_COVER_TEMPLATES_PY`, `SAL_MAX`, `FX_*`). Presence-only остаётся
+    у `RESUME_CORE_PY`: он читается из `resume_profile.json` запускающего, и литерал
+    проверял бы чужое резюме, а не договор проекта (та же причина, по которой его нет
+    в `test_feed_bridge.py`)."""
     assert f"const {name} = " in feed_globals["text"]
 
 
@@ -364,6 +372,72 @@ def test_schedule_bridge_carries_domain_labels_and_remote_like(feed_globals):
     assert _const(feed_globals["text"], "REMOTE_LIKE_PY") == ["remote", "flexible"]
 
 
+def test_state_labels_bridge_carries_every_status_label(feed_globals):
+    """Подписи статусов отклика инжектятся ЦЕЛИКОМ и дословно (`chat.py::STATE_LABELS`).
+
+    Ожидаемое — литералы из спеки (`docs/chat.md`), а не `chat.STATE_LABELS`: сверка с
+    источником проверяла бы обратимость json.dumps, а не подписи. Инцидент, ради которого
+    мост завели, — расхождение подписей («Звонок» вместо «Телефон-интервью», «Закрыта»
+    вместо «Вакансия закрыта»); второй конец того же моста (офлайн-фолбэк в `model.js`)
+    стережёт `test_feed_bridge.py`. Пустой словарь в инжекте гасил бы подписи бейджей
+    у всех карточек, а страж присутствия этого не видел (аудит 09.08.2026).
+
+    Отдельно про два «Отказа»: `DISCARD` и `DISCARD_BY_EMPLOYER` подписаны одинаково,
+    а `DISCARD_BY_APPLICANT` — «Вы отказались», это НАШ отказ, не работодателя."""
+    assert _const(feed_globals["text"], "STATE_LABELS_PY") == {
+        "RESPONSE":               "Отклик",
+        "INVITATION":             "Приглашение",
+        "CONSIDER":               "Рассматривается",
+        "PHONE_INTERVIEW":        "Телефон-интервью",
+        "INTERVIEW":              "Интервью",
+        "ASSESSMENT":             "Тестовое",
+        "HIRED":                  "Оффер",
+        "DISCARD":                "Отказ",
+        "DISCARD_BY_EMPLOYER":    "Отказ",
+        "DISCARD_BY_APPLICANT":   "Вы отказались",
+        "DISCARD_VACANCY_CLOSED": "Вакансия закрыта",
+    }
+
+
+def test_portal_sites_bridge_carries_the_domain_of_every_source(feed_globals):
+    """Домены порталов едут из `config.PORTAL_SITES` — по одному на каждый источник.
+
+    ИНЦИДЕНТ 01.08.2026: в JS стоял тернарник на два портала, и talanto с getmatch
+    подписывались как «hh.ru». Литералы, а не сверка с `PORTAL_SITES`: инжект пустого
+    словаря вернул бы ленту к «имя источника как есть» молча — presence-страж это
+    пропускал (аудит 09.08.2026)."""
+    assert _const(feed_globals["text"], "PORTAL_SITES_PY") == {
+        "hh":        "hh.ru",
+        "hirify":    "hirify.me",
+        "talanto":   "talanto.work",
+        "getmatch":  "getmatch.ru",
+        "arbeitnow": "arbeitnow.com",
+        "himalayas": "himalayas.app",
+        "web3":      "web3.career",
+        "themuse":   "themuse.com",
+        "jobicy":    "jobicy.com",
+    }
+
+
+@pytest.mark.parametrize("name, expected", [
+    # НАШ отказ (DISCARD_BY_APPLICANT) в набор НЕ входит: JS раньше решал сам через
+    # startsWith('DISCARD') и красил такую карточку «Отказ», а воронка относила её
+    # в «без исхода» (аудит 07.08.2026).
+    ("DISCARD_STATES_PY", ["DISCARD", "DISCARD_BY_EMPLOYER", "DISCARD_VACANCY_CLOSED"]),
+    # CONSIDER («Рассматривается») входит намеренно — это «позитив/в работе», а не
+    # приглашение; набор един с воронкой (docs/chat.md).
+    ("INVITED_STATES_PY", ["ASSESSMENT", "CONSIDER", "HIRED", "INTERVIEW",
+                           "INVITATION", "PHONE_INTERVIEW"]),
+])
+def test_response_state_sets_bridge_carries_python_membership(name, expected, feed_globals):
+    """Наборы состояний отклика инжектятся списками кодов; сравниваем СОСТАВ, литералами.
+
+    Порядок в договор не входит (в JS это `includes`), поэтому сортируем обе стороны —
+    в отличие от `MARK_VALUES_PY`, где порядок задаёт порядок кнопок и проверяется как есть.
+    До 09.08.2026 у обоих наборов проверялось только присутствие `const`."""
+    assert sorted(_const(feed_globals["text"], name)) == expected
+
+
 def test_exp_chips_are_rendered_from_exp_labels(tmp_path):
     """Чипы «Опыт» рендерятся из `config.EXP_LABELS`, а не четырьмя литералами в шаблоне.
 
@@ -394,7 +468,13 @@ def test_saved_marks_pass_through_unchanged(feed_globals):
     assert feed_globals["saved_marks"] == _MARKS
 
 
-def test_fx_rates_and_alias_match_injected_sources(feed_globals):
-    # FX_RATES — ровно инжектированные курсы; FX_ALIAS — единый источник rates.CURRENCY_ALIAS.
+def test_fx_rates_pass_through_and_alias_canonizes_currency_codes(feed_globals):
+    """FX_RATES — ровно инжектированные курсы; FX_ALIAS — канонизация кодов валют.
+
+    Алиасы сравниваются с ЛИТЕРАЛОМ (`docs/domain.md`: RUR->RUB, BYR->BYN, USDT->USD),
+    а не с `rates.CURRENCY_ALIAS`: сборщик сериализует ровно этот объект, и сверка с ним
+    проверяла бы обратимость json.dumps. Правка вида `RUR -> RUR` прошла бы обе стороны
+    одинаково, а лента перестала бы находить курс для рублёвых вилок (аудит 09.08.2026).
+    Тот же литерал уже стоит в `tests/feed/model.test.js::resolveCur`."""
     assert feed_globals["fx_rates"] == _FX
-    assert feed_globals["fx_alias"] == rates.CURRENCY_ALIAS
+    assert feed_globals["fx_alias"] == {"RUR": "RUB", "BYR": "BYN", "USDT": "USD"}

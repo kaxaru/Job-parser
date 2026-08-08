@@ -106,13 +106,21 @@ def test_client_gives_up_after_one_refresh(monkeypatch):
     assert attempts == ["Bearer OLD", "Bearer NEW"]
 
 
-def test_client_without_token_names_the_next_step():
-    client = hh_api.ApiClient(None)
-    monkey_token = getattr(client, "token", "unset")
-    if monkey_token is None:                      # профиля с токеном на машине может не быть
-        with pytest.raises(hh_api.HhApiError) as e:
-            client.get("/me")
-        assert e.value.status == 401
+def test_client_without_token_names_the_next_step(monkeypatch):
+    """АУДИТ 09.08.2026: тело теста стояло под `if client.token is None`, то есть зависело от
+    ЖИВОГО состояния машины — на компьютере с сохранённым токеном не выполнялся ни один
+    ассерт, а набор читался как зелёный. Состояние подменяем у держателя, через которого
+    идёт вызов (`hh_api.load_token`), — тест выполняется ВСЕГДА и не читает личный токен."""
+    monkeypatch.setattr(hh_api, "load_token", lambda: None)
+
+    def _live_network_tripwire(*_a, **_kw):       # растяжка: подмена не сработала -> назвать вслух
+        raise AssertionError("запрос ушёл в сеть — значит токен всё-таки загрузился с диска")
+
+    monkeypatch.setattr(hh_api.httpx, "request", _live_network_tripwire)
+    with pytest.raises(hh_api.HhApiError) as e:
+        hh_api.ApiClient(None).get("/me")
+    assert e.value.status == 401
+    assert e.value.payload == "нет токена — сначала: hh.py hhapi --login"
 
 
 def test_headers_carry_contact_user_agent(monkeypatch):

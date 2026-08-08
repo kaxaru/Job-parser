@@ -103,8 +103,11 @@ def test_by_source_label_shows_remote_share_and_guards_zero_total(tmp_path):
     fig = chart_by_source(tmp_path)
     assert list(fig.data[0].x) == ["hh", "empty"]
     assert list(fig.data[0].y) == [100, 0]
-    assert "40% удал." in fig.data[0].text[0]   # 40/100
-    assert "0% удал." in fig.data[0].text[1]    # тотал 0 -> 0%, без ZeroDivisionError
+    # Подпись целиком, а не подстрокой: «в подписи есть 40% удал.» проходило и тогда,
+    # когда из неё пропал счётчик вакансий (аудит 09.08.2026). Разделитель — два пробела
+    # вокруг «·».
+    assert fig.data[0].text[0] == "100  ·  40% удал."   # 40/100
+    assert fig.data[0].text[1] == "0  ·  0% удал."      # тотал 0 -> 0%, без ZeroDivisionError
 
 
 # --- chart_tech_heatmap: колонки — топ технологий по СУММЕ упоминаний по городам ---
@@ -146,15 +149,20 @@ def test_companies_bar_appends_age_only_when_present_and_reverses_order(tmp_path
     assert list(fig.data[0].y) == ["C", "B", "A"]     # реверс: топ-компания сверху
     assert fig.data[0].text[0] == "20"                # возраст 0 -> без «Nд»
     assert fig.data[0].text[1] == "50"                # прочерк -> без «Nд»
-    assert "10д" in fig.data[0].text[2]               # возраст есть -> дописан
+    assert fig.data[0].text[2] == "100  ·  10д"       # возраст есть -> дописан
 
 
 def test_companies_bar_caps_at_top_25(tmp_path):
+    # Топ-25 — это ГОЛОВА отчёта (он уже отранжирован), а не хвост: срез rows[-25:]
+    # или потерянный реверс дают ровно 25 элементов и оставляли тест зелёным, рисуя
+    # на дашборде самых мелких работодателей вместо топовых (аудит 09.08.2026).
     rows = [[f"C{i}", 100 - i, 10] for i in range(30)]
     _write_csv(tmp_path, "11_companies.csv",
                ["Компания", "Вакансий", "Медиана возраста"], rows)
-    fig = chart_companies(tmp_path)
-    assert len(fig.data[0].y) == 25                   # rows[:25], хвост отброшен
+    comps = list(chart_companies(tmp_path).data[0].y)
+    assert len(comps) == 25                           # rows[:25], хвост отброшен
+    assert comps[0] == "C24"                          # реверс: 25-я строка отчёта снизу
+    assert comps[-1] == "C0"                          # первая строка отчёта — сверху
 
 
 # --- chart_remote: сорт городов по возрастанию «Всего» + нормировка доли ---
@@ -206,18 +214,35 @@ def test_company_funnel_title_without_measured_rejects_is_zero_percent(tmp_path)
                                      "(отказов 4, измерено 0, из них <=1ч — 0 = 0%)")
 
 
-# --- пустой отчёт: любая chart_*-функция отдаёт валидную go.Figure, а не падает ---
+# --- пустой отчёт: любая chart_*-функция отдаёт ПОДПИСАННУЮ фигуру без данных ---
+# Четвёртый и пятый элементы кортежа — договор пустого среза: сколько серий рисуется
+# (стек рисует свои сегменты и на нуле строк) и что написано в шапке. Одного isinstance
+# мало: он проходил и на фигуре без заголовка (аудит 09.08.2026), а вкладка дашборда
+# без подписи не отличима от «график не тот».
 
-@pytest.mark.parametrize(("func", "name", "header"), [
-    (chart_cities, "01_cities.csv", ["Город", "Вакансий"]),
-    (chart_by_source, "12_sources.csv", ["Портал", "Вакансий", "Удалённо"]),
-    (chart_tech_heatmap, "02_tech_by_city.csv", ["Город", "Технология", "Упоминаний"]),
-    (chart_companies, "11_companies.csv", ["Компания", "Вакансий", "Медиана возраста"]),
-    (chart_remote, "09_remote_by_city.csv", ["Город", "Всего", "Удалённо", "Офис"]),
+@pytest.mark.parametrize(("func", "name", "header", "traces", "title"), [
+    (chart_cities, "01_cities.csv", ["Город", "Вакансий"],
+     1, "Вакансий по городам"),
+    (chart_by_source, "12_sources.csv", ["Портал", "Вакансий", "Удалённо"],
+     1, "Порталы: вакансий по источникам агрегатора"),
+    # топ-N в шапке считается по факту, поэтому на пустом отчёте честные нули
+    (chart_tech_heatmap, "02_tech_by_city.csv", ["Город", "Технология", "Упоминаний"],
+     1, "Топ-0 технологий по топ-0 городам (кол-во вакансий)"),
+    (chart_companies, "11_companies.csv", ["Компания", "Вакансий", "Медиана возраста"],
+     1, "Работодатели: вакансий (бар) × медиана «сколько висят» (цвет)"),
+    (chart_remote, "09_remote_by_city.csv", ["Город", "Всего", "Удалённо", "Офис"],
+     2, "Удалёнка по городам: доля удалёнка/офис (%)"),
     (chart_freshness, "10_freshness_by_city.csv",
-     ["Город", "Всего", "Свежих", "30-60дн", "Гостов"]),
-    (chart_company_funnel, "13_company_funnel.csv", _FUNNEL_HEADER),
+     ["Город", "Всего", "Свежих", "30-60дн", "Гостов"],
+     3, "Свежесть по городам: состав по классам (доля, %)"),
+    (chart_company_funnel, "13_company_funnel.csv", _FUNNEL_HEADER,
+     5, "Латентность автоотказа по компаниям (отказов 0, измерено 0, из них <=1ч — 0 = 0%)"),
 ])
-def test_chart_returns_figure_on_empty_report(tmp_path, func, name, header):
+def test_chart_returns_titled_empty_figure_on_empty_report(tmp_path, func, name, header,
+                                                           traces, title):
     _write_csv(tmp_path, name, header, [])   # только заголовок -> _read вернёт []
-    assert isinstance(func(tmp_path), go.Figure)
+    fig = func(tmp_path)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) == traces
+    assert list(fig.data[0].y) == []         # ни одной категории на оси
+    assert fig.layout.title.text == title

@@ -32,9 +32,12 @@ def test_bargaining_always_human():
 
 # ── опыт с технологией ──
 def test_has_experience_yes_only_for_known_stack():
+    # Текст ЦЕЛИКОМ, как у английского близнеца ниже: вхождение прошло бы и на ответе
+    # с лишними фактами («Да, есть опыт: FastAPI, Kubernetes.») — то есть ровно
+    # на выдуманном факте, против которого написан весь файл (аудит 09.08.2026).
     a = suggest("Есть ли у вас опыт работы с FastAPI?", PROF)
     assert a["rule"] == "has_exp_yes"
-    assert "FastAPI" in a["text"]
+    assert a["text"] == "Да, есть опыт: FastAPI."
 
 
 def test_has_experience_no_for_unknown_tech():
@@ -43,9 +46,11 @@ def test_has_experience_no_for_unknown_tech():
 
 
 def test_never_claims_unknown_tech():
-    # ключевое: технологии не из стека НЕ должны попасть в утвердительный ответ
-    a = suggest("Занимались ли вы дизайном A/B-тестов?", PROF)
-    assert a is None or "A/B" not in a["text"]
+    # Ключевое: технология не из стека не подтверждается — движок МОЛЧИТ, и вопрос уходит
+    # человеку. Дизъюнкция `a is None or "A/B" not in a["text"]` пропускала главный дефект
+    # файла (БАГ 20.07): ответ «Да, есть опыт: Python.» на вопрос про A/B-тесты подстроки
+    # «A/B» не содержит и оставлял тест зелёным (аудит 09.08.2026).
+    assert suggest("Занимались ли вы дизайном A/B-тестов?", PROF) is None
 
 
 def test_specific_practice_over_known_tech_is_silent():
@@ -86,7 +91,7 @@ def test_no_facts_no_answer(question):
 def test_stack_enumeration():
     a = suggest("С какими фреймворками вы работали?", PROF)
     assert a["rule"] == "stack_list"
-    assert "FastAPI" in a["text"]
+    assert a["text"] == "Работал с: Python, FastAPI, PostgreSQL, Docker."
 
 
 def test_years_and_format_from_profile():
@@ -234,7 +239,7 @@ def test_place_own_city_offers_office():
     a = suggest("Готовы работать в г. Приволжск?", SAL,
                 VacancyContext(name="Инженер", experience="between1And3", city="Приволжск"))
     assert a["rule"] == "place_own_city"
-    assert "офисе в Приволжск" in a["text"]
+    assert a["text"] == "Готов работать удалённо или в офисе в Приволжск."
 
 
 def test_salary_and_place_english():
@@ -409,12 +414,14 @@ def _i(label, *tech):
 
 def test_intent_years_tech_frontend_routes_to_frontend():
     a = suggest("сколько лет с этим?", PROF_FE, intent=_i("years_tech", "React"))
-    assert a and a["rule"] == "frontend"
+    assert a is not None
+    assert a["rule"] == "frontend"
 
 
 def test_intent_years_tech_python_routes_to_python():
     a = suggest("а сколько именно?", PROF_FE, intent=_i("years_tech", "FastAPI"))
-    assert a and a["text"] == "Python — 3 года."
+    assert a is not None
+    assert a["text"] == "Python — 3 года."
 
 
 def test_intent_years_tech_unknown_is_silent():
@@ -436,7 +443,8 @@ def test_intent_years_backstop_silences_tech_in_question():
 def test_intent_depth_frontend_answers_not_silent():
     # «какой опыт с React» (depth) -> фронт-факт есть -> отвечаем (не теряем как regex-путь)
     a = suggest("какой у вас опыт?", PROF_FE, intent=_i("depth", "React"))
-    assert a and a["rule"] == "frontend"
+    assert a is not None
+    assert a["rule"] == "frontend"
 
 
 def test_intent_depth_no_tech_is_human():

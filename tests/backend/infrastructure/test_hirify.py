@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from hrwork.domain.role import Role
 from hrwork.infrastructure import sources, storage
 from hrwork.infrastructure.sources import base, hirify
 from hrwork.infrastructure.sources.base import ListIncomplete, check_list_complete
@@ -64,8 +65,12 @@ def test_normalize_maps_to_domain():
     assert (v.salary.frm, v.salary.to, v.salary.currency) == (600, 700, "USD")
     assert v.experience.hh_id == "between1And3"          # junior — самый младший грейд
     # теги/спец подмешаны в requirement -> детект стека/роли сработал прямо в адаптере
-    assert "python" in r.requirement.lower() and "Backend" in r.requirement
-    assert "Python" in v.techs and v.role.is_it
+    assert "python" in r.requirement.lower()
+    assert "Backend" in r.requirement
+    assert "Python" in v.techs
+    # точный член Role, а не флаг `.is_it`: тайтл «Python Developer (Middle/Junior)»
+    # ловится ключом `Разработчик` (`developer`) таблицы ROLE_PATTERNS
+    assert v.role is Role.DEVELOPER
 
 
 def test_normalize_salary_dict_without_range_is_none():
@@ -86,8 +91,10 @@ def test_normalize_no_salary_no_region_defaults_remote():
 
 
 def test_sources_registry_has_both_portals():
-    assert sources.get_source("hh") is not None
-    assert sources.get_source("hirify") is not None
+    # имя зарегистрированного источника, а не `is not None`: перепутанная строка
+    # в `@register_source` вернула бы чужой адаптер и тест бы не заметил
+    assert sources.get_source("hh").name == "hh"
+    assert sources.get_source("hirify").name == "hirify"
     assert sources.get_source("unknown") is None
 
 
@@ -102,11 +109,16 @@ def test_normalize_meta_header_and_full_description():
     it = {**ITEM, "english_level": "b2",
           "salary": {"min": 600, "max": 700, "currency": "USD", "salary_in_usd": 650}}
     d = _normalize(it, {"text": "<p>Big job description</p>"}).description_html
-    assert "United Kingdom" in d          # страна-наниматель
-    assert "English B2" in d              # минимальный уровень английского
-    assert "650" in d                     # нормализованный USD (мета)
-    assert "Big job description" in d     # полный текст из /vacancies/{slug}
-    assert "hirify.me" in d
+    # АУДИТ 09.08.2026: пять проверок по подстрокам — «650» прошло бы и приклеившись
+    # к сумме вилки, а пропажа подписи «(норм.)» осталась бы незамеченной. Рядом, в
+    # test_meta_header_reads_usd_…, шапка уже сверяется точно; сверяем так же.
+    head, _, body = d.partition("</p>")
+    assert _header_parts(head + "</p>") == [
+        "United Kingdom",             # страна-наниматель
+        "English B2",                 # минимальный уровень английского
+        "~$650 USD (норм.)",          # нормализованный USD (мета)
+        "hirify.me"]
+    assert body == "<p>Big job description</p>"   # полный текст из /vacancies/{slug}
 
 
 def test_normalize_placeholder_company_cleaned():
@@ -128,7 +140,7 @@ def test_hirify_reads_usd_mid_for_period_inference():
 def test_normalize_period_year_to_monthly():
     it = {**ITEM, "salary": {"min": 60000, "max": 84000, "currency": "USD", "salary_in_usd": 72000}}
     v = _normalize(it).vacancy
-    assert v.salary.frm == 5000 and v.salary.to == 7000   # годовая /12 -> месяц
+    assert (v.salary.frm, v.salary.to) == (5000, 7000)    # годовая /12 -> месяц
 
 
 def test_normalize_sig_and_enriched_flag():
@@ -140,10 +152,12 @@ def test_normalize_sig_and_enriched_flag():
     assert _normalize({**ITEM, "updated_at": "2026-07-07T10:00:00Z"}).sig == "2026-07-07T10:00:00Z"
     # полный текст -> enriched True
     r3 = _normalize(ITEM, {"text": "<p>full</p>"})
-    assert r3.enriched is True and "full" in r3.description_html
+    assert r3.enriched is True
+    assert "full" in r3.description_html
     # описание из кеша -> enriched True, html как есть, сеть не нужна
     r4 = _normalize(ITEM, cached_desc="<p>cached</p>")
-    assert r4.enriched is True and r4.description_html == "<p>cached</p>"
+    assert r4.enriched is True
+    assert r4.description_html == "<p>cached</p>"
 
 
 def test_collect_reuses_cache_and_enriches_only_changed(monkeypatch):
@@ -474,4 +488,5 @@ def test_collect_caps_enrich_at_limit(monkeypatch):
     assert len(fetched) == 1                                  # лимит=1 -> одна дозагрузка
     assert fetched == ["s3"]                                  # свежайшая (created_at desc) в приоритете
     enriched = [r for r in out if r.enriched]
-    assert len(enriched) == 1 and len(out) == 3               # остальные -> tldr-заглушки
+    assert len(enriched) == 1
+    assert len(out) == 3                                      # остальные -> tldr-заглушки

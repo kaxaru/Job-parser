@@ -88,7 +88,8 @@ def test_defaults_win_over_a_profile_that_switches_rules_off(title, expected_rea
     for name, value in module_constants_with_profile(candidates).items():
         monkeypatch.setattr(candidates, name, value)          # то же делает apply_defaults
     reason = candidates.out_of_scope(title)
-    assert reason is not None and reason.label == expected_reason
+    assert reason is not None
+    assert reason.label == expected_reason
 
 
 def test_profile_can_replace_the_cover_template(monkeypatch, module_constants_with_profile):

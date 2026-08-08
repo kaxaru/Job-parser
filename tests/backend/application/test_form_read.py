@@ -62,8 +62,11 @@ def test_task_radio_captures_labels_and_values():
     fields = extract_fields(_Page({'[data-qa="task-body"]': _Loc([body])}))
     assert len(fields) == 1
     f = fields[0]
-    assert f.ftype is FieldType.RADIO and f.name == "task_1" and f.prompt == "Готов к офису?"
-    assert f.options == ("Да", "Свой вариант") and f.opt_values == ("a", "open")
+    assert f.ftype is FieldType.RADIO
+    assert f.name == "task_1"
+    assert f.prompt == "Готов к офису?"
+    assert f.options == ("Да", "Свой вариант")
+    assert f.opt_values == ("a", "open")
     assert f.selector == 'input[name="task_1"]'
 
 
@@ -71,7 +74,9 @@ def test_task_checkbox_when_no_radio():
     body = _body("Часов в неделю?", checks=[_radio("task_2", "20"), _radio("task_2", "30")],
                  cells=["20", "30"])
     f = extract_fields(_Page({'[data-qa="task-body"]': _Loc([body])}))[0]
-    assert f.ftype is FieldType.CHECKBOX and f.options == ("20", "30") and f.opt_values == ("20", "30")
+    assert f.ftype is FieldType.CHECKBOX
+    assert f.options == ("20", "30")
+    assert f.opt_values == ("20", "30")
 
 
 def test_missing_cell_label_falls_back_to_value():
@@ -88,7 +93,8 @@ def test_generic_select_options():
     sel = _Loc(attrs={"name": "grade"},
                sub={"option": _Loc([_Loc(text="Junior"), _Loc(text="Middle"), _Loc(text="  ")])})
     f = extract_fields(_Page({"select": _Loc([sel])}))[0]
-    assert f.ftype is FieldType.SELECT and f.options == ("Junior", "Middle")
+    assert f.ftype is FieldType.SELECT
+    assert f.options == ("Junior", "Middle")
 
 
 # ── полнота съёма: несъём виден, а не прячется обрезанным списком ──

@@ -100,7 +100,8 @@ def test_salary_net_noop_when_already_net_and_none_when_empty():
 def test_salary_zero_bound_not_treated_as_missing():
     # from=0 — валидная граница, не «отсутствует» (is None, а не truthiness)
     s = Salary.from_raw({"from": 0, "to": 100, "currency": "RUR"})
-    assert s is not None and s.mid == 50                            # (0+100)//2, не 100
+    assert s is not None
+    assert s.mid == 50                                              # (0+100)//2, не 100
     assert Salary.from_raw({"to": 0, "currency": "RUR"}).mid == 0   # одна граница = 0
 
 
@@ -142,15 +143,26 @@ def test_freshness_class_single_source():
 
 
 # ── Поведение сущности Vacancy (F2a-behaviour): даты/формат -> методы ──
-def test_vacancy_freshness_methods():
-    fresh = _vac(created_at=_days_ago(5))
-    assert fresh.age_days() == 5 and fresh.fresh_class() is FreshnessClass.FRESH and not fresh.is_ghost()
-    ghost = _vac(created_at=_days_ago(90))
-    assert ghost.fresh_class() is FreshnessClass.GHOST and ghost.is_ghost()
-    recent = _vac(created_at=_days_ago(45))
-    assert recent.fresh_class() is FreshnessClass.RECENT and not recent.is_ghost()
+# ПЕРЕПИСАНО 09.08.2026 (аудит): четыре «скрытых цикла» `assert a and b and c` в одном теле.
+# Падение не называло виновника и скрывало остальные утверждения; имя теста было взято
+# из реализации (`..._methods`), а не из защищаемого свойства.
+@pytest.mark.parametrize("days_ago, age, cls, ghost", [
+    (5,  5,  FreshnessClass.FRESH,  False),
+    (45, 45, FreshnessClass.RECENT, False),
+    (90, 90, FreshnessClass.GHOST,  True),
+])
+def test_vacancy_age_decides_its_freshness_band(days_ago, age, cls, ghost):
+    v = _vac(created_at=_days_ago(days_ago))
+    assert v.age_days() == age
+    assert v.fresh_class() is cls
+    assert v.is_ghost() is ghost
+
+
+def test_vacancy_without_a_date_has_no_age_and_unknown_band():
     undated = _vac(created_at=None)
-    assert undated.age_days() is None and undated.fresh_class() is FreshnessClass.UNKNOWN
+    assert undated.age_days() is None
+    assert undated.fresh_class() is FreshnessClass.UNKNOWN
+    assert undated.is_ghost() is False
 
 
 def test_vacancy_republish_gap():

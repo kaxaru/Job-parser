@@ -64,3 +64,16 @@ rem    шаг залогирует ошибку и НЕ отменит собр�
 cd /d "%REPO%\dwh_demo"
 "%PY%" -m etl all >> ..\logs\cron_collect.log 2>&1
 cd /d "%REPO%"
+
+rem 3a) Выгрузка для КОНТЕЙНЕРНОГО пути (Airflow в dwh_demo/docker-compose.yml). Шаг 3 выше
+rem     работает на хосте и читает data\ напрямую; контейнерам же смонтирован ТОЛЬКО
+rem     data\export (09.08.2026: раньше монтировался весь data\ вместе с hh_state.json,
+rem     browser_profile\ и контактами рекрутёров — см. dwh_demo/docs/audits/). Значит нужные
+rem     два файла надо туда положить, иначе Airflow смонтирует пустоту.
+rem     Копия АТОМАРНАЯ (во временное имя, затем move): контейнер читает каталог, и половина
+rem     файла в нём хуже вчерашнего файла целиком.
+if not exist "%REPO%\data\export" mkdir "%REPO%\data\export"
+copy /y "%REPO%\data\vacancies_raw.json" "%REPO%\data\export\vacancies_raw.json.tmp" >nul 2>&1
+if exist "%REPO%\data\export\vacancies_raw.json.tmp" move /y "%REPO%\data\export\vacancies_raw.json.tmp" "%REPO%\data\export\vacancies_raw.json" >nul
+copy /y "%REPO%\data\fx_rates.json" "%REPO%\data\export\fx_rates.json.tmp" >nul 2>&1
+if exist "%REPO%\data\export\fx_rates.json.tmp" move /y "%REPO%\data\export\fx_rates.json.tmp" "%REPO%\data\export\fx_rates.json" >nul

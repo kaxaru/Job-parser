@@ -7,10 +7,20 @@ import dataclasses
 
 import pytest
 
+from hrwork.application.apply.chat import chat_answer
 from hrwork.application.apply.chat.chat_answer import VacancyContext
 from hrwork.application.apply.chat.chat_reply import Proposal, propose
 
 PROF_CTX = {"1": VacancyContext(name="Python-разработчик", experience="between1And3")}
+
+# Синтетический профиль для тестов, где проверяется НАБЛЮДАЕМЫЙ ответ, а не факт вызова:
+# `propose` зовёт `chat_answer.suggest` без профиля, то есть иначе отвечал бы фактами
+# запускающего. Подменять надо у держателя, через которого идёт вызов, — chat_answer.
+PROF_FE = {"answers": {
+    "stack": ["Python", "FastAPI", "React", "TypeScript"],
+    "years_text": "Общий опыт 5 лет 9 мес.",
+    "years_frontend_text": "Около 2 лет фронтенда: React, TypeScript.",
+}}
 
 
 def _chat(text, *, bot=False, mine=False, chat_id=555, write="ENABLED"):
@@ -26,7 +36,7 @@ def _one(chats, ctx=None, answered=frozenset()):
 # ── кому отвечаем ──
 def test_answers_bot_question():
     out = _one({"1": _chat("Есть ли у вас опыт работы с Docker?", bot=True)})
-    assert len(out) == 1 and out[0].rule == "has_exp_yes" and out[0].sender == "bot"
+    assert [(p.rule, p.sender) for p in out] == [("has_exp_yes", "bot")]
 
 
 def test_never_answers_human():
@@ -38,7 +48,7 @@ def test_answers_template_broadcast():
     # одинаковый текст в двух чатах -> рассылка -> отвечаем как боту
     q = "Есть ли у вас опыт работы с Docker?"
     out = _one({"1": _chat(q), "2": _chat(q, chat_id=556)})
-    assert len(out) == 2 and {p.sender for p in out} == {"template"}
+    assert [p.sender for p in out] == ["template", "template"]
 
 
 # ── куда НЕ пишем ──
@@ -66,15 +76,21 @@ def test_answers_new_question_in_same_chat():
     answered = frozenset({_answer_key("1", "Есть ли опыт с Docker?")})
     chats = {"1": _chat("А есть ли опыт с FastAPI?", bot=True)}
     out = _one(chats, answered=answered)
-    assert len(out) == 1 and "FastAPI" in out[0].text
+    assert [p.rule for p in out] == ["has_exp_yes"]
+    assert "FastAPI" in out[0].text
 
 
-def test_answer_key_ignores_bot_preamble_substitutions():
-    # норм-текст снимает подстановки: «Следующий вопрос:» + пробелы не создают
-    # новый ключ для того же по сути вопроса
+def test_same_question_with_extra_spaces_is_not_answered_twice(monkeypatch):
+    # Прежняя форма сравнивала `_answer_key(a) == _answer_key(b)`: обе стороны считала одна
+    # и та же приватная функция, и константный ключ («всё уже отвечено») прошёл бы тест
+    # (аудит 09.08.2026). Теперь договор проверяется НАБЛЮДАЕМО, с контролем рядом:
+    # тот же вопрос с лишними пробелами второй раз не предлагается.
     from hrwork.application.apply.chat.chat_reply import _answer_key
-    assert _answer_key("1", "Работали ли вы с Jira?") \
-        == _answer_key("1", "Работали  ли вы с Jira?")
+    monkeypatch.setattr(chat_answer, "load_profile", lambda: PROF_FE)
+    chats = {"1": _chat("Есть ли у вас  опыт работы  с FastAPI?", bot=True)}
+    assert [p.rule for p in _one(chats)] == ["has_exp_yes"]        # контроль: ответ есть
+    answered = frozenset({_answer_key("1", "Есть ли у вас опыт работы с FastAPI?")})
+    assert _one(chats, answered=answered) == []
 
 
 @pytest.mark.parametrize("text", [
@@ -96,13 +112,13 @@ def test_silent_when_engine_has_no_fact():
 # ── деньги и место: предлагаем, но помечаем manual ──
 def test_salary_marked_manual_not_auto():
     out = _one({"1": _chat("Укажите ваши зарплатные ожидания.", bot=True)})
-    assert len(out) == 1 and out[0].manual is True
-    assert out[0].rule == "salary_junior"      # вилка по грейду вакансии из ctx
+    # вилка по грейду вакансии из ctx, и отправлять её должен человек
+    assert [(p.rule, p.manual) for p in out] == [("salary_junior", True)]
 
 
 def test_place_marked_manual():
     out = _one({"1": _chat("Вы готовы работать в г. Шатура?", bot=True)})
-    assert len(out) == 1 and out[0].manual is True
+    assert [p.manual for p in out] == [True]
 
 
 def test_salary_silent_without_vacancy_context():
@@ -119,8 +135,7 @@ def test_proposal_carries_full_question_not_preview():
               "у вас опыт работы с Docker?")
     assert len(long_q) > 160
     out = _one({"1": _chat(long_q, bot=True)})
-    assert len(out) == 1 and out[0].question == long_q
-    assert out[0].rule == "has_exp_yes"
+    assert [(p.question, p.rule) for p in out] == [(long_q, "has_exp_yes")]
 
 
 def test_proposal_is_frozen():
@@ -133,7 +148,7 @@ def test_proposal_is_frozen():
 def test_english_question_answered_in_english():
     prof = {"1": VacancyContext(name="Python Developer", experience="between1And3")}
     out = propose({"1": _chat("Do you have experience with Docker?", bot=True)}, prof)
-    assert len(out) == 1 and out[0].lang == "en"
+    assert [p.lang for p in out] == ["en"]
 
 
 def test_proposal_type():
@@ -189,7 +204,7 @@ def test_poll_stops_chat_once_bot_replies(monkeypatch):
     slept = []
     r = chat_reply.poll_replies(req, "x", ["10"], interval_s=60,
                                 sleep=slept.append, clock=lambda: len(slept) * 60)
-    assert r["answered"] == 1 and r["timeout"] == 0
+    assert (r["answered"], r["timeout"]) == (1, 0)
     assert saved["10"]["messages"][-1]["mine"] is False       # ответ бота сохранён
     assert req.calls["10"] == 2                                # опрошен ровно 2 раза
 
@@ -200,7 +215,7 @@ def test_poll_times_out_without_reply(monkeypatch):
     slept = []
     r = chat_reply.poll_replies(req, "x", ["10"], window_s=180, interval_s=60,
                                 sleep=slept.append, clock=lambda: len(slept) * 60)
-    assert r["answered"] == 0 and r["timeout"] == 1
+    assert (r["answered"], r["timeout"]) == (0, 1)
     assert len(slept) == 3                                     # 3 попытки за 180с окно
 
 
@@ -214,7 +229,7 @@ def test_poll_independent_per_chat(monkeypatch):
     slept = []
     r = chat_reply.poll_replies(req, "x", ["10", "20"], window_s=180, interval_s=60,
                                 sleep=slept.append, clock=lambda: len(slept) * 60)
-    assert r["answered"] == 1 and r["timeout"] == 1
+    assert (r["answered"], r["timeout"]) == (1, 1)
     assert req.calls["10"] == 1                                # снят после первого же опроса
     assert req.calls["20"] == 3                                # опрашивался всё окно
 
@@ -297,7 +312,7 @@ def test_loop_continues_across_different_chats(monkeypatch):
         def __exit__(self, *_): return False
     monkeypatch.setattr("hrwork.application.apply.session.open_client", lambda: (_Req(), "x"))
     r = chat_reply.run(send=True, max_rounds=8)
-    assert r["sent"] == 2 and r["rounds"] == 3
+    assert (r["sent"], r["rounds"]) == (2, 3)
 
 
 def test_loop_antiloop_same_chat_answered_once_per_run(monkeypatch):
@@ -331,7 +346,7 @@ def test_loop_stops_when_bot_silent(monkeypatch):
         def __exit__(self, *_): return False
     monkeypatch.setattr("hrwork.application.apply.session.open_client", lambda: (_Req(), "x"))
     r = chat_reply.run(send=True, max_rounds=8)
-    assert r["sent"] == 1 and r["rounds"] == 1     # молчание бота -> не крутим дальше
+    assert (r["sent"], r["rounds"]) == (1, 1)      # молчание бота -> не крутим дальше
 
 
 def test_single_round_by_default(monkeypatch):
@@ -353,21 +368,26 @@ def test_confirm_is_manual_not_auto():
     # «Используем эти ответы?» -> confirm -> НЕ отправляется авто: бот подтверждает
     # утверждения, которые проставил сам, а не наши (найдено на живом чате 21.07)
     out = _one({"1": _chat("Используем эти ответы?", bot=True)})
-    assert len(out) == 1 and out[0].rule == "confirm" and out[0].manual is True
+    assert [(p.rule, p.manual) for p in out] == [("confirm", True)]
 
 
 # ══════════════ classify inject в propose ══════════════
-def test_propose_uses_injected_classifier():
+def test_propose_uses_injected_classifier(monkeypatch):
     from hrwork.application.apply.chat.chat_intent import IntentResult
     calls = []
     def classify(q):
         calls.append(q)
         return IntentResult("years_tech", ("React",))
-    # проверяем, что classify ВЫЗВАН на вопросе, дошедшем до suggest (intent долетит внутрь)
+    # Метка долетает внутрь — проверяется НАБЛЮДАЕМЫМ ответом, а не только фактом вызова
+    # мока: без доехавшего intent вопрос «сколько лет с этим фреймворком» ушёл бы в общий
+    # `years`, а не во фронтенд-зонтик (аудит 09.08.2026).
+    monkeypatch.setattr(chat_answer, "load_profile", lambda: PROF_FE)
     ctx = {"1": VacancyContext(name="React dev", experience="between1And3")}
     chats = {"1": _chat("Сколько лет с этим фреймворком?", bot=True)}
-    propose(chats, ctx, classify=classify)
+    out = propose(chats, ctx, classify=classify)
     assert calls == ["Сколько лет с этим фреймворком?"]     # классификатор вызван
+    assert [(p.rule, p.text) for p in out] == [
+        ("frontend", "Около 2 лет фронтенда: React, TypeScript.")]
 
 
 def test_propose_default_no_classifier_no_call():
@@ -375,7 +395,7 @@ def test_propose_default_no_classifier_no_call():
     ctx = {"1": VacancyContext(name="Python dev", experience="between1And3")}
     chats = {"1": _chat("Есть ли опыт с Docker?", bot=True)}
     out = propose(chats, ctx)                                 # без classify
-    assert len(out) == 1 and out[0].rule == "has_exp_yes"
+    assert [p.rule for p in out] == ["has_exp_yes"]
 
 
 # ══════════════ etap-2: LLM-переформулировка (human-gated) ══════════════
@@ -397,7 +417,8 @@ def test_apply_rephrase_ineligible_verbatim_no_call():
         called.append(1)
         return "НОВОЕ"
     out = _apply_rephrase([_prop_r("1", "salary_junior")], rephrase, consent=lambda p, c: True)
-    assert out[0].text == "ИСТОЧНИК" and called == []     # не eligible -> сеть не зовётся, дословно
+    assert out[0].text == "ИСТОЧНИК"                      # не eligible -> дословно
+    assert called == []                                   # ... и сеть не зовётся
 
 
 def test_apply_rephrase_unchanged_is_auto_no_consent():
@@ -406,7 +427,8 @@ def test_apply_rephrase_unchanged_is_auto_no_consent():
     out = _apply_rephrase([_prop_r("1", "has_exp_yes")],
                           rephrase=lambda q, s, r, lang: "ИСТОЧНИК",          # без изменений
                           consent=lambda p, c: asked.append(1) or True)
-    assert out[0].text == "ИСТОЧНИК" and asked == []      # не изменилось -> consent не спрашивают
+    assert out[0].text == "ИСТОЧНИК"
+    assert asked == []                                    # не изменилось -> consent не спрашивают
 
 
 def test_apply_rephrase_changed_consented_replaces():

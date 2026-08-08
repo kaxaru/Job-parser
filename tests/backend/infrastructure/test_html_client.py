@@ -81,7 +81,8 @@ def test_record_from_search_item_sets_sig_and_domain():
     assert r.sig == "2026-05-02T00:00:00+03:00"       # publicationTime приоритетнее
     assert r.enriched is False                        # до enrich описания нет
     v = r.vacancy
-    assert v.id == "42" and v.city == "Москва"        # город — из поиска, не из area
+    assert v.id == "42"
+    assert v.city == "Москва"                         # город — из поиска, не из area
     assert v.schedule.hh_code == "remote"
     assert v.experience.hh_id == "between1And3"
 
@@ -92,7 +93,8 @@ def test_record_salary_zero_bound_and_missing():
     z = _record_from_search_item({**base, "compensation": {"from": 0, "to": 100_000,
                                                           "currencyCode": "RUR"}},
                                  city="М", city_id="1")
-    assert z.vacancy.salary is not None and z.vacancy.salary.mid == 50_000
+    assert z.vacancy.salary is not None
+    assert z.vacancy.salary.mid == 50_000
     # вилки нет вовсе -> None, а не Salary-шелуха
     n = _record_from_search_item({**base, "compensation": {"currencyCode": "RUR"}},
                                  city="М", city_id="1")

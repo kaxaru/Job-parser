@@ -1,17 +1,21 @@
 """Обзорный дашборд по Postgres с фильтрами Город/Опыт (было: setup_metabase + add_filters)."""
 from __future__ import annotations
 
-from etl.domain import EXPERIENCE
+from etl.domain import EXPERIENCE, NO_EXPERIENCE_LABEL
 
 from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
-from .base import bar, layout, text_tag
+from .base import MIXED_CURRENCY, REMOTE_LIKE, bar, layout, text_tag
 
 TITLE = "HH — рынок труда (Python / Data Engineer)"
 P_CITY, P_EXP = "p_city", "p_exp"
-F = "[[ AND c.name = {{city}} ]] [[ AND v.experience = {{experience}} ]]"
-# единый источник меток опыта — справочник домена (не дублируем, чтобы не было дрейфа)
-EXP_VALUES = list(EXPERIENCE.values())
+# Предикат опыта нормализует колонку ТАК ЖЕ, как витрина: у 19 % вакансий опыт не указан,
+# и `v.experience = {{experience}}` до них не добирается — NULL не равен ничему.
+F = ("[[ AND c.name = {{city}} ]] "
+     "[[ AND coalesce(nullif(v.experience, ''), '" + NO_EXPERIENCE_LABEL + "') = {{experience}} ]]")
+# Единый источник меток опыта — справочник домена (не дублируем, чтобы не было дрейфа),
+# плюс бакет «не указан»: без него фильтр не достаёт пятую часть выборки (аудит 09.08.2026).
+EXP_VALUES = [*EXPERIENCE.values(), NO_EXPERIENCE_LABEL]
 
 
 def _tags():
@@ -33,7 +37,7 @@ class OverviewDashboard:
         c_total = card("Всего вакансий",
                        f"SELECT count(*) FROM core.vacancies v "
                        f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F}", "scalar")
-        c_remote = card("Удалённые вакансии",
+        c_remote = card(REMOTE_LIKE,
                         f"SELECT count(*) FROM core.vacancies v "
                         f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE v.is_remote {F}", "scalar")
         c_salary = card("С указанной зарплатой",
@@ -46,7 +50,7 @@ class OverviewDashboard:
                         f"JOIN core.skills s ON s.id=vs.skill_id "
                         f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                         f"GROUP BY s.name ORDER BY vacancies DESC LIMIT 15", "bar", bar("skill", "vacancies"))
-        c_exp = card("Зарплата по опыту",
+        c_exp = card(f"Зарплата по опыту{MIXED_CURRENCY}",
                      f"SELECT coalesce(v.experience,'не указан') AS experience, "
                      f"round(avg(v.salary_min)) AS avg_salary_min, round(avg(v.salary_max)) AS avg_salary_max "
                      f"FROM core.vacancies v LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
@@ -57,11 +61,11 @@ class OverviewDashboard:
                      f"JOIN core.employers e ON e.id=v.employer_id "
                      f"LEFT JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                      f"GROUP BY e.name ORDER BY vacancies DESC LIMIT 15", "row", bar("employer", "vacancies"))
-        c_city = card("Города: вакансии, зарплаты, удалёнка (топ-15)",
+        c_city = card(f"Города (топ-15): вакансии, з/п, «{REMOTE_LIKE}»{MIXED_CURRENCY}",
                       f"SELECT c.name AS city, count(*) AS vacancies, "
                       f"count(*) FILTER (WHERE v.salary_min IS NOT NULL OR v.salary_max IS NOT NULL) AS with_salary, "
                       f"round(avg(v.salary_max)) AS avg_salary_max, "
-                      f"round(100.0*count(*) FILTER (WHERE v.is_remote)/count(*),1) AS remote_share_pct "
+                      f"round(100.0*count(*) FILTER (WHERE v.is_remote)/count(*),1) AS remote_like_share_pct "
                       f"FROM core.vacancies v JOIN core.cities c ON c.id=v.city_id WHERE 1=1 {F} "
                       f"GROUP BY c.name ORDER BY vacancies DESC LIMIT 15", "table")
 

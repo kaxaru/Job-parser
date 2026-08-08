@@ -82,7 +82,7 @@ def test_detect_techs_ignores_device_requirement():
         "Смартфон или планшет с ОС iOS или Android (версия 10 и выше) "
         "Пауэрбанк для подзарядки"
     )
-    assert "Android" not in techs and "iOS" not in techs
+    assert techs == []
 
 
 def test_detect_techs_keeps_os_for_real_mobile_vacancy():
@@ -126,7 +126,8 @@ def test_detect_role_creative_ai_buzzword_is_non_it():
     assert _detect_role("Видеограф / монтажёр", []) is Role.NON_IT
     assert _detect_role("SMM-менеджер с нейросетями", ["ML/AI"]) is Role.NON_IT
     # гейт на ЯЗЫК: настоящий dev с «продюсерским» контекстом в тайтле НЕ задет
-    assert _detect_role("Python-разработчик в продюсерский центр", ["Python"]).is_it
+    assert _detect_role("Python-разработчик в продюсерский центр",
+                        ["Python"]) is Role.DEVELOPER
 
 
 def test_detect_role_creative_desc_language_does_not_rescue():
@@ -142,7 +143,8 @@ def test_detect_role_test_engineer_hardware_is_non_it():
     assert _detect_role("Инженер-испытатель", ["Python"]) is Role.NON_IT
     assert _detect_role("Инженер-испытатель БПЛА", []) is Role.NON_IT
     # «испытательный срок» в тайтле — НЕ триггер
-    assert _detect_role("Разработчик Python (испытательный срок 3 мес)", ["Python"]).is_it
+    assert _detect_role("Разработчик Python (испытательный срок 3 мес)",
+                        ["Python"]) is Role.DEVELOPER
 
 
 def test_detect_role_title_wins_over_fallback():
@@ -177,7 +179,7 @@ def test_detect_role_support_teaching_sales_are_non_it():
     assert _detect_role("Специалист по SEO", ["Python"]) is Role.NON_IT
     # контроль: программист, автоматизирующий SEO-отдел — НАСТОЯЩАЯ dev-вакансия
     assert _detect_role("Программист для автоматизации задач SEO-отдела",
-                        ["Python"]).is_it is True
+                        ["Python"]) is Role.DEVELOPER
     # физбезопасность/инженерные системы зданий: роль Security ловила их по слову «безопасн»
     assert _detect_role("Младший инженер отдела эксплуатации систем и средств безопасности",
                         ["Python", "PostgreSQL"]) is Role.NON_IT
@@ -188,16 +190,16 @@ def test_detect_role_support_teaching_sales_are_non_it():
     assert _detect_role("Аудитор бизнес-процессов", ["Python"]) is Role.NON_IT
     # КОНТРОЛЬ: технический аудит остаётся IT
     assert _detect_role("Аудитор смарт-контрактов / Blockchain auditor (Solidity)",
-                        ["Python"]).is_it is True
+                        ["Python"]) is Role.DEVELOPER
     assert _detect_role("Аудитор защищенности приложений (Application Security)",
-                        ["Python"]).is_it is True
-    assert _detect_role("Аудитор информационной безопасности", ["Python"]).is_it is True
+                        ["Python"]) is Role.SECURITY
+    assert _detect_role("Аудитор информационной безопасности", ["Python"]) is Role.SECURITY
     # юристы/кадры/маркетинг
     assert _detect_role("Младший юрисконсульт", ["Python"]) is Role.NON_IT
     assert _detect_role("IT-рекрутер", ["Python"]) is Role.NON_IT
     assert _detect_role("Начальник отдела кадров", ["Python"]) is Role.NON_IT
     # КОНТРОЛЬ: аналитик в HR-Tech продукте — настоящая IT-роль
-    assert _detect_role("Функциональный аналитик в HR-Tech", ["Python"]).is_it is True
+    assert _detect_role("Функциональный аналитик в HR-Tech", ["Python"]) is Role.ANALYST
     # медиа/маркетинг: «в IT» в тайтле не делает роль инженерной
     assert _detect_role("Рилсмейкер / Монтажер коротких роликов в IT", ["Python"]) is Role.NON_IT
     assert _detect_role("Контент-менеджер", ["Python"]) is Role.NON_IT
@@ -206,16 +208,16 @@ def test_detect_role_support_teaching_sales_are_non_it():
     assert _detect_role("Таргетолог", ["Python"]) is Role.NON_IT
     # контроль: «монтаж» в промышленном смысле — не медиа-роль
     assert _detect_role("Ведущий инженер-технолог по сборке и электромонтажу",
-                        ["Python"]).is_it is True
+                        ["Python"]) is Role.DEVELOPER
     # добыча/финучёт: доменная роль, а не инженерная
     assert _detect_role("Инженер-аналитик по разработке месторождений", ["Python"]) is Role.NON_IT
     assert _detect_role("Аналитик нефтегаза", ["Python"]) is Role.NON_IT
     assert _detect_role("Бухгалтер по основным средствам", ["Python"]) is Role.NON_IT
     # контроль: IT в добывающей отрасли остаётся IT (целимся в роль, не в отрасль)
     assert _detect_role("Инженер - программист по сопровождению автоматизации бурения",
-                        ["Python"]).is_it is True
+                        ["Python"]) is Role.DEVELOPER
     assert _detect_role("Аналитик данных по направлению Геологоразведка и добыча",
-                        ["Python"]).is_it is True
+                        ["Python"]) is Role.ANALYST
     # контроль: «инженер-наставник» в продуктовой команде — НЕ образование
     assert _detect_role("Backend-разработчик", ["Python"]) is Role.BACKEND
     # контроль: настоящий разработчик/QA по тайтлу не задет
@@ -232,9 +234,12 @@ def test_retail_seller_is_non_it_despite_tech_tag():
     assert v.role is Role.NON_IT       # но роль — не-IT (жёсткий фильтр по тайтлу)
 
 
-def test_real_dev_stays_it():
+def test_real_dev_stays_a_mobile_developer():
+    # Точный член Role, а не флаг `.is_it` (= «любая из 16 IT-ролей»): роль питает фасет
+    # ленты, чипы дашборда и срезы аналитики, и перепутанная роль (Mobile -> QA) была бы
+    # незаметна (аудит 09.08.2026). По ROLE_PATTERNS `Mobile` стоит первым (`android`).
     v = parse_vacancy({**RAW, "name": "Android разработчик"})
-    assert v.role.is_it                # настоящий мобильный разработчик — IT
+    assert v.role is Role.MOBILE
 
 
 # ── is_hard_non_it: отсев на этапе сбора (по тайтлу, до enrich) ──
@@ -263,7 +268,7 @@ def test_parse_vacancy_basic():
     assert v.salary.mid == 175000          # (150000+200000)//2, net (gross=False)
     assert v.experience is Experience.BETWEEN_1_3
     assert v.schedule is Schedule.REMOTE
-    assert "Python" in v.techs and "Docker" in v.techs
+    assert v.techs == ["Python", "Docker"]
 
 
 def test_parse_vacancy_city_fallback_to_area():
@@ -364,4 +369,7 @@ def test_support_titles_are_non_it(title):
 def test_support_gate_spares_titles_that_name_a_developer(title):
     """«Сопровождение» часто дописывают к обязанностям настоящего разработчика — прятать
     такие тайтлы нельзя. Замер: паттерн ловит 477 вакансий, названы разработчиком 8."""
-    assert _detect_role(title, ["1С"]) is not Role.NON_IT
+    # Точная роль, а не отрицание `is not NON_IT` (проходило на 16 разных ответах):
+    # «сопровождение» рядом с «разработчик/программист» — это ключ `Разработчик`
+    # в ROLE_PATTERNS, и от роли зависит и фасет ленты, и отбор под отклик.
+    assert _detect_role(title, ["1С"]) is Role.DEVELOPER

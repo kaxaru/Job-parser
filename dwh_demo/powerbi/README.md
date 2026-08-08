@@ -41,26 +41,40 @@ Power BI Desktop → **Получить данные → SQL Server** (`Get Data
 -- всего вакансий (базовая мера)
 Вакансий = COUNTROWS('core vacancies')
 
--- удалённые (CALCULATE + фильтр — ядро DAX)
-Удалённых = CALCULATE([Вакансий], 'core vacancies'[is_remote] = TRUE())
+-- удалёнкоподобные (CALCULATE + фильтр — ядро DAX)
+Удалёнкоподобных = CALCULATE([Вакансий], 'core vacancies'[is_remote] = TRUE())
 
 -- доля удалёнки (DIVIDE безопасно делит на ноль)
-Доля удалёнки % = DIVIDE([Удалённых], [Вакансий], 0) * 100
+Доля удалёнки % = DIVIDE([Удалёнкоподобных], [Вакансий], 0) * 100
 
 -- с зарплатой
 С зарплатой = CALCULATE([Вакансий],
     NOT ISBLANK('core vacancies'[salary_min]) || NOT ISBLANK('core vacancies'[salary_max]))
 
--- средняя верхняя зарплата (игнорит пустые)
-Средняя ЗП макс = AVERAGE('core vacancies'[salary_max])
+-- средняя верхняя зарплата: ТОЛЬКО по одной валюте, см. предупреждение ниже
+Средняя ЗП макс = CALCULATE(AVERAGE('core vacancies'[salary_max]),
+    'core vacancies'[salary_currency] = "RUB")
 
 -- медиана (DAX MEDIAN)
-Медиана ЗП макс = MEDIAN('core vacancies'[salary_max])
+Медиана ЗП макс = CALCULATE(MEDIAN('core vacancies'[salary_max]),
+    'core vacancies'[salary_currency] = "RUB")
 ```
+
+**`is_remote` — это «удалёнкоподобность», а не «удалёнка»:** признак истинен для графиков
+`remote` И `flexible` (гибрид), ровно как `Schedule.is_remote_like` в родительском проекте.
+Единственное определение живёт в `etl/domain.py::REMOTE_LIKE_CODES`; отдельно от него есть
+поле `remote_mentioned` — словесный маркер удалёнки в тексте вакансии. Смешивать их в одной
+мере нельзя: «формат работы» и «в описании написано „удалённо“» — разные вопросы.
+
+**Зарплата — фильтр по валюте обязателен:** `salary_min`/`salary_max` хранятся каждая в своей
+валюте (`salary_currency`, в срезе десятки кодов), поэтому `AVERAGE` без фильтра складывает
+рубли с долларами. Если в схеме MS SQL появились рублёвые колонки `salary_*_rub`
+(`etl/sql/mssql/schema.sql`), меры считать по ним — тогда фильтр не нужен и в выборку
+попадают все валюты с известным курсом.
 
 ## 4. Визуализации (демонстрация «Full Stack BI»)
 
-- **Карточки (Card):** `[Вакансий]`, `[Удалённых]`, `[Доля удалёнки %]`.
+- **Карточки (Card):** `[Вакансий]`, `[Удалёнкоподобных]`, `[Доля удалёнки %]`.
 - **Bar chart:** ось = `core skills[name]` (через связь vacancy_skills), значение = `[Вакансий]`
   → «Спрос на навыки» (аналог нашего mart.skill_demand).
 - **Column chart:** ось = `core vacancies[experience]`, значение = `[Средняя ЗП макс]`

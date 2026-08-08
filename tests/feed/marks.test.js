@@ -10,9 +10,24 @@ const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; });
 
 describe('pushServer — POST отметок на сервер', () => {
-  it('резолвится при 2xx (сервер отвечает 204)', async () => {
-    globalThis.fetch = async () => ({ ok: true, status: 204 });
+  /* Раньше тест был без единого утверждения — «не бросил» на 204. Про адрес, метод и тело
+     не говорилось ничего, поэтому пустое тело, GET вместо POST или чужой путь оставляли
+     его зелёным: отметки ✓/✕ молча не сохранялись бы, а индикатор показывал
+     «синхронизировано» (аудит 09.08.2026). Путь ОТНОСИТЕЛЬНЫЙ ('api/marks', без ведущего
+     слэша) — лента открывается и как file://, и с сервера, абсолютный путь сломал бы
+     первое. Договор ручки — docs/api.md: POST /api/marks, тело {id: status}, ответ 204. */
+  it('резолвится при 2xx и шлёт POST на api/marks с телом отметок', async () => {
+    const sent = {};
+    globalThis.fetch = async (url, opts) => {
+      sent.url = url;
+      sent.method = opts.method;
+      sent.body = JSON.parse(opts.body);
+      return { ok: true, status: 204 };
+    };
     await pushServer({ 1: 'applied' });
+    assert.equal(sent.url, 'api/marks');
+    assert.equal(sent.method, 'POST');
+    assert.deepEqual(sent.body, { 1: 'applied' });
   });
 
   it('бросает при HTTP-ошибке', async () => {

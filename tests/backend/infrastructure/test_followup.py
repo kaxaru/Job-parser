@@ -71,7 +71,8 @@ def test_cache_form_overwrites_same_id(tmp_cache):
     followup.cache_form("1", "A", "u", [{"prompt": "x"}], "ok")
     followup.cache_form("1", "A", "u", [], "empty")          # тот же id -> обновляем (не дублируем)
     data = followup.load_form_cache()
-    assert len(data) == 1 and data["1"]["status"] == "empty"
+    assert list(data) == ["1"]
+    assert data["1"]["status"] == "empty"
 
 
 # ── Очередь ожидания (лента -> крон): FIFO, идемпотентность по id ──
@@ -91,7 +92,7 @@ def test_pending_enqueue_fifo_and_idempotent(tmp_pending):
     assert followup.enqueue_pending("2", "u2", "n2", "") == 2
     assert followup.enqueue_pending("1", "u1", "n1", "c1") == 2      # дубль по id — не растёт
     first = followup.pop_pending_one()
-    assert first["id"] == "1" and first["cover"] == "c1"            # FIFO + поля сохранены
+    assert (first["id"], first["cover"]) == ("1", "c1")             # FIFO + поля сохранены
     assert [x["id"] for x in followup.load_pending()] == ["2"]
     assert followup.pop_pending_one()["id"] == "2"
     assert followup.pop_pending_one() is None

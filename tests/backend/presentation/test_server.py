@@ -175,11 +175,26 @@ def test_request_with_foreign_host_is_rejected(host):
 
 @pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "[::1]:8000", "localhost"])
 def test_loopback_hosts_pass(host):
-    # IPv6 в Host идёт в скобках — urlsplit их снимает, rsplit по ':' сломался бы.
-    assert _bare_handler(headers={"Host": host})._host_ok() is True
+    """Петлевой Host пропускается СКВОЗЬ гард — до прикладного хендлера (сентинел 299).
+
+    IPv6 в Host идёт в скобках — urlsplit их снимает, rsplit по ':' сломался бы.
+    Проверяем наблюдаемый ответ, а не приватный `_host_ok()`: негативная сторона
+    (`test_request_with_foreign_host_is_rejected`) уже ходит через do_POST, и позитивная
+    обязана идти тем же путём — иначе перестановка гардов в do_POST осталась бы
+    незамеченной (аудит 09.08.2026)."""
+    assert _post(headers={"Host": host}) == Resp(299, b"reached handler")
 
 
 # ───────────── раздача data/: белый список (аудит 08.08.2026, п.2) ─────────────
+
+def _get(path, directory=None, headers=None):
+    """GET через do_GET с перехватом Resp — наблюдаемый ответ вместо приватного предиката."""
+    h = _bare_handler(path=path, directory=directory, headers=headers)
+    captured = []
+    h._write = captured.append
+    h.do_GET()
+    return captured[0]
+
 
 @pytest.mark.parametrize("name", [
     "hh_state.json",          # живые куки сессии HH -> захват аккаунта
@@ -191,26 +206,30 @@ def test_loopback_hosts_pass(host):
     "reports/01_cities.csv",  # подкаталог
     "browser_profile/Default/Cookies",
 ])
-def test_sensitive_files_are_not_served(name):
-    assert _bare_handler(path=f"/{name}")._static_allowed() is False
+def test_sensitive_files_answer_404_and_are_never_served(name):
+    """Секреты из data/ наружу не уходят, и ответ — 404 (а не 403): он не должен
+    подтверждать, что файл существует.
+
+    Через `do_GET`, а не через приватный `_static_allowed()`: гард стоит В ЦЕПОЧКЕ
+    `_serve_static` перед gzip-веткой, и проверка предиката напрямую оставила бы восемь
+    «секретных» случаев зелёными при любой перестановке в цепочке (аудит 09.08.2026)."""
+    assert _get(f"/{name}") == Resp(404, b"not found")
 
 
 @pytest.mark.parametrize("name", [
     "feed.html", "feed.css", "feed.js", "feed-data.js", "feed-desc.js",
     "dashboard.html", "dashboard.css", "dashboard.js", "plotly-2.35.2.min.js",
 ])
-def test_feed_and_dashboard_assets_are_served(name):
-    # Всё, что подключают templates/feed.html.j2 и templates/dashboard.html.j2.
-    assert _bare_handler(path=f"/{name}")._static_allowed() is True
+def test_feed_and_dashboard_assets_are_served(name, tmp_path):
+    """Всё, что подключают templates/feed.html.j2 и templates/dashboard.html.j2, доходит
+    до клиента: 200 и СОДЕРЖИМОЕ файла (gzip-ветка, `Accept-Encoding: gzip`).
 
-
-def test_disallowed_static_answers_404_not_403():
-    # 404, а не 403: ответ не должен подтверждать, что файл в data/ существует.
-    h = _bare_handler(path="/hh_state.json")
-    captured = []
-    h._write = captured.append
-    h.do_GET()
-    assert captured[0].status == 404
+    Позитивная сторона белого списка тоже проверяется сквозняком: до 09.08.2026 её
+    закрывал только `_static_allowed() is True`, то есть раздача не была проверена ни разу."""
+    (tmp_path / name).write_text(f"/* {name} */", encoding="utf-8")
+    r = _get(f"/{name}", directory=str(tmp_path), headers={"Accept-Encoding": "gzip"})
+    assert r.status == 200
+    assert gzip.decompress(r.body) == f"/* {name} */".encode()
 
 
 # ─────────────────────────── лимит тела POST ───────────────────────────
@@ -414,5 +433,8 @@ def test_chats_endpoint_keeps_contact_after_our_reply(monkeypatch):
     h = _bare_handler(path=srv._API_CHATS)
     resp = h._chats_get()
     data = _json_mod.loads(resp.body)
-    assert "1" in data and "+7 912 345-67-89" in data["1"]["contact"]
-    assert "2" not in data                     # kind=none без контакта по-прежнему отсечён
+    # Два раздельных утверждения с ТОЧНЫМ значением вместо цепочки `a and b`: подстрока
+    # проходила и тогда, когда в contact уезжал весь текст сообщения («Звоните: …»),
+    # а при падении цепочки не было видно, чата нет или контакт не тот (аудит 09.08.2026).
+    assert set(data) == {"1"}                  # kind=none без контакта по-прежнему отсечён
+    assert data["1"]["contact"] == "+7 912 345-67-89"

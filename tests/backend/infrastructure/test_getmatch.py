@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from hrwork.domain.experience import Experience
+from hrwork.domain.role import Role
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.sources.base import ListIncomplete, check_list_complete
@@ -98,8 +99,11 @@ def test_hidden_salary_is_none():
 def test_structured_skills_feed_single_detection_point():
     """skills_objects идут в detect_text, а не в обход _detect_techs."""
     v = _normalize(ITEM, FULL).vacancy
-    assert "Python" in v.techs and "PostgreSQL" in v.techs
-    assert v.role.is_it
+    assert "Python" in v.techs
+    assert "PostgreSQL" in v.techs
+    # точный член Role, а не флаг `.is_it`: «(EDR)» в тайтле — ключ `Security`
+    # таблицы ROLE_PATTERNS (`edr`), класс средств защиты
+    assert v.role is Role.SECURITY
 
 
 def test_full_description_comes_from_card_not_list():

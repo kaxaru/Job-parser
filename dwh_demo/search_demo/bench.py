@@ -1,5 +1,6 @@
-"""Бенч: сравнение подходов поиска на ОДНИХ данных (9.7k вакансий).
+"""Бенч: сравнение подходов поиска на ОДНИХ данных.
 Показывает EXPLAIN ANALYZE (тип скана + время) и медианную задержку по N прогонам.
+Объём выборки НЕ захардкожен — читается из таблицы и подставляется в заголовок отчёта.
 Запуск: .venv3/Scripts/python.exe dwh_demo/search_demo/bench.py
 
 Вывод — ASCII (консоль Windows коверкает кириллицу); полный отчёт пишется в REPORT.md (UTF-8).
@@ -20,21 +21,24 @@ OUT = Path(__file__).resolve().parent / "REPORT.md"
 
 CITY, SALARY, TERM = "Москва", 200000, "python backend"
 
+# Порог зарплаты — В РУБЛЯХ, и сравнивается он с рублёвой колонкой `sal_mid_rub`:
+# `sal_mid` держит валюту портала, и «>= 200 000» по нему выбрасывало все долларовые
+# вилки, зато пропускало 50 000 000 UZS (см. комментарий к колонке в load.py).
 # (label, sql, params)
 MAIN = {
     # честный аналог 'python & backend': оба слова в полном тексте (name+description).
     # выражение по конкатенации не ложится на индекс -> Seq Scan (в этом и урок).
     "Q0_ILIKE_naive": (
-        "SELECT id, name, sal_mid FROM search_demo.vacancies "
+        "SELECT id, name, sal_mid_rub FROM search_demo.vacancies "
         "WHERE (name || ' ' || coalesce(description,'')) ILIKE %s "
         "  AND (name || ' ' || coalesce(description,'')) ILIKE %s "
-        "  AND city = %s AND sal_mid >= %s LIMIT 20",
+        "  AND city = %s AND sal_mid_rub >= %s LIMIT 20",
         ("%python%", "%backend%", CITY, SALARY),
     ),
     "Q1_tsvector_GIN": (
-        "SELECT id, name, sal_mid, ts_rank(doc, q) AS rank "
+        "SELECT id, name, sal_mid_rub, ts_rank(doc, q) AS rank "
         "FROM search_demo.vacancies, websearch_to_tsquery('russian', %s) q "
-        "WHERE doc @@ q AND city = %s AND sal_mid >= %s "
+        "WHERE doc @@ q AND city = %s AND sal_mid_rub >= %s "
         "ORDER BY rank DESC LIMIT 20",
         (TERM, CITY, SALARY),
     ),
@@ -79,8 +83,13 @@ def main():
         print(line)
         out.append(line)
 
-    emit("# PoC поиска: PostgreSQL tsvector — измерения на 9.7k вакансий\n")
-    emit(f"Запрос-кейс: «{TERM}» в городе {CITY} с зарплатой >= {SALARY}.\n")
+    # Объём выборки — из самой таблицы: захардкоженные «9.7k» в заголовке отчёта
+    # пережили рост данных на порядок и врали в файле, который док велит считать истиной.
+    cur.execute("SELECT count(*) FROM search_demo.vacancies")
+    total = cur.fetchone()[0]
+    emit(f"# PoC поиска: PostgreSQL tsvector — измерения на {total} вакансиях\n")
+    emit(f"Запрос-кейс: «{TERM}» в городе {CITY} с зарплатой >= {SALARY} руб. "
+         f"(колонка sal_mid_rub — рублёвый эквивалент, валюты сведены по курсу).\n")
 
     emit("## 1. Основной кейс: наивный ILIKE vs tsvector+GIN\n")
     for label, (sql, params) in MAIN.items():

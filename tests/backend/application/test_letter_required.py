@@ -20,6 +20,13 @@ import pytest
 from hrwork.application.apply import autoclick
 from hrwork.application.apply.candidates import Candidate
 
+# Шаблон письма `cover.py::COVER_TEMPLATE` печётся ОДИН РАЗ на импорте из resume_profile.json,
+# поэтому файл, сверяющий текст письма литералом, обязан стоять на дефолтах проекта — иначе
+# владелец, воспользовавшийся документированной ручкой `cover_template`, получает здесь
+# красные тесты на легальной конфигурации (находка 57 аудита 08.08.2026, вторая половина
+# закрыта 09.08.2026). Тот же pytestmark — в test_cover.py и test_autoclick.py.
+pytestmark = pytest.mark.usefixtures("apply_defaults")
+
 # письмо из шаблона для кандидата ниже — ожидание из спецификации cover.COVER_TEMPLATE
 EXPECTED_TEMPLATE_LETTER = ("Здравствуйте! Заинтересовала вакансия Python-разработчик "
                             "в компании ООО Ромашка. Буду рад обсудить детали.")

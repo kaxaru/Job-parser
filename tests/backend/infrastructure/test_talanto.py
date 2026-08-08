@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from hrwork.domain.role import Role
 from hrwork.infrastructure import sources, storage
 from hrwork.infrastructure.sources import talanto
 from hrwork.infrastructure.sources.base import ListIncomplete, check_list_complete
@@ -47,7 +48,10 @@ def test_normalize_maps_to_domain():
     assert (v.salary.frm, v.salary.to, v.salary.currency) == (300000, 400000, "RUB")
     assert v.experience.hh_id == "between1And3"            # mid
     # skills подмешаны в detect_text/requirement -> детект стека сработал в адаптере
-    assert "Python" in v.techs and v.role.is_it
+    assert "Python" in v.techs
+    # точный член Role, а не флаг `.is_it` («любая из 16 IT-ролей»): тайтл «Программист
+    # Python» ловится ключом `Разработчик` таблицы ROLE_PATTERNS
+    assert v.role is Role.DEVELOPER
     assert r.sig == ITEM["last_verified_at"]
 
 
@@ -126,16 +130,19 @@ def test_non_numeric_range_is_dropped():
 def test_normalize_enrich_marks_and_meta():
     full = {"description": "<p>Обязанности…</p>", "url": "https://telegram.me/jobs1c/36305"}
     r = _normalize(ITEM, full)
-    assert r.enriched and r.enriched_at
+    assert r.enriched is True
+    assert r.enriched_at is not None
     assert "Обязанности" in r.description_html
     assert "telegram.me/jobs1c" in r.description_html      # первоисточник в мета-шапке
     r2 = _normalize(ITEM)                                  # без карточки — не enriched
-    assert not r2.enriched and r2.enriched_at is None
+    assert r2.enriched is False
+    assert r2.enriched_at is None
 
 
 def test_normalize_cached_desc_skips_network_flags():
     r = _normalize(ITEM, cached_desc="<p>из кеша</p>", enriched_at="2026-07-20T00:00:00")
-    assert r.enriched and r.description_html == "<p>из кеша</p>"
+    assert r.enriched is True
+    assert r.description_html == "<p>из кеша</p>"
     assert r.enriched_at == "2026-07-20T00:00:00"          # метка реального фетча переносится
 
 
@@ -145,8 +152,11 @@ def test_sig_falls_back_to_published():
 
 
 def test_meta_header_escapes_html():
-    hdr = _meta_header({"level": "<b>x</b>"}, None)
-    assert "<b>" not in hdr                                # чужой текст экранирован
+    """АУДИТ 09.08.2026: проверялось только ОТСУТСТВИЕ подстроки — `return ""`, шапка без
+    грейда и вырезание тегов вместо экранирования (`re.sub(r'<[^>]+>', '', …)`) проходили
+    одинаково зелёными. Сверяем строку целиком, в формате BARE_HEADER."""
+    assert _meta_header({"level": "<b>x</b>"}, None) == (
+        "<p>🎯 &lt;b&gt;x&lt;/b&gt; · 📌 talanto.work</p>")
 
 
 @pytest.mark.parametrize("loc, expected", [
@@ -182,8 +192,15 @@ def test_normalize_city_cleaned():
     assert r.vacancy.city == "Remote"
 
 
-def test_sources_registry_has_talanto():
-    assert sources.get_source("talanto") is not None
+@pytest.mark.parametrize("key", ["hh", "hirify", "talanto", "getmatch"])
+def test_registry_returns_the_source_registered_under_that_name(key):
+    # `is not None` проходило и на объекте ЧУЖОГО источника — то есть на перепутанной
+    # строке в `@register_source`, ради которой реестр и проверяют (аудит 09.08.2026)
+    assert sources.get_source(key).name == key
+
+
+def test_unregistered_name_has_no_source():
+    assert sources.get_source("unknown") is None
 
 
 # ── Полнота списка: сбойная страница не превращается в тихую потерю ─────────────────────

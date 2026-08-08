@@ -1,5 +1,9 @@
 """BI-слой: провижининг дашбордов Metabase через REST API.
 
 MetabaseClient (фасад) + дашборды как модули (Dashboard.build) + реестр + единый вход.
-Запуск: python -m bi [--dashboard overview|comparison|cooccurrence | all]
+Запуск (имена ПОЗИЦИОННЫЕ, флага --dashboard у парсера нет):
+  python -m bi                 # = all
+  python -m bi <key> [<key>…]  # ключи берутся из bi/registry.py::REGISTRY
+Актуальный перечень ключей печатает `python -m bi --help` — здесь он не дублируется,
+чтобы список не разошёлся с реестром (до 09.08.2026 тут стояли 3 ключа из 5).
 """

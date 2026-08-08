@@ -79,7 +79,8 @@ def test_journal_and_applied_ids(tmp_state):
     s.log_applied("22", "Dev B", "u2", via=ApplyChannel.FEED)
     log = {e["id"]: e for e in s.applied_log()}
     assert set(log) == {"11", "22"}
-    assert log["11"]["via"] == "cron" and log["22"]["via"] == "feed"   # VO -> строка на диске
+    assert log["11"]["via"] == "cron"                 # VO -> строка на диске
+    assert log["22"]["via"] == "feed"
     assert s.applied_ids() == {"11", "22"}
 
 

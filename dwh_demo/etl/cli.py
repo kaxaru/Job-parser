@@ -28,6 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
         "-t", "--target", action="append", choices=TARGETS, metavar="BACKEND",
         help=f"куда грузить (повторяемо): {', '.join(TARGETS)} (по умолчанию все)",
     )
+    # аварийный обход санити-гейта перезалива (`pipeline.Pipeline._reject_degraded`),
+    # как `hh.py collect --force` у родителя: решение затереть полный факт
+    # деградированным срезом принимает человек, а не молчаливый дефолт
+    p.add_argument(
+        "--force", action="store_true",
+        help="грузить, даже если срез просел больше чем вдвое относительно факта",
+    )
     # пустой ввод -> []; Pipeline.run трактует пусто/`all` как весь конвейер
     p.add_argument(
         "steps", nargs="*", type=_step, metavar="STEP",
@@ -39,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> None:
     args = build_parser().parse_args(argv)
     targets = args.target or list(TARGETS)      # без -t -> все бэкенды
-    build_pipeline(targets).run(args.steps)
+    build_pipeline(targets).run(args.steps, force=args.force)
 
 
 if __name__ == "__main__":

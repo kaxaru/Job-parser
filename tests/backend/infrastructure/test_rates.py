@@ -34,7 +34,8 @@ def test_fetch_success_writes_cache(tmp_fx, monkeypatch):
     assert r["RUB"] == 90.0
     assert tmp_fx.exists()
     cached = json.loads(tmp_fx.read_text(encoding="utf-8"))
-    assert "fetched_at" in cached and cached["rates"]["EUR"] == 0.9
+    assert cached["rates"] == {"USD": 1.0, "EUR": 0.9, "RUB": 90.0}
+    assert "fetched_at" in cached
 
 
 def test_fresh_cache_skips_fetch(tmp_fx, monkeypatch):
@@ -48,9 +49,14 @@ def test_fresh_cache_skips_fetch(tmp_fx, monkeypatch):
 
 
 def test_fetch_fail_falls_back_to_hardcode(tmp_fx, monkeypatch):
+    """АУДИТ 09.08.2026: единственное утверждение проверяло тривиальную базу USD=1.0 и
+    ПРИСУТСТВИЕ ключа RUB — то есть проходило при любом значении рубля. Опечатка «RUB: 9.0»
+    занижала бы КАЖДУЮ валютную вилку в десять раз молча. Курсы фолбэка — литералы спеки
+    (сравнивать с `rates._FALLBACK` нельзя: это была бы та же реализация по обе стороны)."""
     monkeypatch.setattr(rates, "_fetch", lambda: None)
-    r = rates.get_rates()                        # ни API, ни кеша -> фолбэк
-    assert r["USD"] == 1.0 and "RUB" in r
+    assert rates.get_rates() == {                # ни API, ни кеша -> фолбэк
+        "USD": 1.0, "EUR": 0.92, "RUB": 90.0, "BYN": 3.3,
+        "GBP": 0.79, "CAD": 1.37, "PLN": 4.0, "AUD": 1.5}
 
 
 # ── Вызов curl: разделитель и код ответа ────────────────────────────────────────────────

@@ -21,14 +21,35 @@ x-airflow-common: &airflow-common
     MSSQL_USER: sa
     MSSQL_PASSWORD: "DwhDemo2026!"
     MSSQL_DB: hh
-    DATA_FILE: /opt/airflow/data/vacancies_raw.json
+    DATA_FILE: /opt/airflow/data/vacancies_raw.json   # это ../data/export/, см. volumes ниже
+    # Курсы валют: без них рублёвые колонки приедут пустыми и зарплатные витрины окажутся
+    # пустыми тоже (прогон при этом НЕ упадёт — конверсия деградирует в NULL осознанно).
+    # Дефолт `etl/config.py::FX_DEFAULT` считается от каталога пакета и в контейнере
+    # указал бы не туда, поэтому путь задаётся явно.
+    FX_FILE: /opt/airflow/data/fx_rates.json
     _PIP_ADDITIONAL_REQUIREMENTS: pymssql>=2.3   # драйвер MS SQL для load_mssql
   volumes:
     - ./dags:/opt/airflow/dags
     - ./etl:/opt/airflow/etl
-    - ../data:/opt/airflow/data:ro
+    # ТОЛЬКО срез для ETL, а не весь ../data. Рядом с выгрузкой лежат hh_state.json
+    # (куки живой сессии HH), browser_profile/ (persistent-профиль Chromium),
+    # chat_messages.json и talanto_contacts.json (телефоны и телеграмы рекрутёров —
+    # чужие ПДн). Airflow исполняет произвольный Python, значит всё это было доступно
+    # на чтение и коду DAG, и тому, кто дошёл до UI на 8080. Тот же принцип, который
+    # 08.08.2026 применили к раздаче статики: не «весь каталог», а allowlist.
+    # Каталог, а не сам файл: bind одного файла прибивает inode, а родитель обновляет
+    # выгрузку атомарно (tmp + replace, см. комментарий в cron/cron_collect.bat) —
+    # контейнер навсегда остался бы на первом снимке.
+    # НАПОЛНЯЕТ КАТАЛОГ ХОСТ, а не контейнер: шаг 3a в `cron/cron_collect.bat` кладёт туда
+    # `vacancies_raw.json` и `fx_rates.json` атомарной копией. Вручную — то же самое перед
+    # первым `docker compose up`. Каталога нет -> Docker создаст пустой, и ETL честно
+    # упадёт на отсутствующем файле, а не загрузит ноль строк молча.
+    - ../data/export:/opt/airflow/data:ro
     - airflow-logs:/opt/airflow/logs
   user: "50000:0"
+  # долгоживущие airflow-webserver/airflow-scheduler переживают перезагрузку хоста;
+  # одноразовый airflow-init перекрывает это своим `restart: "no"`
+  restart: unless-stopped
   depends_on:
     hh-postgres:
       condition: service_healthy
@@ -41,8 +62,12 @@ services:
       POSTGRES_USER: hh
       POSTGRES_PASSWORD: hh
       POSTGRES_DB: hh
+    # 127.0.0.1 у всех пробросов: стенд демонстрационный, пароли лежат в этом файле
+    # открытым текстом — публиковать его на всех интерфейсах нельзя (docs/deployment.md
+    # это и обещал: «наружу не публикуется»). Короткая форма "5433:5432" — это 0.0.0.0.
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
+    restart: unless-stopped
     volumes:
       - hh-pgdata:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
@@ -55,9 +80,16 @@ services:
   airflow-init:
     <<: *airflow-common
     entrypoint: /bin/bash
+    # `set -e` обязателен: webserver и scheduler ждут service_completed_successfully,
+    # а без него код возврата скрипта = код ПОСЛЕДНЕЙ строки, то есть всегда 0 из-за
+    # `|| true`. Провалившийся `db migrate` пропускал оба сервиса на непромигрированную
+    # БД и превращался в крэш-луп вместо внятной остановки стека.
+    # `|| true` остаётся только у создания пользователя: повторный запуск на живом томе
+    # даёт «user already exists», и это штатная идемпотентность.
     command:
       - -c
       - |
+        set -euo pipefail
         airflow db migrate
         airflow users create --username admin --password admin \
           --firstname Admin --lastname User --role Admin \
@@ -68,7 +100,7 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"
     depends_on:
       hh-postgres:
         condition: service_healthy
@@ -88,12 +120,27 @@ services:
         condition: service_healthy
       airflow-init:
         condition: service_completed_successfully
+    # без healthcheck мёртвый планировщик выглядит в `docker compose ps` как живой:
+    # контейнер поднят, DAG-раны не создаются, и узнать об этом было неоткуда
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   metabase:
+    # ВНИМАНИЕ, осознанный компромисс: тег не закреплён. Прибивать надо к конкретному
+    # релизу (`metabase/metabase:v0.NN.M`), но выдуманный номер ломает `docker compose
+    # pull` жёстче, чем плавающий latest, а сверить его с реестром без сети нельзя.
+    # Цена latest здесь самая высокая из четырёх: app-db в томе metabase-data после
+    # апгрейда не откатывается на младшую версию, и «починка» сводится к
+    # `docker volume rm hh-dwh_metabase-data`, то есть к потере всех карточек.
     image: metabase/metabase:latest
     container_name: hh-metabase
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
     environment:
       MB_DB_FILE: /metabase-data/metabase.db
     volumes:
@@ -106,8 +153,12 @@ services:
     image: clickhouse/clickhouse-server:24.8
     container_name: hh-clickhouse
     ports:
-      - "8123:8123"   # HTTP-интерфейс (драйвер Metabase, curl)
-      - "9000:9000"   # native TCP (clickhouse-client)
+      # только HTTP и только с петли: у default-юзера нет пароля, а через табличные
+      # функции file()/url() открытый 8123 — это чтение файлов контейнера кем угодно.
+      # native TCP 9000 наружу не публикуем совсем: адаптер ходит по HTTP, а
+      # clickhouse-client запускается через `docker compose exec clickhouse`.
+      - "127.0.0.1:8123:8123"   # HTTP-интерфейс (драйвер Metabase, curl)
+    restart: unless-stopped
     environment:
       CLICKHOUSE_DB: hh
       CLICKHOUSE_SKIP_USER_SETUP: "1"   # default-юзер без пароля — для локального демо
@@ -124,14 +175,17 @@ services:
       retries: 12
 
   mssql:
+    # осознанный компромисс, как у metabase: закреплять надо на
+    # `2022-CU<N>-ubuntu-22.04`, номер CU берётся из реестра — без сети не проверить
     image: mcr.microsoft.com/mssql/server:2022-latest
     container_name: hh-mssql
+    restart: unless-stopped
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "DwhDemo2026!"   # SA-пароль (сложность: верх/низ/цифра/спецсимвол)
       MSSQL_PID: Developer                 # бесплатная Developer-редакция
     ports:
-      - "1433:1433"
+      - "127.0.0.1:1433:1433"
     volumes:
       - mssql-data:/var/opt/mssql
     healthcheck:
@@ -142,15 +196,19 @@ services:
 
   # ───────────────────── Observability (логи + метрики) ─────────────────────
   minio:
+    # осознанный компромисс: у MinIO теги вида RELEASE.YYYY-MM-DDTHH-MM-SSZ, точную
+    # метку времени можно только скопировать из реестра, придумать её нельзя
     image: minio/minio:latest
     container_name: hh-minio
     command: server /data --console-address ":9001"
+    restart: unless-stopped
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9002:9000"     # S3 API (9000 занят ClickHouse -> наружу 9002)
-      - "9003:9001"     # web-консоль
+      # S3 API наружу не публикуем: по нему ходит только Loki, внутри сети compose
+      # по адресу minio:9000. Снаружи нужна одна консоль.
+      - "127.0.0.1:9003:9001"     # web-консоль
     volumes:
       - minio-data:/data
     healthcheck:
@@ -160,7 +218,7 @@ services:
       retries: 12
 
   minio-init:           # одноразово: создать бакет loki (Loki сам бакет не создаёт)
-    image: minio/mc:latest
+    image: minio/mc:latest      # тег не закреплён по той же причине, что и у minio
     depends_on:
       minio:
         condition: service_healthy
@@ -176,7 +234,8 @@ services:
     container_name: hh-loki
     command: -config.file=/etc/loki/loki-config.yaml     # ПРОД-конфиг: S3(MinIO)+retention+лимиты
     ports:
-      - "3100:3100"
+      - "127.0.0.1:3100:3100"                            # auth_enabled: false — только петля
+    restart: unless-stopped
     volumes:
       - ./observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
       - loki-data:/loki                                  # локально только индекс-кэш/wal; чанки в MinIO
@@ -189,9 +248,17 @@ services:
     image: grafana/promtail:3.1.0
     container_name: hh-promtail
     command: -config.file=/etc/promtail/config.yml
+    restart: unless-stopped
     volumes:
       - ./observability/promtail.yml:/etc/promtail/config.yml:ro
-      - /var/run/docker.sock:/var/run/docker.sock        # читает логи контейнеров через Docker API
+      # :ro тут КОСМЕТИКА, а не защита: флаг ограничивает bind в ФС, а не Docker API
+      # поверх сокета. Держим для единообразия с родительским стеком; по существу
+      # закрывается только docker-socket-proxy или файловый скрейп json-логов.
+      - /var/run/docker.sock:/var/run/docker.sock:ro     # читает логи контейнеров через Docker API
+      # позиции чтения переживают рестарт. Без тома /tmp эфемерен, Promtail после
+      # каждого `docker compose restart promtail` перечитывал историю ВСЕХ контейнеров
+      # с нуля и упирался в reject_old_samples_max_age: 168h — то самое «too old».
+      - promtail-pos:/tmp
     depends_on:
       - loki
 
@@ -199,7 +266,8 @@ services:
     image: grafana/grafana:11.2.0
     container_name: hh-grafana
     ports:
-      - "3001:3000"                                      # 3000 занят Metabase -> наружу 3001
+      - "127.0.0.1:3001:3000"                            # 3000 занят Metabase -> наружу 3001
+    restart: unless-stopped
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: DwhDemo2026!     # синхронизировано с Metabase-админом
@@ -221,3 +289,4 @@ volumes:
   grafana-data:
   minio-data:
   mssql-data:
+  promtail-pos:      # позиции чтения Promtail — как в родительском observability/

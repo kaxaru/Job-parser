@@ -54,16 +54,31 @@ class MetabaseClient:
 
     # ── подключения к хранилищам ──
     def find_database(self, name: str, engine: str):
-        _, dbs = self._api("GET", "/api/database")
+        """Id подключения по (имя, движок) или None, если такого нет.
+
+        Fail fast на ошибке HTTP: `_api` отдаёт тело 4xx/5xx СТРОКОЙ, и до 09.08.2026
+        она молча уезжала в `d.get(...)` — провижининг падал `AttributeError: 'str'
+        object has no attribute 'get'`, не назвав ни статуса, ни ответа Metabase."""
+        st, dbs = self._api("GET", "/api/database")
+        if st != 200:
+            raise RuntimeError(f"database list failed: {st} {dbs}")
         items = dbs.get("data", dbs) if isinstance(dbs, dict) else dbs
+        if not isinstance(items, list):
+            raise RuntimeError(f"database list: неожиданный формат ответа: {dbs!r}")
         return next((d["id"] for d in items
                      if d.get("name") == name and d.get("engine") == engine), None)
 
     def ensure_database(self, name: str, engine: str, details: dict) -> int:
+        """Подключение к движку: найденное переиспользуется, отсутствующее создаётся.
+
+        Идемпотентность держится на `find_database`: повторный провижининг не должен
+        заводить второе подключение к тому же движку."""
         db_id = self.find_database(name, engine)
         if db_id is None:
-            _, res = self._api("POST", "/api/database",
-                              {"engine": engine, "name": name, "details": details})
+            st, res = self._api("POST", "/api/database",
+                                {"engine": engine, "name": name, "details": details})
+            if st not in (200, 202):
+                raise RuntimeError(f"database '{name}' failed: {st} {res}")
             db_id = res["id"]
             self._api("POST", f"/api/database/{db_id}/sync_schema")
         return db_id

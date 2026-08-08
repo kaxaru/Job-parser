@@ -80,9 +80,15 @@ def test_question_truncated_and_no_profile_leak(monkeypatch):
         return '{"intent":"other","tech":[]}'
     _enable(monkeypatch, transport)
     chat_intent.classify_intent("React " * 500)
-    assert len(seen["user"]) <= chat_intent._MAX_Q     # усечён
-    # факты профиля в промпт не уходят (в user только вопрос, system без резюме)
-    assert "resume_profile" not in seen["system"] and "Тольятти" not in seen["system"]
+    # АУДИТ 09.08.2026: длина сверялась с ПРИВАТНОЙ константой реализации и через `<=`
+    # (усечение до 5 символов тоже прошло бы), а «утечки профиля нет» проверялось
+    # отсутствием слова «Тольятти» — города КОНКРЕТНОГО владельца, то есть на любом другом
+    # профиле утверждение бессмысленно. Теперь длина — литерал спеки промпта (500 символов),
+    # а отсутствие утечки — ПОЛОЖИТЕЛЬНОЕ утверждение: в user РОВНО усечённый вопрос.
+    assert len(seen["user"]) == 500
+    assert seen["user"] == ("React " * 84)[:500]
+    # system — константа без подстановок, поэтому фактам профиля туда попасть неоткуда
+    assert seen["system"] is chat_intent._SYSTEM
 
 
 # ══════════════ live: реальный OpenRouter (opt-in) ══════════════

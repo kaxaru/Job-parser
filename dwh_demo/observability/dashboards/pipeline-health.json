@@ -3,7 +3,7 @@
   "title": "HH ETL — здоровье пайплайна",
   "tags": ["hh", "etl", "observability"],
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "editable": true,
   "refresh": "30s",
   "time": { "from": "now-7d", "to": "now" },
@@ -13,6 +13,7 @@
       "id": 1,
       "type": "stat",
       "title": "Последний прогон hh_etl",
+      "description": "NULLS LAST обязателен: в Postgres NULL при DESC идёт ПЕРВЫМ, а у прогона в состоянии queued start_date ещё NULL — панель показывала очередь вместо последнего фактического результата и прятала предыдущий провал.",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "datasource": { "type": "postgres", "uid": "hh_postgres" },
       "targets": [
@@ -21,7 +22,7 @@
           "datasource": { "type": "postgres", "uid": "hh_postgres" },
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT state FROM dag_run WHERE dag_id='hh_etl' ORDER BY start_date DESC LIMIT 1"
+          "rawSql": "SELECT state FROM dag_run WHERE dag_id='hh_etl' ORDER BY start_date DESC NULLS LAST LIMIT 1"
         }
       ],
       "options": {
@@ -33,7 +34,7 @@
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "success": { "color": "green", "index": 0 }, "failed": { "color": "red", "index": 1 }, "running": { "color": "blue", "index": 2 } } }
+            { "type": "value", "options": { "success": { "color": "green", "index": 0 }, "failed": { "color": "red", "index": 1 }, "running": { "color": "blue", "index": 2 }, "queued": { "color": "yellow", "index": 3 } } }
           ],
           "color": { "mode": "fixed", "fixedColor": "text" }
         },
@@ -92,6 +93,7 @@
       "id": 4,
       "type": "table",
       "title": "Последние прогоны hh_etl",
+      "description": "NULLS LAST по той же причине, что и в панели «Последний прогон»: queued-прогон с пустым start_date иначе всплывал наверх таблицы.",
       "gridPos": { "h": 9, "w": 12, "x": 0, "y": 4 },
       "datasource": { "type": "postgres", "uid": "hh_postgres" },
       "targets": [
@@ -100,7 +102,7 @@
           "datasource": { "type": "postgres", "uid": "hh_postgres" },
           "rawQuery": true,
           "format": "table",
-          "rawSql": "SELECT start_date AS \"начало\", run_type AS \"тип\", state AS \"статус\", round(EXTRACT(EPOCH FROM (end_date - start_date))::numeric, 1) AS \"сек\" FROM dag_run WHERE dag_id='hh_etl' ORDER BY start_date DESC LIMIT 20"
+          "rawSql": "SELECT start_date AS \"начало\", run_type AS \"тип\", state AS \"статус\", round(EXTRACT(EPOCH FROM (end_date - start_date))::numeric, 1) AS \"сек\" FROM dag_run WHERE dag_id='hh_etl' ORDER BY start_date DESC NULLS LAST LIMIT 20"
         }
       ],
       "fieldConfig": {
@@ -110,6 +112,66 @@
         ]
       },
       "options": { "showHeader": true }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Строк в core.vacancies",
+      "description": "Результат заливки, а не состояние прогона. LOAD_SQL начинается с TRUNCATE core.vacancy_skills, core.vacancies, а Pipeline.load печатает loaded: N и никак N не проверяет — нулевой срез заменял витрину и рапортовал success. Порог: 0 — красный, меньше 50 000 — оранжевый (ожидаемый объём кеша ~92 700).",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "hh_dwh" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "hh_dwh" },
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"строк\" FROM core.vacancies"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 1 }, { "color": "green", "value": 50000 } ] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Свежесть: залито за 24 ч",
+      "description": "core.vacancies.loaded_at ставится DEFAULT now() на каждой перезаливке, поэтому ноль здесь означает «за сутки заливки не было» — ровно тот случай, когда шаг `python -m etl all` молча срезается лимитом ExecutionTimeLimit крон-задачи, а панели прогонов остаются зелёными.",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 9 },
+      "datasource": { "type": "postgres", "uid": "hh_dwh" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "hh_dwh" },
+          "rawQuery": true,
+          "format": "table",
+          "rawSql": "SELECT count(*) AS \"за 24 ч\" FROM core.vacancies WHERE loaded_at > now() - interval '24 hours'"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "orange", "value": 1 }, { "color": "green", "value": 50000 } ] }
+        },
+        "overrides": []
+      }
     },
     {
       "id": 6,

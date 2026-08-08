@@ -64,7 +64,7 @@ def test_remote_by_city_counts_remote_and_flexible():
     row = a.remote_by_city()[0]
     assert row["city"] == "Москва"
     assert (row["total"], row["remote"], row["onsite"]) == (3, 2, 1)
-    assert row["pct"] == round(2 * 100 / 3, 1)
+    assert row["pct"] == 66.7                        # 2 из 3, округление до десятой
 
 
 # --- «Сколько удалёнки» — ОДИН предикат на весь проект (домен), а не кортеж в аналитике ---
@@ -164,10 +164,11 @@ def test_median_age_rounds_instead_of_truncating(read):
 
 def test_salary_by_experience_threshold_and_median():
     vacs = [_vac(str(i), "Москва", 100000 + i * 10000, exp="between1And3") for i in range(5)]
-    out = Analyzer.with_live_rates(vacs).salary_by_experience()
-    key = next(iter(out))                  # метка EXP_LABELS['between1And3']
-    assert out[key]["n"] == 5
-    assert out[key]["median"] == 120000    # median(100..140k)
+    # Подпись корзины — ЛИТЕРАЛОМ (она едет в отчёты и на дашборд), а не `next(iter(out))`:
+    # переименование метки обязано ронять тест, а не переезжать вместе с кодом.
+    row = Analyzer.with_live_rates(vacs).salary_by_experience()["1–3 года"]
+    assert row["n"] == 5
+    assert row["median"] == 120000         # median(100..140k)
 
 
 def test_salary_by_experience_below_threshold_excluded():
@@ -305,7 +306,7 @@ def test_by_source_splits_by_portal():
                        experience=Experience.from_code("between1And3"),
                        schedule=Schedule.from_code(sched), source=src)
     rows = Analyzer.with_live_rates([mk("1", "hh"), mk("2", "hh"), mk("3", "hirify", "fullDay")]).by_source()
-    assert rows[0]["source"] == "hh" and rows[0]["total"] == 2      # сорт по числу вакансий
+    assert (rows[0]["source"], rows[0]["total"]) == ("hh", 2)       # сорт по числу вакансий
     assert rows[0]["remote"] == 2
     hf = next(r for r in rows if r["source"] == "hirify")
-    assert hf["total"] == 1 and hf["office"] == 1
+    assert (hf["total"], hf["office"]) == (1, 1)

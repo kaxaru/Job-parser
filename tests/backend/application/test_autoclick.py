@@ -173,14 +173,14 @@ def test_tier3_office_in_allowed_city():
     # офис + строгий стек + город из APPLY_OFFICE_CITIES -> OFFICE (берём)
     raw = _raw(sched="fullDay", req="FastAPI, Docker, работа в офисе", city="Самара")
     out = pick_candidates([raw], marks={}, limit=10)
-    assert len(out) == 1 and out[0].tier is ApplyTier.OFFICE
+    assert [c.tier for c in out] == [ApplyTier.OFFICE]
 
 
 def test_tier2_wide_stack_remote():
     # удалёнка, без Python/FastAPI, но с широким стеком (Django) -> WIDE
     raw = _raw(name="Backend разработчик", req="Django, PostgreSQL, удалённая работа")
     out = pick_candidates([raw], marks={}, limit=10)
-    assert len(out) == 1 and out[0].tier is ApplyTier.WIDE
+    assert [c.tier for c in out] == [ApplyTier.WIDE]
 
 
 def test_tier_priority_strict_then_wide_then_office():
@@ -552,7 +552,10 @@ def test_lock_reclaims_stale(tmp_lock, monkeypatch):
     old = lock.time.time() - (lock.LOCK_TTL + 10)
     tmp_lock.write_text(json.dumps({"pid": 424242, "ts": old}), encoding="utf-8")
     with lock._single_instance():               # протух -> перезабираем
-        assert json.loads(tmp_lock.read_text())["pid"] != 424242
+        # Именно НАШ pid, а не «любой чужой»: lock с pid=0 или мусором `release_if_mine`
+        # уже не снимет («чужой lock не наш, чтобы снимать»), и осиротевший файл заблокирует
+        # крон-слоты откликов на LOCK_TTL — инцидент 25.07.2026 (аудит 09.08.2026).
+        assert json.loads(tmp_lock.read_text())["pid"] == os.getpid()
 
 
 # ── _lock_holder / ретрай ожидания lock (для крона) ──
@@ -564,7 +567,8 @@ def test_lock_holder_reports_live_instance(tmp_lock, monkeypatch):
     monkeypatch.setattr(lock, "_pid_alive", lambda pid: True)
     tmp_lock.write_text(json.dumps({"pid": 42, "ts": lock.time.time()}), encoding="utf-8")
     held = lock._lock_holder()
-    assert held and held[0] == 42
+    assert held is not None
+    assert held[0] == 42
 
 
 def test_lock_holder_none_when_stale(tmp_lock, monkeypatch):
@@ -589,14 +593,15 @@ def test_lock_retry_acquires_when_freed(tmp_lock, monkeypatch):
     tmp_lock.write_text(json.dumps({"pid": 42, "ts": lock.time.time()}), encoding="utf-8")
     monkeypatch.setattr(lock.time, "sleep", lambda s: tmp_lock.unlink())  # освободился «во сне»
     with lock._single_instance(wait_retries=3, wait_s=1):
-        assert json.loads(tmp_lock.read_text())["pid"] != 42                   # взяли свой lock
+        assert json.loads(tmp_lock.read_text())["pid"] == os.getpid()          # взяли СВОЙ lock
 
 
 def test_lock_holder_broken_json_recent_is_held(tmp_lock):
     # битый/недописанный lock со свежим mtime -> НЕ «свободен» (иначе второй браузер)
     tmp_lock.write_text("{not json", encoding="utf-8")
     held = lock._lock_holder()
-    assert held is not None and held[0] == "?"
+    assert held is not None
+    assert held[0] == "?"
 
 
 def test_lock_holder_broken_json_old_is_free(tmp_lock, monkeypatch):

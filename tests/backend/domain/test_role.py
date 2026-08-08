@@ -28,9 +28,20 @@ def test_from_label_roundtrips(role):
     assert Role.from_label(role.label) is role
 
 
-def test_role_patterns_keys_are_all_roles():
-    # страж дрейфа: каждый ключ config.ROLE_PATTERNS обязан иметь член Role
-    # (иначе _detect_role.from_label упадёт ValueError на новой роли).
-    labels = {r.label for r in Role}
-    missing = [k for k in ROLE_PATTERNS if k not in labels]
-    assert not missing, f"ROLE_PATTERNS без члена Role: {missing}"
+# Страж дрейфа с config.ROLE_PATTERNS — теперь ДВУСТОРОННИЙ (аудит 09.08.2026). Прежняя
+# форма сверяла только включение `ROLE_PATTERNS ⊆ Role.labels` и обобщённым `assert not
+# missing`: УДАЛЕНИЕ ключа (например, 'Security') она не ловила вовсе, а в проде вакансии
+# по ИБ молча падали бы в «Разработчик»/«Не-IT» — то же расхождение, ради которого страж
+# и заведён, только с другой стороны.
+
+def test_every_role_pattern_has_a_role_member():
+    # Литерал по спеке (docs/testing.md, «Тесты-стражи»): 16 ключей паттернов.
+    assert sorted(ROLE_PATTERNS) == sorted([
+        "Mobile", "QA", "DevOps", "Data Eng", "Data/ML", "Аналитик", "Embedded",
+        "Security", "Gamedev", "Architect", "Дизайнер", "Frontend", "Backend",
+        "Fullstack", "Менеджер", "Разработчик"])
+
+
+def test_non_it_is_the_only_role_without_a_pattern():
+    # 17 членов Role против 16 ключей: NON_IT служебный, паттерна у него нет
+    assert {r.label for r in Role} - set(ROLE_PATTERNS) == {"Не-IT"}

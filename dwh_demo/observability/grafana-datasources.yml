@@ -23,3 +23,21 @@ datasources:
       postgresVersion: 1600
     secureJsonData:
       password: hh
+
+  # ── РЕЗУЛЬТАТ ── боевая витрина (БД hh) того же сервера. Отдельный источник нужен
+  # потому, что состояние прогона Airflow и результат заливки — разные вещи: `load`
+  # делает TRUNCATE и рапортует success даже на нулевом срезе. Без этого источника
+  # подхватить число строк в core.vacancies было нечем, и дашборд «здоровье
+  # пайплайна» оставался зелёным при пустой витрине.
+  - name: HH-DWH
+    uid: hh_dwh
+    type: postgres
+    access: proxy
+    url: hh-postgres:5432
+    user: hh
+    jsonData:
+      database: hh
+      sslmode: disable
+      postgresVersion: 1600
+    secureJsonData:
+      password: hh

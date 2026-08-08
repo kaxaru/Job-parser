@@ -3,9 +3,11 @@ from hrwork.presentation.views.feed import sanitize_desc
 
 
 def test_strips_img_with_event_handler():
-    out = sanitize_desc('<img src=x onerror=alert(1)>привет')
-    assert "img" not in out and "onerror" not in out
-    assert "привет" in out
+    # img не в белом списке -> тег выброшен ЦЕЛИКОМ вместе с атрибутами (как в
+    # test_strips_attributes_from_allowed_tags), текст остаётся. Точное равенство, а не
+    # `"img" not in out`: отрицание проходило бы и на выводе '<iframe onload=…>привет'
+    # (аудит 09.08.2026).
+    assert sanitize_desc('<img src=x onerror=alert(1)>привет') == "привет"
 
 
 def test_drops_script_with_content():
@@ -31,4 +33,7 @@ def test_plain_text_passthrough_escaped():
 
 
 def test_closes_unbalanced_tags():
-    assert sanitize_desc("<p>a<strong>b").endswith("</strong></p>")
+    # Незакрытые теги добиваются в обратном порядке, СОДЕРЖИМОЕ при этом на месте:
+    # `.endswith("</strong></p>")` проходил и на выводе '</strong></p>' с потерянным
+    # текстом (аудит 09.08.2026).
+    assert sanitize_desc("<p>a<strong>b") == "<p>a<strong>b</strong></p>"

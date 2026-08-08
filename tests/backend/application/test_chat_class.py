@@ -19,22 +19,30 @@ def _m(text, mine=False, bot=False):
 
 
 # ── тип сообщения ──
-def test_classify_order_screening_before_question():
+# Пары (вход, ожидаемое) — параметризацией, а не цепочкой assert в одном теле: падение
+# на первом случае скрывало остальные и не называло виновный текст (аудит 09.08.2026).
+@pytest.mark.parametrize("text, expected", [
     # у бот-скрининга тоже бывает «?», но отвечать в чат бессмысленно — уводит на внешнюю форму
-    assert classify("Пройдите первичное интервью, это ускорит рассмотрение?") is ChatKind.SCREENING
-    assert classify("К сожалению, мы не готовы пригласить вас") is ChatKind.REJECT
-    assert classify("Буду рад обсудить детали, когда вам удобно?") is ChatKind.INVITE
-    assert classify("Занимались ли вы A/B-тестами?") is ChatKind.QUESTION
-    assert classify("Мы получили ваш отклик") is ChatKind.OTHER
+    ("Пройдите первичное интервью, это ускорит рассмотрение?", ChatKind.SCREENING),
+    ("К сожалению, мы не готовы пригласить вас", ChatKind.REJECT),
+    ("Буду рад обсудить детали, когда вам удобно?", ChatKind.INVITE),
+    ("Занимались ли вы A/B-тестами?", ChatKind.QUESTION),
+    ("Мы получили ваш отклик", ChatKind.OTHER),
+])
+def test_classify_order_screening_before_question(text, expected):
+    assert classify(text) is expected
 
 
-def test_imperative_ask_without_question_mark():
+@pytest.mark.parametrize("text, expected", [
     # боты спрашивают повелительным наклонением, «?» может не быть вовсе
-    assert classify("Укажите, пожалуйста, ваши зарплатные ожидания") is ChatKind.QUESTION
-    assert classify("Расскажите про опыт с Django") is ChatKind.QUESTION
+    ("Укажите, пожалуйста, ваши зарплатные ожидания", ChatKind.QUESTION),
+    ("Расскажите про опыт с Django", ChatKind.QUESTION),
     # но «заполните анкету» — это внешний скрининг, а не вопрос в чате
-    assert classify("Спасибо за отклик! Заполните небольшую анкету") is ChatKind.SCREENING
-    assert classify("Приглашаем к заполнению анкеты") is ChatKind.SCREENING
+    ("Спасибо за отклик! Заполните небольшую анкету", ChatKind.SCREENING),
+    ("Приглашаем к заполнению анкеты", ChatKind.SCREENING),
+])
+def test_imperative_ask_without_question_mark(text, expected):
+    assert classify(text) is expected
 
 
 # ── бот-интервью в чужом мессенджере: полумёртвая ветка, фриз ──
@@ -98,7 +106,8 @@ def test_ack_does_not_swallow_real_question():
 def test_salary_ask_is_manual_even_without_question_mark():
     # первый вопрос бота часто про деньги — и без «?»; отвечать должен человек
     a = analyze([_m("Укажите, пожалуйста, ваши зарплатные ожидания в формате: ХХХХХ - ХХХХХ")])
-    assert a["kind"] == "question" and a["manual_only"] is True
+    assert a["kind"] == "question"
+    assert a["manual_only"] is True
 
 
 def test_reject_never_needs_reply():
@@ -115,7 +124,8 @@ def test_no_reply_expected_when_we_wrote_last():
 
 def test_reply_expected_when_they_wrote_last():
     a = analyze([_m("Здравствуйте!", mine=True), _m("Есть опыт с Python?")])
-    assert a["needs_reply"] is True and a["kind"] == "question"
+    assert a["needs_reply"] is True
+    assert a["kind"] == "question"
 
 
 # ── КТО написал: два независимых признака ──
@@ -160,10 +170,13 @@ def test_can_write_from_api():
 
 
 # ── деньги/переезд: бот отвечать не должен ──
-def test_manual_only_for_salary_and_relocation():
-    assert analyze([_m("Рассматриваете вилку до 100 на руки?")])["manual_only"] is True
-    assert analyze([_m("Готовы на переезд в Казань?")])["manual_only"] is True
-    assert analyze([_m("Есть опыт с Django?")])["manual_only"] is False
+@pytest.mark.parametrize("text, manual_only", [
+    ("Рассматриваете вилку до 100 на руки?", True),
+    ("Готовы на переезд в Казань?", True),
+    ("Есть опыт с Django?", False),
+])
+def test_manual_only_for_salary_and_relocation(text, manual_only):
+    assert analyze([_m(text)])["manual_only"] is manual_only
 
 
 # ══════════════ REDIRECT: перевод в другой канал (20.07) ══════════════
@@ -176,7 +189,7 @@ def test_manual_only_for_salary_and_relocation():
 ])
 def test_redirect_detected(text):
     assert classify(text) is ChatKind.REDIRECT
-    assert ChatKind.REDIRECT.needs_reply        # внимание нужно: пойти по ссылке
+    assert ChatKind.REDIRECT.needs_reply is True   # внимание нужно: пойти по ссылке
 
 
 def test_reject_with_telegram_link_stays_reject():
@@ -188,8 +201,11 @@ def test_reject_with_telegram_link_stays_reject():
 
 
 def test_email_is_not_redirect():
-    # «hr@mail.ru» — почта, а не telegram-handle (@… с lookbehind)
-    assert classify("Пришлите резюме на hr@mail.ru") is not ChatKind.REDIRECT
+    # «hr@mail.ru» — почта, а не telegram-handle (@… с lookbehind). Класс назван точно:
+    # отрицание `is not REDIRECT` проходило на любом из остальных членов ChatKind, а сползание
+    # в REJECT или SCREENING гасит в ленте бейдж «нужен ответ» (аудит 09.08.2026). По спеке
+    # classify: «пришлите» не входит в _IMPERATIVE_ASK и «?» нет -> OTHER.
+    assert classify("Пришлите резюме на hr@mail.ru") is ChatKind.OTHER
 
 
 # ══════════════ norm_text v2: подстановки не дробят шаблон (20.07) ══════════════
@@ -216,21 +232,22 @@ def test_norm_text_distinct_texts_stay_distinct():
 def test_manual_only_holes_closed(text):
     # «заработной платы» не ловилось «зарплат», «готовы работать в г. X» — «переезд».
     # Теперь SALARY_Q/PLACE_Q — единый источник с chat_answer, дыры чинятся один раз.
-    assert is_manual_only(text)
+    assert is_manual_only(text) is True
 
 
 # ── контакты работодателя в переписке (телефон/telegram -> бейдж в ленте) ──
 def test_contact_phone_and_tg_from_employer():
+    # Строка целиком: формат бейджа — «телефон · @ник» через « · » (docs/feed.md)
     msgs = [_m("Здравствуйте! Наш HR: @hr_nick, тел. +7 912 345-67-89")]
-    out = analyze(msgs)
-    assert "@hr_nick" in out["contact"] and "+7 912 345-67-89" in out["contact"]
+    assert analyze(msgs)["contact"] == "+7 912 345-67-89 · @hr_nick"
 
 
 def test_contact_survives_our_last_word():
     # контакт ценен, даже если последнее слово за нами (needs_reply=False)
     msgs = [_m("пишите в t.me/hr_team"), _m("хорошо, напишу", mine=True)]
     out = analyze(msgs)
-    assert "t.me/hr_team" in out["contact"] and out["needs_reply"] is False
+    assert out["contact"] == "t.me/hr_team"
+    assert out["needs_reply"] is False
 
 
 @pytest.mark.parametrize("text", [

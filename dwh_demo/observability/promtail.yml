@@ -4,7 +4,11 @@ server:
   grpc_listen_port: 0
 
 positions:
-  filename: /tmp/positions.yaml      # докуда дочитали (чтобы не слать повторно)
+  # докуда дочитали (чтобы не слать повторно). /tmp примонтирован томом promtail-pos
+  # в docker-compose.yml — без него позиции терялись на каждом рестарте, Promtail
+  # перечитывал историю ВСЕХ контейнеров с нуля и упирался в лимит Loki
+  # reject_old_samples_max_age: 168h. Родительский observability/ делает так же.
+  filename: /tmp/positions.yaml
 
 clients:
   - url: http://loki:3100/loki/api/v1/push   # куда отправлять (имя сервиса в сети compose)

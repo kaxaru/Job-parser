@@ -388,7 +388,8 @@ def test_clean_queue_removes_user_rejected(monkeypatch):
     monkeypatch.setattr(forms.store, "applied_ids", lambda: set())
     monkeypatch.setattr(forms.store, "marks", lambda: {"2": "rejected"})
     monkeypatch.setattr(forms.store, "remove_form", lambda v: removed.append(v))
-    assert forms.clean_queue()["left"] == 1 and removed == ["2"]
+    assert forms.clean_queue()["left"] == 1
+    assert removed == ["2"]
 
 
 def test_clean_queue_keeps_live_unapplied(monkeypatch):
@@ -398,7 +399,8 @@ def test_clean_queue_keeps_live_unapplied(monkeypatch):
     monkeypatch.setattr(forms.store, "applied_ids", lambda: set())
     monkeypatch.setattr(forms.store, "marks", lambda: {})
     monkeypatch.setattr(forms.store, "remove_form", lambda v: removed.append(v))
-    assert forms.clean_queue()["left"] == 1 and removed == []
+    assert forms.clean_queue()["left"] == 1
+    assert removed == []
 
 
 # ── _fill_field: DOM-литерал, никогда submit; «Свой вариант» -> textarea ──
@@ -417,7 +419,9 @@ def test_fill_field_uses_dom_literal_not_submit():
             return _Loc()
 
     forms._fill_field(_Page(), _fld(), "текст")
-    assert calls == [("fill", "текст")] and not any(c[0] == "click" for c in calls)
+    # Равенство ЦЕЛИКОМ уже говорит «клика нет»: вторая половина прежнего ассерта была
+    # тавтологией (мок вообще не имеет метода click — он упал бы AttributeError раньше).
+    assert calls == [("fill", "текст")]
 
 
 def test_fill_field_own_variant_fills_paired_textarea():
@@ -439,8 +443,13 @@ def test_fill_field_own_variant_fills_paired_textarea():
 
     f = _fld(FieldType.RADIO, options=("Свой вариант",), opt_values=("open",))
     forms._fill_field(_Page(), f, "Свой вариант", own="Закончил")
-    assert "check" in calls and ("fill", "Закончил") in calls
-    assert ("loc", 'textarea[name="task_1_text"]') in calls    # свой-вариант в парный textarea
+    # Вся последовательность целиком: три проверки вхождения через `and` не увидели бы
+    # ни лишнего заполненного поля, ни лишнего клика, хотя calls наблюдаем весь
+    # (аудит 09.08.2026). Селекторы — по спеке RFC-003: value радиокнопки и парный
+    # textarea «<имя>_text».
+    assert calls == [
+        ("loc", 'input[name="task_1"][value="open"]'), "check",
+        ("loc", 'textarea[name="task_1_text"]'), ("fill", "Закончил")]
 
 
 # ── учёт отправки: дренаж очереди — такой же реальный отклик, как крон-путь ──

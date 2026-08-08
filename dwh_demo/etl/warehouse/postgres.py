@@ -2,6 +2,7 @@
 REFRESH mart.* (материализованные витрины)."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import psycopg2
@@ -12,8 +13,9 @@ from ..domain import Vacancy
 BATCH_SIZE = 1000   # строк в одном многострочном INSERT (баланс round-trip / память)
 
 STG_COLUMNS = ["id", "source", "name", "city_name", "employer_name", "salary_min", "salary_max",
+               "salary_min_rub", "salary_max_rub",
                "salary_currency", "salary_gross", "experience", "schedule", "is_remote",
-               "url", "query"]
+               "remote_mentioned", "url", "query"]
 
 # справочники -> факт -> мост -> обновление витрин
 LOAD_SQL = """
@@ -21,10 +23,12 @@ INSERT INTO core.cities(name)    SELECT DISTINCT city_name     FROM staging.stg_
 INSERT INTO core.employers(name) SELECT DISTINCT employer_name FROM staging.stg_vacancies WHERE employer_name IS NOT NULL ON CONFLICT (name) DO NOTHING;
 INSERT INTO core.skills(name)    SELECT DISTINCT skill         FROM staging.stg_skills                                    ON CONFLICT (name) DO NOTHING;
 TRUNCATE core.vacancy_skills, core.vacancies;
-INSERT INTO core.vacancies(id,source,name,city_id,employer_id,salary_min,salary_max,salary_currency,
-                           salary_gross,experience,schedule,is_remote,url,query)
-SELECT s.id, s.source, s.name, c.id, e.id, s.salary_min, s.salary_max, s.salary_currency, s.salary_gross,
-       s.experience, s.schedule, s.is_remote, s.url, s.query
+INSERT INTO core.vacancies(id,source,name,city_id,employer_id,salary_min,salary_max,
+                           salary_min_rub,salary_max_rub,salary_currency,
+                           salary_gross,experience,schedule,is_remote,remote_mentioned,url,query)
+SELECT s.id, s.source, s.name, c.id, e.id, s.salary_min, s.salary_max,
+       s.salary_min_rub, s.salary_max_rub, s.salary_currency, s.salary_gross,
+       s.experience, s.schedule, s.is_remote, s.remote_mentioned, s.url, s.query
 FROM staging.stg_vacancies s
 LEFT JOIN core.cities c    ON c.name = s.city_name
 LEFT JOIN core.employers e ON e.name = s.employer_name;
@@ -49,19 +53,43 @@ class PostgresWarehouse:
     def _conn(self):
         return psycopg2.connect(**self.dsn)
 
+    @contextmanager
+    def _session(self):
+        """Курсор в транзакции + ГАРАНТИРОВАННОЕ закрытие соединения.
+
+        У psycopg2 `with conn` управляет ТРАНЗАКЦИЕЙ (commit на выходе, rollback на
+        исключении), а соединение НЕ закрывает. Без явного `close()` соединения копятся
+        в долгоживущем воркере Airflow до сборки мусора; с 09.08.2026 их стало больше —
+        санити-гейт конвейера зовёт `count()` перед каждой загрузкой."""
+        conn = self._conn()
+        try:
+            with conn, conn.cursor() as cur:
+                yield cur
+        finally:
+            conn.close()
+
     def init_schema(self) -> None:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._session() as cur:
             cur.execute(self.schema_sql.read_text(encoding="utf-8"))
 
     def load(self, vacancies: list[Vacancy]) -> int:
+        """Полный перезалив факта одной транзакцией; возвращает число строк в факте.
+
+        Политика восстановления: выполнено целиком или не выполнено вовсе. TRUNCATE
+        staging, вставка и `LOAD_SQL` (внутри — `TRUNCATE core.*` и REFRESH витрин) идут
+        в одной транзакции psycopg2: исключение -> выход из `with conn` -> ROLLBACK,
+        в факте остаётся предыдущий срез. Повтор безопасен (полная замена факта).
+        """
+        # Порядок значений ОБЯЗАН совпадать с STG_COLUMNS — позиционная вставка.
         vac_rows = [
             (v.id, v.source, v.name, v.city, v.employer, v.salary_min, v.salary_max,
+             v.salary_min_rub, v.salary_max_rub,
              v.salary_currency, v.salary_gross, v.experience, v.schedule, v.is_remote,
-             v.url, v.query)
+             v.remote_mentioned, v.url, v.query)
             for v in vacancies
         ]
         skill_rows = [(v.id, s) for v in vacancies for s in v.skills]
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._session() as cur:
             cur.execute("TRUNCATE staging.stg_vacancies, staging.stg_skills")
             execute_values(
                 cur, f"INSERT INTO staging.stg_vacancies ({', '.join(STG_COLUMNS)}) VALUES %s",
@@ -74,6 +102,6 @@ class PostgresWarehouse:
             return cur.fetchone()[0]
 
     def count(self) -> int:
-        with self._conn() as conn, conn.cursor() as cur:
+        with self._session() as cur:
             cur.execute("SELECT count(*) FROM core.vacancies")
             return cur.fetchone()[0]

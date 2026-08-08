@@ -24,6 +24,18 @@ def _naive_detect_techs(text: str) -> list[str]:
     return [tech for tech, rx, _screen in _SCREENED if rx.search(t)]
 
 
+def test_screened_covers_every_tech_of_the_dictionary():
+    """Страж СОСТАВА, без которого эквивалентность ниже проверяет продукт сам с собой.
+
+    АУДИТ 09.08.2026: и эталон, и проверяемый `_detect_techs` идут по одному и тому же
+    предпосчитанному `_SCREENED`. Потеряй `_build_screened` тех (фильтр «if not pat:
+    continue», сломанная компиляция одного паттерна) — обе стороны потеряют его одинаково,
+    все 510 случаев останутся зелёными, а тег перестанет детектиться в проде. Здесь одна
+    сторона — литерал: объём словаря стека назван числом в docs/testing.md."""
+    assert [tech for tech, _rx, _screen in _SCREENED] == list(TECH_PATTERNS)
+    assert len(_SCREENED) == 55        # объём словаря стека, docs/testing.md
+
+
 # Словарь фрагментов: вытаскиваем литеральные куски из САМИХ паттернов (авто-покрытие всех
 # техов, включая будущие) + шумовые слова + device-клауза (проверить взаимодействие со
 # _strip_device_req) + тексты-ловушки на lookaround (go/java/c#/1с/.net).

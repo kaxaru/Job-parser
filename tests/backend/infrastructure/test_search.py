@@ -4,7 +4,6 @@ import datetime
 import pytest
 
 from hrwork.domain import freshness
-from hrwork.domain.freshness import FRESH_DAYS, GHOST_DAYS
 from hrwork.infrastructure import search as S
 
 # Возраст в SQL = floor полных суток от now(), ровно как `freshness.py::_days_between`.
@@ -15,7 +14,8 @@ AGE_SQL = "floor(extract(epoch from now() - created_at) / 86400)"
 
 def test_cols_expose_age_fresh_and_source():
     # карточка отдаёт возраст, класс свежести и источник (для бейджей и фильтров в /search)
-    assert "AS age_days" in S._COLS and "AS fresh" in S._COLS
+    assert "AS age_days" in S._COLS
+    assert "AS fresh" in S._COLS
     assert "source" in S._COLS
 
 
@@ -37,18 +37,22 @@ def test_plain_mode_without_query():
 
 def test_fts_mode_with_query():
     sql, params = S._build_sql(q="python", city=None, sal_min=0)
-    assert "websearch_to_tsquery" in sql and params["q"] == "python"
+    assert "websearch_to_tsquery" in sql
+    assert params["q"] == "python"
     assert "doc @@ q" in sql
 
 
+# Пороги — ЛИТЕРАЛЫ спецификации (30/60), а не FRESH_DAYS/GHOST_DAYS из того же места,
+# что и реализация: сломанная константа ломала бы обе стороны одинаково (аудит 09.08.2026).
 @pytest.mark.parametrize("fresh,marker", [
-    ("fresh",  f"<= {FRESH_DAYS}"),
-    ("recent", f"> {FRESH_DAYS}"),
-    ("ghost",  f"> {GHOST_DAYS}"),
+    ("fresh",  "<= 30"),
+    ("recent", "> 30"),
+    ("ghost",  "> 60"),
 ])
 def test_fresh_filter_adds_band_clause(fresh, marker):
     sql, _ = S._build_sql(q=None, city=None, sal_min=0, fresh=fresh)
-    assert "created_at IS NOT NULL" in sql and marker in sql
+    assert "created_at IS NOT NULL" in sql
+    assert marker in sql
 
 
 # ── Регрессия 08.08.2026 (аудит, п.32): возраст в SQL расходился с доменом ──────────────
@@ -103,8 +107,12 @@ def test_unknown_fresh_value_ignored():
 
 def test_filters_combine_with_and():
     sql, params = S._build_sql(q="go", city="Москва", sal_min=100000, fresh="fresh")
-    assert sql.count(" AND ") >= 3                  # q + city + sal + fresh
-    assert params["city"] == "Москва" and params["sal"] == 100000
+    # ТОЧНОЕ число, а не `>= 3`: четыре предиката (q + city + sal + fresh) склеиваются
+    # тремя « AND », и четвёртое живёт внутри самой клаузы свежести
+    # («created_at IS NOT NULL AND <возраст> <= 30»).
+    assert sql.count(" AND ") == 4
+    assert params["city"] == "Москва"
+    assert params["sal"] == 100000
 
 
 # ── total считается отдельным запросом, а не оконной функцией (01.08.2026) ──────────────
@@ -120,7 +128,8 @@ def test_page_query_has_no_window_count():
 def test_count_query_selects_total_without_payload(q):
     sql, _ = S._build_count_sql(q=q, city=None, sal_min=0)
     assert sql.startswith("SELECT count(*) AS total FROM ")
-    assert "LIMIT" not in sql and "ORDER BY" not in sql     # счётчику не нужны ни сорт, ни страница
+    assert "LIMIT" not in sql                              # счётчику не нужна страница
+    assert "ORDER BY" not in sql                           # ... и сортировка
     assert "ts_headline" not in sql                        # и тем более сниппет
 
 

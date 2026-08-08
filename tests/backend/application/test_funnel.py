@@ -61,7 +61,7 @@ def test_reject_latency_buckets(monkeypatch, offset_min, le10, le1h, le1d, slow)
     _wire(monkeypatch, {"v1": _APPLY}, {"v1": "DISCARD"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["rejected"] == 1 and o["measured"] == 1
+    assert (o["rejected"], o["measured"]) == (1, 1)
     assert (o["le_10m"], o["le_1h"], o["le_1d"], o["slow_reject"]) == (le10, le1h, le1d, slow)
 
 
@@ -69,7 +69,7 @@ def test_discard_status_without_chat_is_rejected_but_unmeasured(monkeypatch):
     # отказ по статусу, сообщения в чате нет -> латентность неизвестна (сегмент «без метки»)
     _wire(monkeypatch, {"v1": _APPLY}, {"v1": "DISCARD"}, {}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["rejected"] == 1 and o["measured"] == 0 and o["le_1d"] == 0
+    assert (o["rejected"], o["measured"], o["le_1d"]) == (1, 0, 0)
 
 
 def test_chat_reject_without_status_is_not_reject(monkeypatch):
@@ -79,7 +79,7 @@ def test_chat_reject_without_status_is_not_reject(monkeypatch):
     _wire(monkeypatch, {"v1": _APPLY}, {"v1": "RESPONSE"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["rejected"] == 0 and o["no_outcome"] == 1 and o["chat_reject_only"] == 1
+    assert (o["rejected"], o["no_outcome"], o["chat_reject_only"]) == (0, 1, 1)
 
 
 def test_floors_are_exclusive_interview_with_reject_phrase(monkeypatch):
@@ -88,8 +88,11 @@ def test_floors_are_exclusive_interview_with_reject_phrase(monkeypatch):
     _wire(monkeypatch, {"v1": _APPLY}, {"v1": "INTERVIEW"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["invited"] == 1 and o["rejected"] == 0
-    assert o["applied"] == o["invited"] + o["rejected"] + o["no_outcome"]
+    # Все четыре этажа литералами одним кортежем. Прежний второй ассерт сверял выход
+    # воронки САМ С СОБОЙ (applied == invited + rejected + no_outcome): комбинация
+    # applied=2 / no_outcome=1 — то есть двойной учёт отклика, ради которого тест
+    # и написан, — уравнению удовлетворяет и проходила (аудит 09.08.2026).
+    assert (o["applied"], o["invited"], o["rejected"], o["no_outcome"]) == (1, 1, 0, 0)
 
 
 def test_unknown_employer_falls_back_to_journal_then_out_of_feed(monkeypatch):
@@ -111,7 +114,7 @@ def test_journal_duplicates_collapse_to_earliest_ts(monkeypatch):
     _wire(monkeypatch, log, {"v1": "DISCARD"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["applied"] == 1 and o["le_1h"] == 1     # латентность 30 мин от РАННЕГО ts
+    assert (o["applied"], o["le_1h"]) == (1, 1)      # латентность 30 мин от РАННЕГО ts
 
 
 def test_negative_latency_dropped_from_measured(monkeypatch):
@@ -120,7 +123,7 @@ def test_negative_latency_dropped_from_measured(monkeypatch):
     _wire(monkeypatch, {"v1": _APPLY}, {"v1": "DISCARD"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["rejected"] == 1 and o["measured"] == 0
+    assert (o["rejected"], o["measured"]) == (1, 0)
 
 
 def test_own_message_never_counts_as_employer_reject(monkeypatch):
@@ -128,7 +131,7 @@ def test_own_message_never_counts_as_employer_reject(monkeypatch):
     msg = _reject_msg(_APPLY_DT + dt.timedelta(minutes=5), mine=True)
     _wire(monkeypatch, {"v1": _APPLY}, {}, {"v1": {"messages": [msg]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["rejected"] == 0 and o["no_outcome"] == 1 and o["chat_reject_only"] == 0
+    assert (o["rejected"], o["no_outcome"], o["chat_reject_only"]) == (0, 1, 0)
 
 
 def test_company_auto_reject_rate_from_measured(monkeypatch):
@@ -139,8 +142,8 @@ def test_company_auto_reject_rate_from_measured(monkeypatch):
     _wire(monkeypatch, {"a": _APPLY, "b": _APPLY},
           {"a": "DISCARD", "b": "DISCARD"}, chats, _repo({"a": "ACME", "b": "ACME"}))
     c = {x["employer"]: x for x in funnel.compute_funnel()["companies"]}["ACME"]
-    assert c["rejected"] == 2 and c["measured"] == 2
-    assert c["le_1h"] == 1 and c["auto_reject_rate"] == 50.0
+    assert (c["rejected"], c["measured"]) == (2, 2)
+    assert (c["le_1h"], c["auto_reject_rate"]) == (1, 50.0)
 
 
 def test_reject_latency_measured_from_last_reject_message(monkeypatch):
@@ -196,7 +199,7 @@ def test_broken_journal_timestamp_loses_to_valid_one(monkeypatch, broken):
     _wire(monkeypatch, log, {"v1": "DISCARD"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["applied"] == 1 and o["measured"] == 1
+    assert (o["applied"], o["measured"]) == (1, 1)
     assert o["median_reject_min"] == 30
 
 
@@ -208,7 +211,7 @@ def test_all_timestamps_broken_keeps_response_without_latency(monkeypatch, broke
     _wire(monkeypatch, log, {"v1": "DISCARD"},
           {"v1": {"messages": [_reject_msg(rej)]}}, _repo({"v1": "ACME"}))
     o = funnel.compute_funnel()["overall"]
-    assert o["applied"] == 1 and o["rejected"] == 1 and o["measured"] == 0
+    assert (o["applied"], o["rejected"], o["measured"]) == (1, 1, 0)
 
 
 def test_csv_column_for_invited_states_is_named_positive_not_invitation(monkeypatch, tmp_path):

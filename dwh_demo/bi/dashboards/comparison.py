@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..client import MetabaseClient
 from ..config import CH_ENGINE, CH_NAME, PG_ENGINE, PG_NAME
-from .base import bar, layout
+from .base import MIXED_CURRENCY, REMOTE_LIKE, bar, layout
 
 TITLE = "HH — Postgres vs ClickHouse (один BI, два движка)"
 _SAL_VIZ = {"graph.dimensions": ["experience"], "graph.metrics": ["avg_salary_min", "avg_salary_max"]}
@@ -24,18 +24,18 @@ class ComparisonDashboard:
         cards = {
             "pg_total": ("Всего вакансий · Postgres", pg, "SELECT count(*) AS vacancies FROM core.vacancies", "scalar", None),
             "ch_total": ("Всего вакансий · ClickHouse", ch, "SELECT count() AS vacancies FROM hh.vacancies", "scalar", None),
-            "pg_remote": ("Удалённые · Postgres", pg, "SELECT count(*) AS vacancies FROM core.vacancies WHERE is_remote", "scalar", None),
-            "ch_remote": ("Удалённые · ClickHouse", ch, "SELECT countIf(is_remote = 1) AS vacancies FROM hh.vacancies", "scalar", None),
+            "pg_remote": (f"{REMOTE_LIKE} · Postgres", pg, "SELECT count(*) AS vacancies FROM core.vacancies WHERE is_remote", "scalar", None),
+            "ch_remote": (f"{REMOTE_LIKE} · ClickHouse", ch, "SELECT countIf(is_remote = 1) AS vacancies FROM hh.vacancies", "scalar", None),
             "pg_sal": ("С зарплатой · Postgres", pg, "SELECT count(*) AS vacancies FROM core.vacancies WHERE salary_min IS NOT NULL OR salary_max IS NOT NULL", "scalar", None),
             "ch_sal": ("С зарплатой · ClickHouse", ch, "SELECT countIf(isNotNull(salary_min) OR isNotNull(salary_max)) AS vacancies FROM hh.vacancies", "scalar", None),
             "pg_skills": ("Спрос на навыки · Postgres (mart REFRESH)", pg, "SELECT skill, vacancies FROM mart.skill_demand ORDER BY vacancies DESC LIMIT 15", "bar", skl),
             "ch_skills": ("Спрос на навыки · ClickHouse (AggregatingMergeTree)", ch, "SELECT skill, countMerge(vacancies) AS vacancies FROM hh.skill_demand GROUP BY skill ORDER BY vacancies DESC LIMIT 15", "bar", skl),
-            "pg_exp": ("Зарплата по опыту · Postgres", pg, "SELECT experience, avg_salary_min, avg_salary_max FROM mart.salary_by_experience ORDER BY avg_salary_max", "bar", _SAL_VIZ),
-            "ch_exp": ("Зарплата по опыту · ClickHouse (avgMerge)", ch, "SELECT exp_bucket AS experience, round(avgMerge(avg_min)) AS avg_salary_min, round(avgMerge(avg_max)) AS avg_salary_max FROM hh.salary_by_exp GROUP BY exp_bucket ORDER BY avg_salary_max", "bar", _SAL_VIZ),
+            "pg_exp": (f"Зарплата по опыту · Postgres{MIXED_CURRENCY}", pg, "SELECT experience, avg_salary_min, avg_salary_max FROM mart.salary_by_experience ORDER BY avg_salary_max", "bar", _SAL_VIZ),
+            "ch_exp": (f"Зарплата по опыту · ClickHouse (avgMerge){MIXED_CURRENCY}", ch, "SELECT exp_bucket AS experience, round(avgMerge(avg_min)) AS avg_salary_min, round(avgMerge(avg_max)) AS avg_salary_max FROM hh.salary_by_exp GROUP BY exp_bucket ORDER BY avg_salary_max", "bar", _SAL_VIZ),
             "pg_emp": ("Топ-15 работодателей · Postgres", pg, "SELECT employer, vacancies FROM mart.top_employers ORDER BY vacancies DESC LIMIT 15", "row", emp),
             "ch_emp": ("Топ-15 работодателей · ClickHouse", ch, "SELECT employer, count() AS vacancies FROM hh.vacancies WHERE isNotNull(employer) GROUP BY employer ORDER BY vacancies DESC LIMIT 15", "row", emp),
-            "pg_cit": ("Города · Postgres", pg, "SELECT city, vacancies, with_salary, avg_salary_max, remote_share_pct FROM mart.city_stats ORDER BY vacancies DESC LIMIT 15", "table", None),
-            "ch_cit": ("Города · ClickHouse", ch, "SELECT city, count() AS vacancies, countIf(isNotNull(salary_min) OR isNotNull(salary_max)) AS with_salary, round(avg(salary_max)) AS avg_salary_max, round(100.0*countIf(is_remote=1)/count(),1) AS remote_share_pct FROM hh.vacancies WHERE isNotNull(city) GROUP BY city ORDER BY vacancies DESC LIMIT 15", "table", None),
+            "pg_cit": (f"Города · Postgres{MIXED_CURRENCY}", pg, "SELECT city, vacancies, with_salary, avg_salary_max, remote_share_pct AS remote_like_share_pct FROM mart.city_stats ORDER BY vacancies DESC LIMIT 15", "table", None),
+            "ch_cit": (f"Города · ClickHouse{MIXED_CURRENCY}", ch, "SELECT city, count() AS vacancies, countIf(isNotNull(salary_min) OR isNotNull(salary_max)) AS with_salary, round(avg(salary_max)) AS avg_salary_max, round(100.0*countIf(is_remote=1)/count(),1) AS remote_like_share_pct FROM hh.vacancies WHERE isNotNull(city) GROUP BY city ORDER BY vacancies DESC LIMIT 15", "table", None),
         }
         ids = {k: client.create_card(n, db, sql, disp, viz) for k, (n, db, sql, disp, viz) in cards.items()}
 

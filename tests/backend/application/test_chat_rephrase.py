@@ -3,6 +3,7 @@
 замокан. Перестановку клауз валидатор НЕ ловит намеренно — её держит human-gate (см.
 test_chat_reply.py::test_run_rephrase_*)."""
 import os
+import re
 
 import pytest
 
@@ -118,7 +119,8 @@ def test_excluded_rule_returns_source_no_network(monkeypatch):
     called = []
     monkeypatch.setattr(R, "chat_json", lambda *a, **k: called.append(1))
     out = R.rephrase_answer("Зарплата?", "150–170к", "salary_junior", "ru")
-    assert out == "150–170к" and called == []          # не eligible -> сеть НЕ зовётся
+    assert out == "150–170к"
+    assert called == []                                # не eligible -> сеть НЕ зовётся
 
 
 def test_no_key_returns_source(monkeypatch):
@@ -167,8 +169,19 @@ def test_func_allowlist_has_no_numerals_tech_or_negation(lang):
 @pytest.mark.skipif(not os.getenv("REPHRASE_LIVE"),
                     reason="сетевой вызов OpenRouter — opt-in: REPHRASE_LIVE=1 pytest")
 def test_live_rephrase_stays_grounded():
+    """АУДИТ 09.08.2026: прежнее утверждение `out == src or R._grounded(src, out, "ru")`
+    повторяло условие ветвления самой реализации и не могло упасть НИКОГДА — даже при
+    `_grounded`, возвращающем True всегда: `rephrase_answer` по построению отдаёт либо
+    кандидата, прошедший валидатор, либо источник. Единственный тест, реально ходящий
+    в OpenRouter, не проверял ничего.
+
+    Литерала здесь быть не может — текст пишет живой провайдер, поэтому проверяется
+    СВОЙСТВО выхода, выведенное из спеки RFC-002 (валидатор режет ново-токенный факт и
+    флип отрицания), а не ветка реализации."""
     src = "Автоматизирую тестирование на Python и Selenium."
     out = R.rephrase_answer("Расскажите про ваш опыт автоматизации?", src, "practice_testing", "ru")
-    assert out, "пустой результат"
-    # по конструкции: либо источник (fallback), либо кандидат, прошедший _grounded
-    assert out == src or R._grounded(src, out, "ru")
+    # ни одной НОВОЙ технологии и ни одного нового числа: множество значимых токенов
+    # выхода не выходит за пределы исходника
+    assert set(re.findall(r"[A-Za-z]+|\d+", out)) <= {"Python", "Selenium"}
+    # смысл не перевёрнут: в исходнике отрицания нет — не должно быть и в выходе
+    assert [w for w in re.findall(r"\w+", out.lower()) if w in {"не", "нет", "ни", "без"}] == []

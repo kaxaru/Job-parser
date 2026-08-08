@@ -9,11 +9,24 @@
 поэтому здесь подменяется словарь, а не файл на диске (config читает профиль на импорте).
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from hrwork.application.apply import candidates as C
 
 _DEFAULT = r"\bqa\b|тестировщ"
+
+_EXAMPLE = Path(__file__).parents[3] / "resume_profile.example.json"
+# Правила примера читаются на уровне модуля — чтобы параметризовать по КЛЮЧАМ (имя ключа
+# попадает в отчёт), а не перебирать их циклом внутри одного теста.
+_EXAMPLE_RULES = {k: v for k, v in json.loads(
+    _EXAMPLE.read_text(encoding="utf-8"))["blacklists"].items() if not k.startswith("_")}
+# Дефолт-заглушка для `_rx`: ловит ТОЛЬКО эту строку и ничего больше. Если правило примера
+# не скомпилировалось, `_rx` вернёт именно её — и это видно по ПОВЕДЕНИЮ регекса,
+# без заглядывания в `.pattern` (аудит 09.08.2026).
+_FALLBACK_PROBE = "zzz_fallback_probe_zzz"
 
 
 @pytest.fixture
@@ -121,38 +134,38 @@ def test_override_is_case_insensitive(blacklists):
 def test_comment_keys_are_not_rules():
     """В примере профиля рядом с каждым правилом лежит `_help_*` — пояснение для человека.
     Ключи с подчёркиванием отсеиваются при загрузке (`config.APPLY_BLACKLISTS`), иначе
-    `_help_qa` попал бы в словарь и молча ничего не сделал."""
+    `_help_qa` попал бы в словарь и молча ничего не сделал.
+
+    АУДИТ 09.08.2026: страж читал ЖИВОЙ config и на профиле без блока `blacklists` (как у
+    владельца репозитория сейчас) проходил вхолостую — пустой словарь `_`-ключей не
+    содержит по определению. Поэтому рядом стоит КОНТРОЛЬ: пояснения в примере есть,
+    значит фильтру действительно есть что отсеивать у форка, который пример скопировал."""
     from hrwork.config import APPLY_BLACKLISTS
-    assert not [k for k in APPLY_BLACKLISTS if k.startswith("_")]
+    example_bl = json.loads(_EXAMPLE.read_text(encoding="utf-8"))["blacklists"]
+    assert sorted(k for k in example_bl if k.startswith("_")) == [
+        "_help_analyst", "_help_devops", "_help_internship", "_help_management", "_help_ml",
+        "_help_non_engineering", "_help_other_lang", "_help_qa", "_help_senior",
+        "_help_target_engineering"]
+    assert [k for k in APPLY_BLACKLISTS if k.startswith("_")] == []
 
 
-def test_every_rule_key_is_wired(blacklists):
+def test_every_rule_key_is_wired():
     """Каждый ключ из примера профиля обязан что-то переопределять. Иначе документация
     обещает ручку, которой нет."""
-    import json
-    from pathlib import Path
-    example = json.loads(
-        (Path(__file__).parents[3] / "resume_profile.example.json").read_text(encoding="utf-8"))
-    keys = {k for k in (example.get("blacklists") or {}) if not k.startswith("_")}
     # ключи, которые реально читает candidates.py
     wired = {"senior", "internship", "management", "non_engineering", "qa", "analyst", "ml",
              "devops", "other_lang", "target_engineering"}
-    assert keys == wired, f"в примере лишние/недостающие ключи: {keys ^ wired}"
+    assert set(_EXAMPLE_RULES) == wired
 
 
-def test_example_rules_all_compile(blacklists):
+@pytest.mark.parametrize("key", sorted(_EXAMPLE_RULES))
+def test_example_rule_compiles_and_does_not_fall_back(key, blacklists):
     """Пример — то, что скопирует следующий пользователь: битое правило там означает
-    предупреждение в лог и тихую подмену на дефолт при первом же запуске. Компилируем
-    ТЕМ ЖЕ путём, что и приложение: правило может быть и списком слов, и строкой-регексом."""
-    import json
-    from pathlib import Path
-    example = json.loads(
-        (Path(__file__).parents[3] / "resume_profile.example.json").read_text(encoding="utf-8"))
-    rules = {k: v for k, v in (example.get("blacklists") or {}).items()
-             if not k.startswith("_")}
-    blacklists(rules)
-    for key in rules:
-        # дефолт-заглушка, которая не совпадает ни с чем: если правило битое и произошёл
-        # откат, тест это увидит по пустому результату ниже
-        rx = C._rx(key, r"(?!)")
-        assert rx.pattern != r"(?!)", f"правило {key} не скомпилировалось и упало в дефолт"
+    предупреждение в лог и тихую подмену на дефолт при первом же запуске.
+
+    АУДИТ 09.08.2026: раньше это был единственный `for`-перебор случаев во всей зоне
+    (падение на первом ключе скрывало остальные), и утверждал он о ВНУТРЕННЕЙ структуре —
+    строке `rx.pattern`. Теперь ключ называется в отчёте, а откат виден по ПОВЕДЕНИЮ:
+    правило, упавшее в дефолт-заглушку, поймало бы её строку-зонд."""
+    blacklists(_EXAMPLE_RULES)
+    assert bool(C._rx(key, _FALLBACK_PROBE).search(_FALLBACK_PROBE)) is False

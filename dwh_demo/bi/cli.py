@@ -1,4 +1,7 @@
-"""Единый вход BI-провижининга: python -m bi [--dashboard NAME ... | all]."""
+"""Единый вход BI-провижининга: python -m bi [NAME ... | all].
+
+NAME — ПОЗИЦИОННЫЙ аргумент (ключ из REGISTRY); флага `--dashboard` у парсера нет
+и никогда не было — докстринг обещал его до 09.08.2026 и давал SystemExit 2."""
 from __future__ import annotations
 
 import argparse
