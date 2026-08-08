@@ -165,6 +165,7 @@ _EXAMPLE_BLACKLISTS = json.loads(_EXAMPLE.read_text(encoding="utf-8"))["blacklis
 
 _DEFAULT_RULE = {                       # правило -> имя дефолтного регекса в candidates.py
     "senior": "APPLY_SENIOR_BLACKLIST",
+    "internship": "APPLY_INTERNSHIP_BLACKLIST",
     "management": "APPLY_MANAGEMENT_BLACKLIST",
     "non_engineering": "APPLY_ROLE_BLACKLIST",
     "qa": "APPLY_QA_BLACKLIST",
@@ -193,6 +194,14 @@ _CANON_TITLES = [
     ("senior", "Технический лид"),
     ("senior", "Principal Engineer"),
     ("senior", "Staff Engineer"),
+    # Стажировки отсекаются с 08.08.2026, junior — НЕТ (см. keep-набор ниже).
+    ("internship", "Python Developer Intern"),
+    ("internship", "Internship: Backend (Python)"),
+    ("internship", "Trainee Software Engineer"),
+    ("internship", "Стажёр-разработчик Python"),
+    ("internship", "Стажер бэкенд-разработки"),
+    ("internship", "Стажировка в команду бэкенда"),
+    ("internship", "Практикант-программист"),
     ("management", "Руководитель отдела разработки"),
     ("management", "Начальник ИТ-управления"),
     ("management", "Директор по разработке"),
@@ -287,6 +296,12 @@ def test_example_blacklist_rejects_the_same_titles_as_the_default(monkeypatch, k
     "JavaScript-разработчик",           # lookaround (?!script) в other_lang примера
     "LLM Engineer",
     "Дата-инженер (ETL)",
+    # junior — целевой грейд, правило про стажировки его задевать НЕ должно
+    "Junior Python Developer",
+    "Джуниор бэкенд-разработчик",
+    # «intern» стоит целым словом: соседние слова с той же основой не ловятся
+    "Internal Tools Developer (Python)",
+    "International Payments Backend Engineer",
 ])
 def test_example_blacklists_keep_the_target_titles(monkeypatch, title):
     """Целевые вакансии пример НЕ отсеивает — иначе паритет достигался бы запретом всего."""

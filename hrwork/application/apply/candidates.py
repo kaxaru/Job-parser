@@ -158,6 +158,24 @@ APPLY_SENIOR_BLACKLIST = _rx("senior",
     r"|\bведущ|\bстарш|\bтимлид|\bteam.?lead\b|\blead\b|\bлид\b"
     r"|\bprincipal\b|принципал|\bstaff\b")
 
+# ── СТАЖИРОВКИ: ниже целевого грейда ───────────────────────────────────────────────────
+# Задано пользователем 08.08.2026. Отсекается стажировка, НЕ junior: junior — это штатная
+# позиция, ради которой отбор и настроен, а стажировка обычно означает срочный договор,
+# учебную нагрузку и оплату ниже рынка. Слова подобраны так, чтобы `junior` не задеть.
+#
+# Почему списком слов, а не префиксом `intern*`: `\bintern\b` ловит «Intern» и не ловит
+# «internal» и «international» (после `intern` идёт словесный символ), а `intern*` поймал бы
+# оба — «Internal Tools Developer» вылетел бы из отбора ни за что. `internship` вынесен
+# отдельным словом по той же причине.
+#
+# Известный побочный эффект: комбинированный тайтл «Junior/Intern Python Developer» будет
+# отсеян — правило смотрит на вхождение в тайтл, а не на «какой грейд главнее». Это
+# сознательно: такие вакансии почти всегда идут по стажёрской ставке. Нужно иначе — ключ
+# `internship` в профиле правится словами, исходник трогать не надо.
+APPLY_INTERNSHIP_BLACKLIST = _rx("internship",
+    r"\bintern\b|\binterns\b|\binternship|\btrainee\b"
+    r"|стаж[её]р|стажиров|практикант")
+
 # ── РУКОВОДЯЩИЕ должности: всё, что выше Lead ──────────────────────────────────────────
 # Задано пользователем 07.08.2026: интересны только стандартные инженерные позиции до
 # senior включительно. Грейдовый список выше ловит senior/lead, здесь — управленческая
@@ -279,6 +297,7 @@ class OutOfScope(Enum):
     конечным набором значений; голая строка здесь была бы тем же дефектом, что `tier: int`
     с магическим `0` до появления `ApplyTier`. Значение = подпись для человека."""
     SENIOR = "senior/lead"
+    INTERNSHIP = "стажировка"
     MANAGEMENT = "руководящая"
     NON_ENGINEERING = "не инженерная роль"
     QA = "QA"
@@ -303,6 +322,9 @@ def _no_target_marker(name: str) -> bool:
 # строка здесь плюс член OutOfScope, ветвление трогать не нужно.
 _SCOPE_RULES: tuple[tuple[OutOfScope, Callable[[str], bool]], ...] = (
     (OutOfScope.SENIOR,          lambda n: bool(APPLY_SENIOR_BLACKLIST.search(n))),
+    # Рядом с грейдовым правилом и до остальных: «Стажёр QA» интереснее назвать стажировкой,
+    # чем тестированием — причина уходит в лог и в сводку чистки очереди.
+    (OutOfScope.INTERNSHIP,      lambda n: bool(APPLY_INTERNSHIP_BLACKLIST.search(n))),
     (OutOfScope.MANAGEMENT,      _is_management),
     (OutOfScope.NON_ENGINEERING, lambda n: bool(APPLY_ROLE_BLACKLIST.search(n))),
     (OutOfScope.QA,              lambda n: bool(APPLY_QA_BLACKLIST.search(n))),

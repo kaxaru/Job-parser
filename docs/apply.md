@@ -180,7 +180,7 @@ _goto(url)
 
 Причина — **VO, а не строка-литерал** (`candidates.py::OutOfScope`): она уходит в логи и в
 сводку чистки очереди, то есть это доменное понятие с конечным набором значений. Значение
-enum = подпись для человека (`.label`): `senior/lead` · `руководящая` ·
+enum = подпись для человека (`.label`): `senior/lead` · `стажировка` · `руководящая` ·
 `не инженерная роль` · `QA` · `аналитик` · `ML/DS` · `DevOps/SRE` · `другой язык`.
 `clean_queue` печатает по ним `Counter` — видно, чем именно забивалась очередь.
 
@@ -188,14 +188,20 @@ enum = подпись для человека (`.label`): `senior/lead` · `ру
 виден целиком:
 
 1. `SENIOR` — `APPLY_SENIOR_BLACKLIST`: senior/сеньор/ведущий/старший/тимлид/lead/principal/staff
-2. `MANAGEMENT` — `_is_management` (см. ниже)
-3. `NON_ENGINEERING` — `APPLY_ROLE_BLACKLIST`: риск-аналитик/портфельный/планирование ресурсов
-4. `QA` — `APPLY_QA_BLACKLIST`, **безусловно**: стоит ДО аналитики и ML именно потому, что
+2. `INTERNSHIP` — `APPLY_INTERNSHIP_BLACKLIST`: intern/internship/trainee/стажёр/стажировка/
+   практикант. **Junior НЕ входит и входить не должен**: это штатная позиция, ради которой
+   отбор и настроен, а стажировка — срочный договор и ставка ниже рынка (задано 08.08.2026).
+   Слова стоят целиком, а не префиксом `intern*`: иначе «Internal Tools Developer»
+   и «International …» вылетали бы из отбора ни за что. Правило идёт вторым, чтобы «Стажёр QA»
+   попадал в сводку как стажировка, а не как тестирование
+3. `MANAGEMENT` — `_is_management` (см. ниже)
+4. `NON_ENGINEERING` — `APPLY_ROLE_BLACKLIST`: риск-аналитик/портфельный/планирование ресурсов
+5. `QA` — `APPLY_QA_BLACKLIST`, **безусловно**: стоит ДО аналитики и ML именно потому, что
    исключение для инженерных гибридов на него не распространяется
-5. `ANALYST` — `APPLY_ANALYST_BLACKLIST` при отсутствии `APPLY_TARGET_ENGINEERING` в тайтле
-6. `ML` — `APPLY_ML_BLACKLIST` при том же условии
-7. `DEVOPS` — `APPLY_DEVOPS_BLACKLIST` при отсутствии `_CODE_MARKER` (см. ниже)
-8. `OTHER_LANG` — `APPLY_LANG_BLACKLIST` при отсутствии «python» в тайтле: Java/C#/C++/PHP/
+6. `ANALYST` — `APPLY_ANALYST_BLACKLIST` при отсутствии `APPLY_TARGET_ENGINEERING` в тайтле
+7. `ML` — `APPLY_ML_BLACKLIST` при том же условии
+8. `DEVOPS` — `APPLY_DEVOPS_BLACKLIST` при отсутствии `_CODE_MARKER` (см. ниже)
+9. `OTHER_LANG` — `APPLY_LANG_BLACKLIST` при отсутствии «python» в тайтле: Java/C#/C++/PHP/
    Go/Scala/Ruby/Kotlin/Rust/1С/.NET (JS/TS/React **не** блокируют — Python-fullstack допустим)
 
 **Новое правило = строка в таблице плюс член `OutOfScope`.** Ветвление трогать не нужно —

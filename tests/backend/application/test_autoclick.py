@@ -921,3 +921,43 @@ def test_batch_budget_uses_the_reconciled_quota(batch_env, monkeypatch):
                         lambda *a, **k: tried.append(1) or autoclick.ApplyOutcome.APPLIED)
     assert autoclick._apply_batch(page=None, apply_limit=10, daily_cap=200) == 0
     assert tried == []
+
+
+# ─── Стажировки вне отбора, junior — в отборе (задано пользователем 08.08.2026) ──────
+# Стажировка ниже целевого грейда: срочный договор, учебная нагрузка, ставка ниже рынка.
+# Junior при этом штатная позиция, ради которой отбор и настроен, — правило обязано
+# различать их, а не резать «всё, что ниже middle».
+@pytest.mark.parametrize("name", [
+    "Python Developer Intern",
+    "Internship: Backend (Python)",
+    "Trainee Software Engineer",
+    "Стажёр-разработчик Python",
+    "Стажер бэкенд-разработки",
+    "Стажировка в команду бэкенда",
+    "Практикант-программист",
+])
+def test_internships_are_out_of_scope(name):
+    assert out_of_scope(name) is OutOfScope.INTERNSHIP
+
+
+@pytest.mark.parametrize("name", [
+    "Junior Python Developer",
+    "Джуниор бэкенд-разработчик",
+    "Python-разработчик (Junior)",
+])
+def test_junior_stays_in_scope(name):
+    assert out_of_scope(name) is None
+
+
+# `\bintern\b` целым словом: соседние слова с той же основой — обычные вакансии
+@pytest.mark.parametrize("name", [
+    "Internal Tools Developer (Python)",
+    "International Payments Backend Engineer",
+])
+def test_words_starting_with_intern_are_not_internships(name):
+    assert out_of_scope(name) is None
+
+
+def test_internship_wins_over_qa_in_the_reason(name="Стажёр QA Automation"):
+    # порядок таблицы значим: «Стажёр QA» интереснее назвать стажировкой, чем тестированием
+    assert out_of_scope(name) is OutOfScope.INTERNSHIP

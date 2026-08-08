@@ -135,7 +135,7 @@ def test_every_rule_key_is_wired(blacklists):
         (Path(__file__).parents[3] / "resume_profile.example.json").read_text(encoding="utf-8"))
     keys = {k for k in (example.get("blacklists") or {}) if not k.startswith("_")}
     # ключи, которые реально читает candidates.py
-    wired = {"senior", "management", "non_engineering", "qa", "analyst", "ml",
+    wired = {"senior", "internship", "management", "non_engineering", "qa", "analyst", "ml",
              "devops", "other_lang", "target_engineering"}
     assert keys == wired, f"в примере лишние/недостающие ключи: {keys ^ wired}"
 
