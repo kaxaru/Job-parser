@@ -13,13 +13,19 @@ import pytest
 from hrwork.presentation import server
 from hrwork.presentation.server import Resp, _Handler
 
+_LOCAL = {"Host": "127.0.0.1:8000"}    # заголовки легитимного запроса «от своей же страницы»
+
 
 def _bare_handler(path="/", command="GET", headers=None, body=b"", directory=None):
-    """_Handler без __init__ (иначе он полез бы слушать сокет). Ставим то, что нужно хендлеру."""
+    """_Handler без __init__ (иначе он полез бы слушать сокет). Ставим то, что нужно хендлеру.
+
+    `Host` подставляется по умолчанию: без него гард `_host_ok` (защита от DNS-rebinding)
+    отбил бы КАЖДЫЙ запрос, и тесты проверяли бы только гард. Свои заголовки — явным
+    аргументом; тесты гардов ниже так и делают."""
     h = _Handler.__new__(_Handler)
     h.path = path
     h.command = command
-    h.headers = headers or {}          # dict достаточно: код обращается только через .get(...)
+    h.headers = {**_LOCAL, **(headers or {})}   # dict достаточно: код зовёт только .get(...)
     h.rfile = io.BytesIO(body)
     if directory is not None:
         h.directory = directory        # translate_path маппит URL -> файл относительно него
@@ -106,6 +112,104 @@ def test_known_post_paths_dispatch_to_their_handlers(path, attr, marker):
     h._write = captured.append
     h.do_POST()
     assert captured[0] == Resp(299, marker)
+
+
+# ───────────── гарды источника: CSRF и DNS-rebinding (аудит 08.08.2026) ─────────────
+# POST здесь ДЕЙСТВУЕТ: /api/apply шлёт необратимый отклик работодателю, /api/marks
+# перезаписывает журнал отметок целиком. До фикса источник запроса не проверялся, и любая
+# открытая вкладка могла отправить и то, и другое simple-запросом без preflight.
+
+
+def _post(path=server._API_APPLY, headers=None):
+    """POST через do_POST с перехватом Resp. Хендлер подменён: до него дойти НЕ должно,
+    если гард сработал, — а если дошло, отличим по статусу 299."""
+    h = _bare_handler(path=path, command="POST", headers=headers)
+    h._marks_post = h._apply_post = lambda: Resp(299, b"reached handler")
+    captured = []
+    h._write = captured.append
+    h.do_POST()
+    return captured[0]
+
+
+@pytest.mark.parametrize("site", ["cross-site", "same-site"])
+def test_post_from_another_site_is_rejected(site):
+    # Sec-Fetch-Site шлют все современные браузеры; чужая страница -> 403 до хендлера.
+    assert _post(headers={"Sec-Fetch-Site": site}).status == 403
+
+
+@pytest.mark.parametrize("origin", [
+    "https://evil.example",
+    "http://evil.example:8000",
+    "http://127.0.0.1.evil.example",     # петлевой адрес как ПРЕФИКС чужого домена
+])
+def test_post_with_foreign_origin_is_rejected(origin):
+    assert _post(headers={"Origin": origin}).status == 403
+
+
+@pytest.mark.parametrize("site", ["same-origin", "none"])
+def test_post_from_own_page_passes(site):
+    # `none` — прямая навигация пользователем, не чужая страница.
+    r = _post(headers={"Sec-Fetch-Site": site, "Origin": "http://127.0.0.1:8000"})
+    assert r == Resp(299, b"reached handler")
+
+
+def test_post_without_browser_headers_passes():
+    """Ни Origin, ни Sec-Fetch-Site -> не браузер (curl, скрипт). Такой доступ
+    задокументирован как принятый риск: закрываем именно браузерный вектор."""
+    assert _post().status == 299
+
+
+@pytest.mark.parametrize("host", ["evil.example", "evil.example:8000", "10.0.0.5:8000"])
+def test_request_with_foreign_host_is_rejected(host):
+    """DNS-rebinding: сокет слушает 127.0.0.1, но браузер приходит с доменом атакующего,
+    и после ребиндинга его страница становится same-origin — то есть может ЧИТАТЬ ответы.
+    Отбиваем и POST, и GET."""
+    assert _post(headers={"Host": host}).status == 421
+    h = _bare_handler(path=server._API_CHATS, headers={"Host": host})
+    captured = []
+    h._write = captured.append
+    h.do_GET()
+    assert captured[0].status == 421
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8000", "localhost:8000", "[::1]:8000", "localhost"])
+def test_loopback_hosts_pass(host):
+    # IPv6 в Host идёт в скобках — urlsplit их снимает, rsplit по ':' сломался бы.
+    assert _bare_handler(headers={"Host": host})._host_ok() is True
+
+
+# ───────────── раздача data/: белый список (аудит 08.08.2026, п.2) ─────────────
+
+@pytest.mark.parametrize("name", [
+    "hh_state.json",          # живые куки сессии HH -> захват аккаунта
+    "hh_token.json",          # OAuth-токен
+    "chat_messages.json",     # переписка с рекрутёрами
+    "talanto_contacts.json",  # телефоны и telegram рекрутёров: чужие ПДн
+    "marks.json",
+    "vacancies_raw.json",
+    "reports/01_cities.csv",  # подкаталог
+    "browser_profile/Default/Cookies",
+])
+def test_sensitive_files_are_not_served(name):
+    assert _bare_handler(path=f"/{name}")._static_allowed() is False
+
+
+@pytest.mark.parametrize("name", [
+    "feed.html", "feed.css", "feed.js", "feed-data.js", "feed-desc.js",
+    "dashboard.html", "dashboard.css", "dashboard.js", "plotly-2.35.2.min.js",
+])
+def test_feed_and_dashboard_assets_are_served(name):
+    # Всё, что подключают templates/feed.html.j2 и templates/dashboard.html.j2.
+    assert _bare_handler(path=f"/{name}")._static_allowed() is True
+
+
+def test_disallowed_static_answers_404_not_403():
+    # 404, а не 403: ответ не должен подтверждать, что файл в data/ существует.
+    h = _bare_handler(path="/hh_state.json")
+    captured = []
+    h._write = captured.append
+    h.do_GET()
+    assert captured[0].status == 404
 
 
 # ─────────────────────────── лимит тела POST ───────────────────────────

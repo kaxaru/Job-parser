@@ -4,7 +4,7 @@
 import { coverLetter, coverTemplates } from './cover.js';
 import { loadDescriptions } from './marks.js';
 import {
-  SCHED_LABELS, STATUS_BTNS, ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, statusInfo, tagClr, tagInk,
+  SCHED_LABELS, STATUS_BTNS, ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, safeUrl, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
 
@@ -153,7 +153,7 @@ function cardHTML(v) {
   return `<div class="card${v.form_dead ? ' st-dead' : ''}" data-id="${esc(v.id)}"
      tabindex="0" role="button" aria-label="${esc(v.name)} — открыть карточку">
   <div class="tags">${tagsHTML(v.techs, 8)}</div>
-  <a class="card-title" href="${esc(v.url)}" target="_blank" rel="noopener noreferrer"
+  <a class="card-title" href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer"
      onclick="event.stopPropagation()">${esc(v.name)}</a>
   <div class="card-sub">${sub} ${freshBadge(v)}</div>
   <div class="card-status">${statusBadge(v)}</div>
@@ -315,7 +315,7 @@ export function showModal(v) {
     <div class="modal-head">
       <button class="modal-close" aria-label="Закрыть">&times;</button>
       <div class="modal-tags">${tagsHTML(v.techs)}</div>
-      <a class="modal-title" href="${esc(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.name)}</a>
+      <a class="modal-title" href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.name)}</a>
       <div class="modal-meta">${sub}</div>
       <div class="modal-sal"><span>${esc(salLine)}</span>${matchBadge(v)}</div>
     </div>
@@ -325,7 +325,7 @@ export function showModal(v) {
     </div>
     <div class="modal-foot">
       <span class="apply-label">Откликнуться:</span>
-      <a class="modal-hh-btn" href="${esc(v.url)}" target="_blank" rel="noopener noreferrer"
+      <a class="modal-hh-btn" href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer"
          title="Открыть вакансию на ${esc(portal)} и откликнуться вручную">🌐 на ${esc(portal)}</a>
       ${canBg ? `<button class="modal-apply-btn" id="m-apply" data-id="${esc(v.id)}"
         data-url="${esc(v.url)}" title="Откликнуться в фоне через локальный сервер (Playwright) + письмо из ленты">

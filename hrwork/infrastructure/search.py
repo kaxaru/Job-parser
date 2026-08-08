@@ -58,9 +58,17 @@ _FRESH_WHERE = {
     "recent": f"created_at IS NOT NULL AND {_AGE} > {FRESH_DAYS} AND {_AGE} <= {GHOST_DAYS}",
     "ghost":  f"created_at IS NOT NULL AND {_AGE} > {GHOST_DAYS}",
 }
+# Описание с ЭКРАНИРОВАННЫМ HTML. Сниппет — единственное поле выдачи, которое страница
+# поиска вставляет в DOM без `esc()` (ради подсветки `<mark>`), поэтому безопасность
+# держится здесь: экранируем ДО ts_headline, чтобы его теги остались единственной разметкой.
+# Без этого незакрытый тег в описании (`<img src=x onerror=…` без `>`) переживал очистку
+# `sources/hh.py::_TAG_RE` (`<[^>]+>`) и исполнялся на 127.0.0.1 — том же origin, где живут
+# /api/apply и раздача data/ (аудит 08.08.2026, п.3). Порядок замен важен: `&` первым.
+_ESC_DESC = ("replace(replace(replace(coalesce(description, ''), "
+             "'&', '&amp;'), '<', '&lt;'), '>', '&gt;')")
 # Сниппет с подсветкой совпадений: 2 фрагмента, <mark>…</mark> (только в FTS-режиме).
 _HEADLINE = (
-    "ts_headline('russian', coalesce(description, ''), q, "
+    f"ts_headline('russian', {_ESC_DESC}, q, "
     "'StartSel=<mark>,StopSel=</mark>,MaxFragments=2,MaxWords=25,MinWords=12,ShortWord=2')"
 )
 
@@ -110,7 +118,7 @@ _FTS = _Mode(
 _PLAIN = _Mode(
     source=TABLE,
     rank="NULL::real",
-    snippet="left(coalesce(description, ''), 180) || '…'",   # начало описания -> «…» в конце
+    snippet=f"left({_ESC_DESC}, 180) || '…'",   # начало описания -> «…» в конце (тоже экранируем)
     order="sal_mid DESC NULLS LAST, id",   # id — тай-брейкер, см. _FTS.order
 )
 

@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import {
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
   countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, matchColor, matchInk,
+  safeUrl,
   isDiscard, isInvited,
   journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
 } from '../../src/feed/model.js';
@@ -43,6 +44,32 @@ describe('esc — экранирование HTML', () => {
   it('null/undefined → пустая строка', () => {
     assert.equal(esc(null), '');
     assert.equal(esc(undefined), '');
+  });
+});
+
+/* href берётся из выдачи портала (чужие данные), а esc схему не трогает — аудит 08.08.2026. */
+describe('safeUrl — схема ссылки из данных портала', () => {
+  it('http и https проходят', () => {
+    assert.equal(safeUrl('https://hh.ru/vacancy/1'), 'https://hh.ru/vacancy/1');
+    assert.equal(safeUrl('http://arbeitnow.com/x'), 'http://arbeitnow.com/x');
+  });
+  it('javascript: не проходит', () => {
+    assert.equal(safeUrl('javascript:alert(1)'), '#');
+    assert.equal(safeUrl('  JavaScript:alert(1)'), '#');
+  });
+  it('data: и прочие схемы не проходят', () => {
+    assert.equal(safeUrl('data:text/html,<script>alert(1)</script>'), '#');
+    assert.equal(safeUrl('vbscript:msgbox(1)'), '#');
+    assert.equal(safeUrl('//evil.example/x'), '#');
+  });
+  it('пусто/null → #', () => {
+    assert.equal(safeUrl(''), '#');
+    assert.equal(safeUrl(null), '#');
+    assert.equal(safeUrl(undefined), '#');
+  });
+  it('кавычка в url экранируется, из атрибута не вырваться', () => {
+    assert.equal(safeUrl('https://x.io/a"onmouseover="alert(1)'),
+                 'https://x.io/a&quot;onmouseover=&quot;alert(1)');
   });
 });
 

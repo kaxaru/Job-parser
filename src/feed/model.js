@@ -8,6 +8,15 @@ export function esc(s) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* URL для href. `esc()` экранирует кавычки и скобки, но СХЕМУ не трогает: `javascript:…`
+   пережил бы его целиком и сработал по клику. Ссылки в карточках приходят из выдачи
+   порталов как есть (`web3career.py`: `url=str(it.get("apply_url") or "")`, и так у пяти
+   адаптеров), то есть это чужие данные. Пускаем только http(s), остальное -> '#'. */
+export function safeUrl(u) {
+  const s = String(u ?? '').trim();
+  return /^https?:\/\//i.test(s) ? esc(s) : '#';
+}
+
 /* ── Валюты: курсы (per-USD) и алиасы приходят из feed-data.js (FX_RATES/FX_ALIAS).
    В тестах их нет — читаем через guard, базовые алиасы вшиты. ── */
 const CUR_SYMBOL = { RUB: '₽', USD: '$', EUR: '€' };

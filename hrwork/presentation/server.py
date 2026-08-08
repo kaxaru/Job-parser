@@ -17,12 +17,13 @@ import gzip
 import json
 import mimetypes
 import os
+import re
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
 from typing import Any, NamedTuple
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 from hrwork.application.apply.chat import chat_class
 from hrwork.application.apply.forms.form_status import FormSweepStatus
@@ -39,6 +40,22 @@ _API_CHATS = "/api/chats"          # переписка: что ответил �
 _SRC_DIR = DATA_DIR.parent / "src"          # фронт-исходники (страница поиска)
 _GZIP_EXT = {".html", ".js", ".css", ".json", ".svg", ".txt"}   # текст -> жмём
 _MAX_BODY = 1 << 20                          # 1 МБ — потолок тела POST (marks.json мал)
+
+# ─────────────────────── Гарды: что отдаём и кого слушаем ───────────────────────
+# Раздаём из data/ ТОЛЬКО артефакты ленты и дашборда — белым списком, а не по расширению.
+# Раньше каталог отдавался целиком (`directory=DATA_DIR`), и вместе с feed.js наружу
+# смотрели hh_state.json (живые куки HH), hh_token.json (OAuth), chat_messages.json
+# и talanto_contacts.json (чужие ПДн): `GET /hh_state.json` = захват аккаунта (аудит 08.08.2026).
+_ALLOWED_STATIC = frozenset({
+    "feed.html", "feed.css", "feed.js", "feed-data.js", "feed-desc.js",
+    "dashboard.html", "dashboard.css", "dashboard.js",
+})
+_ALLOWED_STATIC_RX = re.compile(r"^plotly-[\d.]+\.min\.js$")   # качается _ensure_plotly
+
+# Петлевые имена. Сервер слушает 127.0.0.1, но браузер приходит с тем Host, который набрали:
+# при DNS-rebinding это будет домен атакующего, и тогда его страница становится same-origin
+# и МОЖЕТ читать ответы. Поэтому чужой Host отбиваем независимо от адреса сокета.
+_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 # Кэш сжатых файлов: путь -> (mtime, size, gz-байты). Инвалидируется по mtime/size.
 _GZIP_CACHE: dict[str, tuple[float, int, bytes]] = {}
@@ -75,15 +92,40 @@ def _gzipped(fpath: Path, st: os.stat_result) -> bytes:
     return body
 
 
+def _hostname(value: str) -> str:
+    """Хост из `Host:`/`Origin:` без порта. Через urlsplit — он корректно снимает скобки
+    у IPv6 (`[::1]:8000` -> `::1`), в отличие от rsplit по двоеточию."""
+    v = value.strip()
+    if "//" not in v:
+        v = "//" + v
+    try:
+        return (urlsplit(v).hostname or "").lower()
+    except ValueError:            # мусорный заголовок — считаем чужим
+        return ""
+
+
 class _Handler(SimpleHTTPRequestHandler):
     # ───────────────────────── маршрутизация ─────────────────────────
     def do_GET(self) -> None:
+        if not self._host_ok():
+            return self._write(Resp(421, b"misdirected request"))
         route = _GET_ROUTES.get(self._path())
         if route:
             return self._write(route(self))          # точный маршрут -> Resp
         return self._serve_static()                  # всё прочее -> статика из data/
 
     def do_POST(self) -> None:
+        # POST здесь ДЕЙСТВУЕТ: /api/apply шлёт необратимый отклик работодателю,
+        # /api/marks перезаписывает журнал отметок целиком. До 08.08.2026 источник запроса
+        # не проверялся, и любая открытая вкладка могла отправить и то, и другое —
+        # simple request без preflight (аудит 08.08, п.1 и п.4).
+        if not self._host_ok():
+            return self._write(Resp(421, b"misdirected request"))
+        if not self._same_origin():
+            log.warning("POST {} отбит: чужой источник (Origin={!r}, Sec-Fetch-Site={!r})",
+                        self._path(), self.headers.get("Origin"),
+                        self.headers.get("Sec-Fetch-Site"))
+            return self._write(Resp(403, b"cross-origin POST rejected"))
         path = self._path()
         if path == _API:
             return self._write(self._marks_post())
@@ -93,6 +135,29 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def _path(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
+
+    # ───────────────────────── гарды источника ─────────────────────────
+    def _host_ok(self) -> bool:
+        """`Host` — только петлевое имя. Отсекает DNS-rebinding: сокет слушает 127.0.0.1,
+        но браузер придёт с доменом атакующего, и после ребиндинга его страница станет
+        same-origin — то есть сможет ЧИТАТЬ ответы, а не только слать запросы."""
+        return _hostname(self.headers.get("Host") or "") in _LOCAL_HOSTS
+
+    def _same_origin(self) -> bool:
+        """Запрос инициирован страницей этого же сервера, а не сторонним сайтом.
+
+        `Sec-Fetch-Site` шлют все современные браузеры; `none` — прямая навигация
+        пользователем, `cross-site`/`same-site` — чужая страница. Отсутствие И этого
+        заголовка, И `Origin` означает не-браузерный клиент (curl, скрипт): такой доступ
+        документирован как принятый риск (`security.md`, «любой процесс на машине»),
+        закрываем именно браузерный вектор."""
+        site = (self.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin") or ""
+        if origin:
+            return _hostname(origin) in _LOCAL_HOSTS
+        return True
 
     # ─────────────────── прикладные хендлеры (-> Resp) ───────────────────
     def _marks_get(self) -> Resp:
@@ -211,10 +276,24 @@ class _Handler(SimpleHTTPRequestHandler):
     def _serve_static(self) -> None:
         if self.path in ("/", ""):
             self.path = "/feed.html"
+        if not self._static_allowed():
+            # 404, а не 403: не подтверждаем существование файла в data/
+            return self._write(Resp(404, b"not found"))
         gz = self._gzip_resp()
         if gz is not None:
             return self._write(gz)
         return super().do_GET()                       # не-текст / без gzip -> стрим stdlib
+
+    def _static_allowed(self) -> bool:
+        """Только артефакты ленты и дашборда (`_ALLOWED_STATIC`), и только из КОРНЯ data/.
+
+        Белый список, а не чёрный: в data/ лежат куки сессии, OAuth-токен, переписка
+        и контакты рекрутёров, и любое новое состояние по умолчанию должно быть закрыто,
+        а не ждать, пока кто-то вспомнит дописать запрет."""
+        rel = self._path().lstrip("/")
+        if "/" in rel:                     # подкаталоги (reports/, browser_profile/) — мимо
+            return False
+        return rel in _ALLOWED_STATIC or bool(_ALLOWED_STATIC_RX.match(rel))
 
     def _gzip_resp(self) -> "Resp | None":
         if "gzip" not in self.headers.get("Accept-Encoding", ""):

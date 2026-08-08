@@ -86,7 +86,10 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+/* href из данных портала: esc схему не трогает, `javascript:…` пережил бы его. */
+const safeUrl = u => /^https?:\/\//i.test(String(u ?? '').trim()) ? esc(u) : '#';
 const fmtSal = r => {
   const c = r.currency === 'RUR' ? '₽' : (r.currency || '');
   const f = r.sal_from?.toLocaleString('ru'), t = r.sal_to?.toLocaleString('ru');
@@ -135,7 +138,7 @@ async function run() {
     `Найдено ${data.total}` + (q ? ` · ранжировано по релевантности (ts_rank)` : ` · сортировка по зарплате`);
 
   $('#results').innerHTML = data.results.map(r => {
-    const title = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
+    const title = r.url ? `<a href="${safeUrl(r.url)}" target="_blank" rel="noopener">${esc(r.name)}</a>` : esc(r.name);
     const techs = (r.techs || []).map(t => `<span class="tag">${esc(t)}</span>`).join('');
     return `<div class="card">
       <h3>${title}</h3>
@@ -147,6 +150,9 @@ async function run() {
         ${ageBadge(r)}
         ${r.rank != null ? `<span class="rank">rank ${r.rank}</span>` : ''}
       </div>
+      <!-- Единственное поле БЕЗ esc — ради подсветки <mark> из ts_headline.
+           Безопасно потому, что описание экранируется в SQL ДО подсветки
+           (search.py::_ESC_DESC): другой разметки в сниппете быть не может. -->
       <div class="snippet">${r.snippet || ''}</div>
       ${techs ? `<div class="techs">${techs}</div>` : ''}
     </div>`;
