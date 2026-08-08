@@ -19,7 +19,7 @@ export function safeUrl(u) {
 
 /* ── Валюты: курсы (per-USD) и алиасы приходят из feed-data.js (FX_RATES/FX_ALIAS).
    В тестах их нет — читаем через guard, базовые алиасы вшиты. ── */
-const CUR_SYMBOL = { RUB: '₽', USD: '$', EUR: '€' };
+const CUR_SYMBOL = { RUB: '₽', USD: '$', EUR: '€', BYN: 'Br' };
 const BASE_ALIAS = { RUR: 'RUB', USDT: 'USD', BYR: 'BYN' };
 const fxRates = () => (typeof FX_RATES !== 'undefined' && FX_RATES) || {};
 const fxAlias = () => ({ ...BASE_ALIAS, ...((typeof FX_ALIAS !== 'undefined' && FX_ALIAS) || {}) });
@@ -38,6 +38,23 @@ export function convert(amount, from, to) {
   const r = fxRates(), rf = r[f], rt = r[t];
   if (!rf || !rt) return amount;               /* неизвестная валюта -> без конверсии */
   return amount / rf * rt;                      /* amount(f) -> USD -> t */
+}
+
+/** Вилка записи в валюте `cur` для СРАВНЕНИЯ (фильтр, сортировка) — или null, если сравнить
+    нельзя: зарплаты нет вовсе либо валюта не названа/без курса.
+
+    Тот же контракт, что у `net/rates.py::to_rub` на бэкенде, и заведён он ровно потому, что
+    `convert` для показа возвращает число КАК ЕСТЬ, когда курса нет. Для отрисовки это честно
+    (рядом не будет чужого символа), а для сравнения — нет: 08.08.2026 в срезе нашлось 169
+    вилок без валюты (talanto 27, web3 142) с суммами вида 1300 и 10000, очевидно долларовыми.
+    Сравнивать их с рублёвым ползунком значит считать $10 000/мес десятью тысячами рублей. */
+export function comparableSalary(v, cur = 'RUB') {
+  if (v.sal_mid == null) return null;
+  const from = resolveCur(v.currency), to = resolveCur(cur);
+  if (from === to) return v.sal_mid;
+  const r = fxRates();
+  if (!r[from] || !r[to]) return null;         /* единица измерения неизвестна — не сравниваем */
+  return convert(v.sal_mid, v.currency, cur);
 }
 
 /** Зарплата (уже месячная на этапе сборки) в валюте `cur`, суффикс «/мес». Валюта записи
@@ -441,7 +458,7 @@ export function filterVacancies(vacancies, f) {
        exp_id; сравнение по подписи ломалось бы от переименования в EXP_LABELS */
     if (f.exps.size > 0 && !f.exps.has(v.exp_id)) return false;
     if (f.minSal > 0 || f.maxSal < f.salMax) {
-      const mid = v.sal_mid === null ? null : convert(v.sal_mid, v.currency, f.displayCur || 'RUB');
+      const mid = comparableSalary(v, f.displayCur || 'RUB');
       if (mid === null) {
         if (f.minSal > 0) return false;
       } else if (mid < f.minSal || mid > f.maxSal) {
@@ -482,7 +499,7 @@ export function filterVacancies(vacancies, f) {
      ВТОРИЧНЫЙ (или единственный, если совпадение выключено). Можно врубить вместе.
      pct кэшируем по вакансии — resumeMatch раз на запись, а не на каждое сравнение. */
   const salDir = f.sort === 'desc' ? -1 : f.sort === 'asc' ? 1 : 0;
-  const salVal = v => (v.sal_mid === null ? null : convert(v.sal_mid, v.currency, f.displayCur || 'RUB'));
+  const salVal = v => comparableSalary(v, f.displayCur || 'RUB');
   const salCmp = (a, b) => {
     const am = salVal(a), bm = salVal(b);
     if (am === null && bm === null) return 0;

@@ -12,6 +12,7 @@ import {
   safeUrl,
   isDiscard, isInvited,
   journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
+  comparableSalary,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте.
@@ -795,5 +796,48 @@ describe('isDiscard / isInvited — наборы состояний едины �
   it('мусор на входе не роняет', () => {
     assert.equal(isDiscard(null), false);
     assert.equal(isInvited(undefined), false);
+  });
+});
+
+/* Инцидент 08.08.2026: вилка без названной валюты сравнивалась как рубли.
+   В срезе 109 596 вакансий таких 169 — talanto (27) и web3 (142), суммы вида 1300 и 10000,
+   очевидно долларовые. $10 000/мес весили 10 000 ₽: уезжали в конец сортировки и прятались
+   фильтром «зарплата от», то есть терялись самые дорогие удалённые вакансии выдачи.
+   Контракт тот же, что у `net/rates.py::to_rub`: нет единицы измерения -> нет числа. */
+describe('comparableSalary — сравнимая вилка или null', () => {
+  it('валюта записи совпадает с целевой -> число как есть, курсы не нужны', () => {
+    assert.equal(comparableSalary(vac({ sal_mid: 250000, currency: 'RUR' }), 'RUB'), 250000);
+  });
+
+  it('названная валюта с курсом -> конвертируется', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(comparableSalary(vac({ sal_mid: 10000, currency: 'USD' }), 'RUB'), 900000);
+    delete globalThis.FX_RATES;
+  });
+
+  it('валюта не названа -> null, а НЕ исходное число', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(comparableSalary(vac({ sal_mid: 10000, currency: '' }), 'RUB'), null);
+    delete globalThis.FX_RATES;
+  });
+
+  it('валюта названа, но курса нет -> null', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(comparableSalary(vac({ sal_mid: 35000000, currency: 'UZS' }), 'RUB'), null);
+    delete globalThis.FX_RATES;
+  });
+
+  it('зарплаты нет вовсе -> null', () => {
+    assert.equal(comparableSalary(vac({ sal_mid: null, currency: 'USD' }), 'RUB'), null);
+  });
+
+  it('фильтр «зарплата до» не выбрасывает вилку без валюты как копеечную', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    const noCur = vac({ id: 'w3', sal_mid: 10000, currency: '' });
+    const cheap = vac({ id: 'ru', sal_mid: 10000, currency: 'RUR' });
+    const f = flt({ minSal: 0, maxSal: 5000, salMax: 2090000, displayCur: 'RUB' });
+    const ids = filterVacancies([noCur, cheap], f).map(v => v.id);
+    assert.deepEqual(ids, ['w3']);   // рублёвые 10 000 не проходят потолок 5 000, безвалютная — не сравнивается
+    delete globalThis.FX_RATES;
   });
 });

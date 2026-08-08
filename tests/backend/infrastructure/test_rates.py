@@ -113,3 +113,32 @@ def test_broken_json_with_200_is_a_failure(monkeypatch):
 def test_response_without_success_marker_is_a_failure(monkeypatch):
     _run(monkeypatch, _Proc(stdout=b'{"result": "error", "error-type": "invalid-key"}'))
     assert rates._fetch() is None
+
+
+# ─── Пустая валюта не рубли (инцидент 08.08.2026) ─────────────────────────────
+# `to_rub` подставлял "RUB", когда валюта не названа, с обоснованием «HH по умолчанию
+# рублёвый». Для hh верно, для восьми глобальных порталов — нет: в срезе 109 596 вакансий
+# нашлось 169 вилок без валюты, и все они у talanto (27) и web3 (142), с суммами вида
+# 1300 и 10000 — очевидно долларовыми. Занижение примерно в 90 раз уводило самые дорогие
+# удалённые вакансии в конец сортировки и прятало их фильтром «зарплата от».
+_RATES = {"USD": 1.0, "RUB": 90.0, "EUR": 0.92, "BYN": 3.3}
+
+
+@pytest.mark.parametrize(("currency", "expected"), [
+    ("USD", 900_000),      # 10 000 USD * 90 RUB/USD
+    ("RUB", 10_000),
+    ("RUR", 10_000),       # алиас HH
+    ("EUR", 978_261),      # 10 000 / 0.92 * 90, round()
+    ("BYN", 272_727),      # 10 000 / 3.3 * 90, round()
+])
+def test_to_rub_converts_named_currency(currency: str, expected: int) -> None:
+    assert rates.to_rub(10_000, currency, _RATES) == expected
+
+
+@pytest.mark.parametrize("currency", ["", None, "   "])
+def test_unnamed_currency_is_not_comparable_rather_than_roubles(currency: str | None) -> None:
+    assert rates.to_rub(10_000, currency, _RATES) is None
+
+
+def test_currency_without_a_rate_is_not_comparable() -> None:
+    assert rates.to_rub(10_000, "UZS", _RATES) is None
