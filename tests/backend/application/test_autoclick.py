@@ -998,3 +998,54 @@ def test_description_techs_cannot_smuggle_a_chemist_past_the_title_rule():
     assert _detect_role("Инженер-химик", []).is_it is False
     assert _detect_role("Инженер-химик", ["Python"]).is_it is True     # так и просочилось
     assert out_of_scope("Инженер-химик") is OutOfScope.OTHER_ENGINEERING
+
+
+# ─── Эксплуатация и не-инженерные роли (разбор журнала 10.08.2026) ──────────────
+# В журнале 2979 откликов нашлось 112 на поддержку/админов/сети и 27 на продажи,
+# контент и преподавание. Владелец подтвердил: это соседние профессии, не его.
+@pytest.mark.parametrize("name", [
+    "Специалист поддержки пользователей Yandex Observability Platform",
+    "Инженер сопровождения",
+    "Support Specialist",
+    "Сетевой инженер",
+    "Системный инженер",
+    "Специалист Битрикс24 / Администратор CRM",
+])
+def test_operations_roles_are_out_of_scope(name):
+    assert out_of_scope(name) is OutOfScope.OPERATIONS
+
+
+@pytest.mark.parametrize("name", [
+    "Ночной Python-разработчик/инженер сопровождения",
+    "Support Engineer (Python/Django)",
+    "Программист поддержки биллинга",
+])
+def test_code_marker_lifts_the_operations_ban(name):
+    """Освобождение по маркеру кода — не перестраховка, а замер: без него правило
+    выбрасывало питонистов, у которых слово «сопровождение»/«support» оказалось в тайтле."""
+    assert out_of_scope(name) is None
+
+
+@pytest.mark.parametrize("name", [
+    "Менеджер по продажам в детскую IT школу",
+    "Аккаунт-менеджер",
+    "Менеджер продукта платформы данных (LakeHouse)",
+    "Преподаватель по Python",
+    "Доцент кафедры информатики",
+    "Рилсмейкер / Монтажер коротких роликов в IT",
+    "Контент-менеджер",
+    "UX-дизайнер",
+])
+def test_non_engineering_roles_are_out_of_scope(name):
+    assert out_of_scope(name) is OutOfScope.NON_ENGINEERING
+
+
+@pytest.mark.parametrize("name", [
+    "Администратор баз данных (DBA)",        # базы ближе к бэкенду — оставлены сознательно
+    "PostgreSQL Database Engineer / DBA",
+    "Пентестер",                              # ИБ оставлена сознательно
+    "AppSec-инженер",
+    "Python-разработчик",
+])
+def test_roles_the_owner_kept_stay_in_scope(name):
+    assert out_of_scope(name) is None

@@ -167,6 +167,7 @@ _DEFAULT_RULE = {                       # правило -> имя дефолт�
     "senior": "APPLY_SENIOR_BLACKLIST",
     "internship": "APPLY_INTERNSHIP_BLACKLIST",
     "other_engineering": "APPLY_OTHER_ENGINEERING_BLACKLIST",
+    "operations": "APPLY_OPERATIONS_BLACKLIST",
     "management": "APPLY_MANAGEMENT_BLACKLIST",
     "non_engineering": "APPLY_ROLE_BLACKLIST",
     "qa": "APPLY_QA_BLACKLIST",
@@ -207,6 +208,12 @@ _CANON_TITLES = [
     # тайтл через техи из описания (hh.ru/vacancy/135163990).
     ("other_engineering", "Инженер-химик"),
     ("other_engineering", "Химик-технолог"),
+    # 10.08.2026: разбор журнала откликов — 112 ушло эксплуатации, 27 не-инженерным ролям
+    ("operations", "Специалист поддержки пользователей"),
+    ("operations", "Сетевой инженер"),
+    ("non_engineering", "Менеджер по продажам"),
+    ("non_engineering", "Преподаватель информатики"),
+    ("non_engineering", "Контент-менеджер"),
     ("management", "Руководитель отдела разработки"),
     ("management", "Начальник ИТ-управления"),
     ("management", "Директор по разработке"),
