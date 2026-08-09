@@ -367,7 +367,7 @@ def test_clean_queue_drops_titles_outside_the_target_scope(monkeypatch):
         "2": {"name": "QA Automation Engineer (Python)"},
         "3": {"name": "Руководитель группы разработки"},
         "4": {"name": "Аналитик данных"},
-        "5": {"name": "Senior Python разработчик"},
+        "5": {"name": "Ведущий Python разработчик"},   # lead и выше (senior с 10.08 в области)
     })
     monkeypatch.setattr(forms.store, "form_cache", dict)
     monkeypatch.setattr(forms.store, "applied_ids", set)

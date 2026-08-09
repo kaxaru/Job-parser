@@ -191,7 +191,7 @@ python hh.py autoclick --sync-status              # статусы и чаты, 
 Всё настраивается в `resume_profile.json` — исходники править не нужно. Пояснения к каждому
 ключу лежат в `resume_profile.example.json`, полный разбор — [`docs/config.md`](docs/config.md).
 
-**Блеклисты** (`blacklists`) — какие вакансии не брать. Двенадцать ключей: `senior`,
+**Блеклисты** (`blacklists`) — какие вакансии не брать. Двенадцать ключей: `lead`,
 `internship`, `other_engineering`, `operations`, `management`, `non_engineering`, `qa`,
 `analyst`, `ml`, `devops`, `other_lang` и `target_engineering` (последний — исключение, а не запрет: снимает `analyst` и `ml`).
 Значение — **список слов**, регулярки писать не нужно:

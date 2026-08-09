@@ -220,11 +220,11 @@ def test_keeps_fresh_and_undated():
 
 
 @pytest.mark.parametrize("name", [
-    "Senior Python разработчик", "Ведущий backend-разработчик Python",
-    "Старший Python-разработчик", "Python Team Lead", "Python Backend (Lead)",
+    "Ведущий backend-разработчик Python",
+    "Python Team Lead", "Python Backend (Lead)",
     "Тимлид Python",
 ])
-def test_blacklist_senior_grades(name):
+def test_blacklist_lead_grades_and_above(name):
     assert pick_candidates([_raw(name=name)], marks={}, limit=10) == []
 
 
@@ -261,7 +261,7 @@ def test_engineer_noun_before_management_word_keeps_the_vacancy(name):
 # ── out_of_scope: единый предикат отбора по тайтлу (его же зовёт forms.clean_queue) ──
 # Причина — VO (OutOfScope), а не строка: она уходит в логи и сводки, набор значений конечен.
 @pytest.mark.parametrize("name, expected", [
-    ("Senior Python разработчик",          OutOfScope.SENIOR),
+    ("Ведущий Python разработчик",         OutOfScope.LEAD),
     ("Руководитель группы разработки",     OutOfScope.MANAGEMENT),
     ("Риск-аналитик (проект ПВР)",         OutOfScope.NON_ENGINEERING),
     ("QA Automation Engineer (Python)",    OutOfScope.QA),
@@ -1049,3 +1049,44 @@ def test_non_engineering_roles_are_out_of_scope(name):
 ])
 def test_roles_the_owner_kept_stay_in_scope(name):
     assert out_of_scope(name) is None
+
+
+# ─── Граница грейда: senior разблокирован 10.08.2026 ───────────────────────────
+# Владелец: «отсекать только lead и выше». Граница проходит между «сам себе задачи»
+# и «отвечаю за чужие», поэтому «старший» ушёл вместе с senior (это его прямой перевод),
+# а «ведущий» остался — это lead.
+@pytest.mark.parametrize("name", [
+    "Senior Python Developer",
+    "Sr. Python Developer",
+    "Сеньор Python-разработчик",
+    "Синьор бэкенд-разработчик",
+    "Старший разработчик Python",
+    "Middle/Senior Python-разработчик",
+])
+def test_senior_titles_are_in_scope(name):
+    assert out_of_scope(name) is None
+
+
+@pytest.mark.parametrize("name", [
+    "Ведущий инженер-программист",
+    "Тимлид команды бэкенда",
+    "Team Lead (Python)",
+    "Lead Backend Engineer",
+    "Технический лид",
+    "Principal Engineer",
+    "Staff Engineer",
+    "Принципал-инженер",
+])
+def test_lead_and_above_stay_out_of_scope(name):
+    assert out_of_scope(name) is OutOfScope.LEAD
+
+
+@pytest.mark.parametrize("name", [
+    "Lead/Senior fullstack разработчик",
+    "Старший (ведущий) программист",
+    "Senior/TeamLead Python-разработчик",
+])
+def test_combined_titles_are_judged_by_the_higher_part(name):
+    # Комбинированный тайтл отсекается по СТАРШЕЙ части: иначе «Lead/Senior» проскочил бы
+    # как senior, хотя это позиция с ответственностью за чужие задачи.
+    assert out_of_scope(name) is OutOfScope.LEAD

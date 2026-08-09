@@ -164,7 +164,7 @@ def test_every_example_key_is_actually_read():
 _EXAMPLE_BLACKLISTS = json.loads(_EXAMPLE.read_text(encoding="utf-8"))["blacklists"]
 
 _DEFAULT_RULE = {                       # правило -> имя дефолтного регекса в candidates.py
-    "senior": "APPLY_SENIOR_BLACKLIST",
+    "lead": "APPLY_LEAD_BLACKLIST",
     "internship": "APPLY_INTERNSHIP_BLACKLIST",
     "other_engineering": "APPLY_OTHER_ENGINEERING_BLACKLIST",
     "operations": "APPLY_OPERATIONS_BLACKLIST",
@@ -179,23 +179,17 @@ _DEFAULT_RULE = {                       # правило -> имя дефолт�
 }
 
 _CANON_TITLES = [
-    ("senior", "Senior Python Developer"),
-    # ДРЕЙФ 08.08.2026 (закрыт): «Sr.» и «принципал» знал только словарь грейдов
-    # `domain/grade.py::_TITLE_RX`, а дефолт `candidates.py` — нет. «Sr. Python Developer»
-    # проходил отбор как рядовая вакансия, и в том же прогоне считался senior при ответе
-    # про деньги. Теперь оба слова есть и в дефолте, и в примере.
-    ("senior", "Sr. Python Developer"),
-    ("senior", "Принципал-инженер"),
-    ("senior", "Сеньор Python-разработчик"),
-    ("senior", "Синьор бэкенд-разработчик"),
-    ("senior", "Ведущий инженер-программист"),
-    ("senior", "Старший разработчик Python"),
-    ("senior", "Тимлид команды бэкенда"),
-    ("senior", "Team Lead (Python)"),
-    ("senior", "Lead Backend Engineer"),
-    ("senior", "Технический лид"),
-    ("senior", "Principal Engineer"),
-    ("senior", "Staff Engineer"),
+    # 10.08.2026: senior РАЗБЛОКИРОВАН — правило отсекает только lead и выше. Здесь
+    # остались тайтлы этой границы; senior-тайтлы переехали в keep-набор ниже и обязаны
+    # проходить. «Принципал» и «staff» — это выше lead, поэтому остались.
+    ("lead", "Принципал-инженер"),
+    ("lead", "Ведущий инженер-программист"),
+    ("lead", "Тимлид команды бэкенда"),
+    ("lead", "Team Lead (Python)"),
+    ("lead", "Lead Backend Engineer"),
+    ("lead", "Технический лид"),
+    ("lead", "Principal Engineer"),
+    ("lead", "Staff Engineer"),
     # Стажировки отсекаются с 08.08.2026, junior — НЕТ (см. keep-набор ниже).
     ("internship", "Python Developer Intern"),
     ("internship", "Internship: Backend (Python)"),
@@ -308,6 +302,11 @@ def test_example_blacklist_rejects_the_same_titles_as_the_default(monkeypatch, k
     "JavaScript-разработчик",           # lookaround (?!script) в other_lang примера
     "LLM Engineer",
     "Дата-инженер (ETL)",
+    # senior разблокирован 10.08.2026: эти тайтлы обязаны ПРОХОДИТЬ
+    "Senior Python Developer",
+    "Sr. Python Developer",
+    "Сеньор Python-разработчик",
+    "Старший разработчик Python",
     # junior — целевой грейд, правило про стажировки его задевать НЕ должно
     "Junior Python Developer",
     "Джуниор бэкенд-разработчик",

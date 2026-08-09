@@ -19,7 +19,8 @@ from hrwork.application.apply import candidates, cover
 
 # Тайтлы-эталоны: на дефолтах оба обязаны отсеиваться (см. test_autoclick.py).
 _QA_TITLE = "QA Automation Engineer (Python)"
-_SENIOR_TITLE = "Senior Python разработчик"
+# 10.08.2026 senior разблокирован — граница проходит по lead и выше.
+_LEAD_TITLE = "Ведущий Python разработчик"
 _DEFAULT_COVER = ("Здравствуйте! Заинтересовала вакансия Data Engineer в компании Ozon. "
                   "Буду рад обсудить детали.")
 
@@ -76,14 +77,14 @@ def test_profile_can_switch_the_qa_rule_off(monkeypatch, module_constants_with_p
 
 @pytest.mark.parametrize("title, expected_reason", [
     (_QA_TITLE, "QA"),
-    (_SENIOR_TITLE, "senior/lead"),
+    (_LEAD_TITLE, "lead и выше"),
 ])
 def test_defaults_win_over_a_profile_that_switches_rules_off(title, expected_reason, monkeypatch,
                                                              module_constants_with_profile):
     """Модуль, скомпилированный на профиле «правила мне не нужны», после `apply_defaults`
     отбирает как дефолт. Ожидаемое — подпись причины литералом (`OutOfScope.label`)."""
-    off = module_constants_with_profile(candidates, {"APPLY_BLACKLISTS": {"qa": [], "senior": []}})
-    for name in ("APPLY_QA_BLACKLIST", "APPLY_SENIOR_BLACKLIST"):
+    off = module_constants_with_profile(candidates, {"APPLY_BLACKLISTS": {"qa": [], "lead": []}})
+    for name in ("APPLY_QA_BLACKLIST", "APPLY_LEAD_BLACKLIST"):
         monkeypatch.setattr(candidates, name, off[name])      # профиль владельца
     for name, value in module_constants_with_profile(candidates).items():
         monkeypatch.setattr(candidates, name, value)          # то же делает apply_defaults
