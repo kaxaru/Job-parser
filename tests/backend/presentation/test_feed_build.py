@@ -478,3 +478,25 @@ def test_fx_rates_pass_through_and_alias_canonizes_currency_codes(feed_globals):
     Тот же литерал уже стоит в `tests/feed/model.test.js::resolveCur`."""
     assert feed_globals["fx_rates"] == _FX
     assert feed_globals["fx_alias"] == {"RUR": "RUB", "BYR": "BYN", "USDT": "USD"}
+
+
+# ─── Чип «Не указан» (инцидент 10.08.2026) ──────────────────────────────────────
+# Фильтр Python + arbeitnow + опыт давал НОЛЬ вакансий даже при всех нажатых кнопках,
+# а без фильтра по опыту — 538. Пустой `exp_id` не совпадал ни с одним из четырёх кодов,
+# и «выбрано всё» переставало быть равносильно «фильтр снят». Задето 27 880 карточек:
+# web3 и arbeitnow поголовно, talanto — 22 625, getmatch — 482.
+def test_experience_chips_include_the_unknown_grade(feed_globals):
+    """Пятый чип с ПУСТЫМ кодом — иначе карточки без грейда недостижимы фильтром."""
+    from hrwork.presentation.views import feed as F
+    assert F.EXP_UNKNOWN == ("", "Не указан")
+
+
+def test_chip_code_matches_the_empty_exp_id_of_a_gradeless_card(tmp_path):
+    """Код чипа обязан совпадать с тем, что лежит в карточке, СИМВОЛ В СИМВОЛ:
+    фильтр сравнивает их равенством, и «None» вместо «''» тихо вернул бы тот же ноль."""
+    from hrwork.presentation.views import feed as F
+    records = [_record("w3", name="Backend Developer", city="Remote", employer="DAO",
+                       source="web3", mid=None, currency="", exp=None, schedule="remote",
+                       techs=["Python"], role=Role.BACKEND, url="https://web3.career/1")]
+    card = _const(_build_feed_data(tmp_path, records=records), "VACANCIES")[0]
+    assert card["exp_id"] == F.EXP_UNKNOWN[0]

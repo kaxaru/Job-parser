@@ -874,3 +874,33 @@ describe('comparableSalary — сравнимая вилка или null', () =>
     delete globalThis.FX_RATES;
   });
 });
+
+/* Инцидент 10.08.2026: фильтр Python + arbeitnow + опыт давал НОЛЬ вакансий даже при всех
+   нажатых кнопках, а без фильтра по опыту — 538. Пустой `exp_id` не совпадал ни с одним из
+   четырёх доменных кодов, поэтому «выбрано всё» переставало быть равносильно «фильтр снят».
+   Задето 27 880 карточек: web3 и arbeitnow поголовно, talanto — 22 625 из 59 672.
+   Лечение — ПЯТЫЙ чип с пустым кодом (`feed.py::EXP_UNKNOWN`), а не подстановка
+   `noExperience`: у talanto среди безгрейдовых полно senior-вакансий. */
+describe('filterVacancies — опыт: карточка без грейда', () => {
+  const noGrade = vac({ id: 'w3', exp_id: '', exp: '' });
+  const junior  = vac({ id: 'jr', exp_id: 'between1And3' });
+
+  it('все пять чипов выбраны -> видно и безгрейдовую, и обычную', () => {
+    const f = flt({ exps: new Set(['noExperience', 'between1And3', 'between3And6', 'moreThan6', '']) });
+    assert.deepEqual(filterVacancies([noGrade, junior], f).map(v => v.id), ['w3', 'jr']);
+  });
+
+  it('выбраны только доменные коды -> безгрейдовая скрыта', () => {
+    const f = flt({ exps: new Set(['noExperience', 'between1And3', 'between3And6', 'moreThan6']) });
+    assert.deepEqual(filterVacancies([noGrade, junior], f).map(v => v.id), ['jr']);
+  });
+
+  it('выбран только чип «не указан» -> видно ТОЛЬКО безгрейдовую', () => {
+    const f = flt({ exps: new Set(['']) });
+    assert.deepEqual(filterVacancies([noGrade, junior], f).map(v => v.id), ['w3']);
+  });
+
+  it('ни один чип не выбран -> фильтр снят, видно обе', () => {
+    assert.deepEqual(filterVacancies([noGrade, junior], flt()).map(v => v.id), ['w3', 'jr']);
+  });
+});
