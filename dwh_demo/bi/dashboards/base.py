@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from ..client import MetabaseClient
 
@@ -41,9 +41,11 @@ RUB = " · ₽ (пересчёт по курсу)"
 MIXED_CURRENCY = " · валюта портала (суммы не сравнимы)"
 
 
-def layout(items: list) -> list:
+def layout(items: list[tuple[Any, ...]]) -> list[dict[str, Any]]:
     """items: (card_id, row, col, w, h[, parameter_mappings]) -> dashcards с уникальными id."""
-    out = []
+    # Кортеж разнородный и переменной длины (5 или 6), поэтому `tuple[Any, ...]`:
+    # позиционный формат раскладки задан докстрингом, а не типом.
+    out: list[dict[str, Any]] = []
     for i, it in enumerate(items, 1):
         cid, row, col, w, h = it[:5]
         mappings = it[5] if len(it) > 5 else []
@@ -55,7 +57,7 @@ def layout(items: list) -> list:
     return out
 
 
-def text_tag(name: str, display: str, **extra) -> dict:
+def text_tag(name: str, display: str, **extra: Any) -> dict[str, dict[str, Any]]:
     """Metabase template-tag. Опциональные поля (required, default, …) — через **extra:
     вызывающий передаёт только нужные ключи, без флаг-аргументов и условий."""
     return {name: {
@@ -64,5 +66,5 @@ def text_tag(name: str, display: str, **extra) -> dict:
     }}
 
 
-def bar(dim: str, *metrics: str) -> dict:
+def bar(dim: str, *metrics: str) -> dict[str, list[str]]:
     return {"graph.dimensions": [dim], "graph.metrics": list(metrics)}

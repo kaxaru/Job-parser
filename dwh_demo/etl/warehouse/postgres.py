@@ -2,8 +2,10 @@
 REFRESH mart.* (материализованные витрины)."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import psycopg2
 from psycopg2.extras import execute_values
@@ -46,15 +48,16 @@ REFRESH MATERIALIZED VIEW mart.source_stats;
 class PostgresWarehouse:
     name = "postgres"
 
-    def __init__(self, dsn: dict, schema_sql: Path):
+    def __init__(self, dsn: dict[str, str | int], schema_sql: Path):
         self.dsn = dsn
         self.schema_sql = Path(schema_sql)
 
-    def _conn(self):
+    def _conn(self) -> Any:
+        # Any — внешняя граница: у psycopg2 нет стабов, соединение и курсор приходят Any.
         return psycopg2.connect(**self.dsn)
 
     @contextmanager
-    def _session(self):
+    def _session(self) -> Iterator[Any]:
         """Курсор в транзакции + ГАРАНТИРОВАННОЕ закрытие соединения.
 
         У psycopg2 `with conn` управляет ТРАНЗАКЦИЕЙ (commit на выходе, rollback на
@@ -99,9 +102,11 @@ class PostgresWarehouse:
                 skill_rows, page_size=BATCH_SIZE)
             cur.execute(LOAD_SQL)
             cur.execute("SELECT count(*) FROM core.vacancies")
-            return cur.fetchone()[0]
+            # Курсор без стабов отдаёт Any; приводим здесь, чтобы драйвер, вернувший
+            # не число, падал на границе адаптера, а не в сверке `Pipeline._verify`.
+            return int(cur.fetchone()[0])
 
     def count(self) -> int:
         with self._session() as cur:
             cur.execute("SELECT count(*) FROM core.vacancies")
-            return cur.fetchone()[0]
+            return int(cur.fetchone()[0])

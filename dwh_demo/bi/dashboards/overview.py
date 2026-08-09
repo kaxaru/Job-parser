@@ -1,6 +1,8 @@
 """Обзорный дашборд по Postgres с фильтрами Город/Опыт (было: setup_metabase + add_filters)."""
 from __future__ import annotations
 
+from typing import Any
+
 from etl.domain import EXPERIENCE, NO_EXPERIENCE_LABEL
 
 from ..client import MetabaseClient
@@ -18,7 +20,8 @@ F = ("[[ AND c.name = {{city}} ]] "
 EXP_VALUES = [*EXPERIENCE.values(), NO_EXPERIENCE_LABEL]
 
 
-def _tags():
+def _tags() -> dict[str, Any]:
+    # Значения — тела template-tag'ов Metabase (разнородный JSON), это внешняя граница.
     t = text_tag("city", "Город")
     t.update(text_tag("experience", "Опыт"))
     return t
@@ -31,7 +34,7 @@ class OverviewDashboard:
     def build(self, client: MetabaseClient) -> None:
         pg = client.find_database(PG_NAME, PG_ENGINE)
 
-        def card(name, sql, display, viz=None):
+        def card(name: str, sql: str, display: str, viz: dict[str, Any] | None = None) -> int:
             return client.create_card(name, pg, sql, display, viz, tags=_tags())
 
         c_total = card("Всего вакансий",
@@ -85,7 +88,9 @@ class OverviewDashboard:
              "values_source_type": "static-list", "values_source_config": {"values": EXP_VALUES}},
         ]
 
-        def pm(cid):
+        def pm(cid: int) -> list[dict[str, Any]]:
+            # Значение "target" — вложенный JSON Metabase (`["variable", ["template-tag", …]]`),
+            # разнородный по определению, поэтому Any.
             return [
                 {"parameter_id": P_CITY, "card_id": cid, "target": ["variable", ["template-tag", "city"]]},
                 {"parameter_id": P_EXP, "card_id": cid, "target": ["variable", ["template-tag", "experience"]]},

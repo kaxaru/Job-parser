@@ -63,6 +63,18 @@ repos:
         pass_filenames: false
         files: \.py$|^(ruff\.toml|mypy\.ini|pytest\.ini|requirements(-dev)?\.txt)$
 
+      # У подпроекта СВОИ конфиги и своя область, поэтому это отдельный хук, а не флаг
+      # к предыдущему. Запуск из его каталога обязателен: `files = etl, bi, dags` в его
+      # mypy.ini разрешаются относительно рабочего каталога, а из корня mypy не находит
+      # пакеты вовсе. `cd` делается питоном, а не оболочкой: pre-commit исполняет entry
+      # напрямую, без shell, и `cd x && y` тут не сработало бы ни на одной платформе.
+      - id: mypy-dwh
+        name: mypy strict (dwh_demo)
+        entry: python -c "import subprocess,sys; sys.exit(subprocess.run([sys.executable,'-m','mypy'],cwd='dwh_demo').returncode)"
+        language: system
+        pass_filenames: false
+        files: ^dwh_demo/.*\.py$|^dwh_demo/(mypy\.ini|requirements(-dev)?\.txt)$
+
       - id: pytest
         name: pytest
         entry: python -m pytest -q

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any, TypedDict
 
 
 @dataclass(frozen=True)
@@ -24,21 +25,32 @@ CH_ENGINE = "clickhouse"
 MS_NAME = "HH MSSQL"
 MS_ENGINE = "sqlserver"
 
-POSTGRES = {
+
+class DbConnection(TypedDict):
+    """Набор аргументов `MetabaseClient.ensure_database` — константы ниже раскрываются
+    в вызов через `**`, поэтому ключи обязаны совпадать с именами параметров.
+    `details` — тело чужого API (форма зависит от движка), там `Any` законен."""
+
+    name: str
+    engine: str
+    details: dict[str, Any]
+
+
+POSTGRES: DbConnection = {
     "name": PG_NAME, "engine": PG_ENGINE,
     "details": {"host": "hh-postgres", "port": 5432, "dbname": "hh",
                 "user": "hh", "password": "hh", "ssl": False,
                 "schema-filters-type": "all"},
 }
 
-CLICKHOUSE = {
+CLICKHOUSE: DbConnection = {
     "name": CH_NAME, "engine": CH_ENGINE,
     "details": {"host": "hh-clickhouse", "port": 8123, "user": "default",
                 "password": "", "dbname": "hh", "ssl": False,
                 "db-filters-type": "all", "enable-multiple-db": False},
 }
 
-MSSQL = {
+MSSQL: DbConnection = {
     "name": MS_NAME, "engine": MS_ENGINE,
     "details": {"host": "hh-mssql", "port": 1433, "db": "hh",
                 "user": "sa", "password": "DwhDemo2026!", "ssl": False,

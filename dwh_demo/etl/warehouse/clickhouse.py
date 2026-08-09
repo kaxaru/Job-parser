@@ -30,7 +30,8 @@ class ClickHouseWarehouse:
             data = body.encode("utf-8")
         req = urllib.request.Request(url, data=data, method="POST")
         with urllib.request.urlopen(req, timeout=180) as r:
-            return r.read().decode()
+            payload: bytes = r.read()   # ответ HTTP — внешняя граница: urlopen отдаёт Any
+            return payload.decode()
 
     def init_schema(self) -> None:
         # ClickHouse по HTTP исполняет по одному стейтменту — бьём файл по ';'.

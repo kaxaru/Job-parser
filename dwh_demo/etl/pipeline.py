@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from .config import Settings
@@ -20,8 +21,9 @@ from .warehouse import ClickHouseWarehouse, MSSQLWarehouse, PostgresWarehouse, W
 
 SQL_DIR = Path(__file__).resolve().parent / "sql"
 
-# реестр доступных бэкендов: имя -> как собрать адаптер из настроек
-REGISTRY = {
+# реестр доступных бэкендов: имя -> как собрать адаптер из настроек. Тип объявлен явно —
+# так каждый адаптер сверяется с портом `Warehouse` прямо здесь, при добавлении в реестр.
+REGISTRY: dict[str, Callable[[Settings], Warehouse]] = {
     "postgres": lambda cfg: PostgresWarehouse(cfg.pg_dsn, SQL_DIR / "postgres" / "schema.sql"),
     "clickhouse": lambda cfg: ClickHouseWarehouse(cfg.ch_url, SQL_DIR / "clickhouse" / "schema.sql"),
     "mssql": lambda cfg: MSSQLWarehouse(cfg.mssql_dsn, SQL_DIR / "mssql" / "schema.sql"),
@@ -196,7 +198,7 @@ class Pipeline:
                       f"адаптеры разошлись")
             raise RuntimeError(f"расхождение факта с prepare={expected}: {bad}")
 
-    def run(self, steps, force: bool = False) -> None:
+    def run(self, steps: Sequence[str] | None, force: bool = False) -> None:
         if not steps or "all" in steps:
             steps = ["init", "load"]
         if "init" in steps:
@@ -209,7 +211,7 @@ def make_warehouse(name: str, cfg: Settings) -> Warehouse:
     return REGISTRY[name](cfg)
 
 
-def build_pipeline(targets=TARGETS, cfg: Settings | None = None) -> Pipeline:
+def build_pipeline(targets: Sequence[str] = TARGETS, cfg: Settings | None = None) -> Pipeline:
     """Фабрика: собирает конвейер с источником и адаптерами выбранных бэкендов."""
     cfg = cfg or Settings.from_env()
     warehouses = [make_warehouse(t, cfg) for t in targets]

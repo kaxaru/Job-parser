@@ -2,6 +2,8 @@
 (было: cooccurrence_dashboard). Self-join core.vacancy_skills."""
 from __future__ import annotations
 
+from typing import Any
+
 from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
 from .base import bar, layout, text_tag
@@ -31,7 +33,7 @@ class CooccurrenceDashboard:
     def build(self, client: MetabaseClient) -> None:
         pg = client.find_database(PG_NAME, PG_ENGINE)
 
-        def tags():  # свежие template-tags (новый uuid) на каждую карточку
+        def tags() -> dict[str, Any]:  # свежие template-tags (новый uuid) на каждую карточку
             return text_tag("base", "Навык", required=True, default="Python")
 
         c_total = client.create_card("Всего вакансий с навыком", pg, TOTAL_SQL, "scalar", tags=tags())
@@ -47,7 +49,8 @@ class CooccurrenceDashboard:
             "values_source_type": "static-list", "values_source_config": {"values": skills},
         }]
 
-        def pm(cid):
+        def pm(cid: int) -> list[dict[str, Any]]:
+            # "target" — вложенный JSON Metabase, разнородный по определению, отсюда Any.
             return [{"parameter_id": P_BASE, "card_id": cid, "target": ["variable", ["template-tag", "base"]]}]
 
         d_id = client.upsert_dashboard(TITLE)

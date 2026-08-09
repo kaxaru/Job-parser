@@ -5,6 +5,7 @@ NAME — ПОЗИЦИОННЫЙ аргумент (ключ из REGISTRY); фл�
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 
 from .client import MetabaseClient
 from .config import CLICKHOUSE, MSSQL, POSTGRES, Settings
@@ -20,7 +21,7 @@ def _dashboard(value: str) -> str:
     return value
 
 
-def run(keys) -> None:
+def run(keys: list[str]) -> None:
     cfg = Settings()
     client = MetabaseClient(cfg.base, cfg.admin_email, cfg.admin_password)
     client.connect()
@@ -45,14 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def resolve(dashboards) -> list:
+def resolve(dashboards: list[str]) -> list[str]:
     """Пусто или 'all' -> все зарегистрированные дашборды; иначе выбранные."""
     if not dashboards or "all" in dashboards:
         return list(REGISTRY)
     return dashboards
 
 
-def main(argv=None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     run(resolve(args.dashboards))
 

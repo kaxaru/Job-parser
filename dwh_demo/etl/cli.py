@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 
 from .pipeline import TARGETS, build_pipeline
 
@@ -43,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main(argv=None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     targets = args.target or list(TARGETS)      # без -t -> все бэкенды
     build_pipeline(targets).run(args.steps, force=args.force)

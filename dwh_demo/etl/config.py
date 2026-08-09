@@ -19,9 +19,10 @@ FX_DEFAULT = ROOT.parent.parent / "data" / "fx_rates.json"
 class Settings:
     data_file: Path
     fx_file: Path = FX_DEFAULT
-    pg_dsn: dict = field(default_factory=dict)
+    # Параметры подключения драйверов: строки + числовой порт (`int(os.getenv(...))`).
+    pg_dsn: dict[str, str | int] = field(default_factory=dict)
     ch_url: str = "http://localhost:8123/"
-    mssql_dsn: dict = field(default_factory=dict)
+    mssql_dsn: dict[str, str | int] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls) -> Settings:

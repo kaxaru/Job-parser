@@ -19,6 +19,9 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
+      # mypy подпроекта: свой конфиг, своя область (etl/bi/dags). До 09.08.2026 типы стенда
+      # не проверялись ничем, хотя у родителя strict — правило и хук pre-commit.
+      - run: mypy
       - run: pytest -m unit -v
 
   # ── интеграция: реальный ETL против Postgres + ClickHouse в service-контейнерах ──

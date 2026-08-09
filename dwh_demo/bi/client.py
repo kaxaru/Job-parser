@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+from typing import Any
 
 
 class MetabaseClient:
@@ -18,7 +19,10 @@ class MetabaseClient:
         self.token: str | None = None
 
     # ── низкий уровень ──
-    def _api(self, method: str, path: str, data=None):
+    # Второй элемент ответа — РАЗОБРАННЫЙ JSON Metabase (dict/list/None) либо тело
+    # ошибки строкой: внешняя граница, `Any` здесь законен. Форму разбирает вызывающий.
+    def _api(self, method: str, path: str,
+             data: dict[str, Any] | None = None) -> tuple[int, Any]:
         body = json.dumps(data).encode() if data is not None else None
         req = urllib.request.Request(self.base + path, data=body, method=method)
         req.add_header("Content-Type", "application/json")
@@ -56,7 +60,7 @@ class MetabaseClient:
         self.token = res["id"]
 
     # ── подключения к хранилищам ──
-    def find_database(self, name: str, engine: str):
+    def find_database(self, name: str, engine: str) -> int | None:
         """Id подключения по (имя, движок) или None, если такого нет.
 
         Fail fast на ошибке HTTP: `_api` отдаёт тело 4xx/5xx СТРОКОЙ, и до 09.08.2026
@@ -68,10 +72,10 @@ class MetabaseClient:
         items = dbs.get("data", dbs) if isinstance(dbs, dict) else dbs
         if not isinstance(items, list):
             raise RuntimeError(f"database list: неожиданный формат ответа: {dbs!r}")
-        return next((d["id"] for d in items
+        return next((int(d["id"]) for d in items
                      if d.get("name") == name and d.get("engine") == engine), None)
 
-    def ensure_database(self, name: str, engine: str, details: dict) -> int:
+    def ensure_database(self, name: str, engine: str, details: dict[str, Any]) -> int:
         """Подключение к движку: найденное переиспользуется, отсутствующее создаётся.
 
         Идемпотентность держится на `find_database`: повторный провижининг не должен
@@ -82,19 +86,28 @@ class MetabaseClient:
                                 {"engine": engine, "name": name, "details": details})
             if st not in (200, 202):
                 raise RuntimeError(f"database '{name}' failed: {st} {res}")
-            db_id = res["id"]
+            db_id = int(res["id"])
             self._api("POST", f"/api/database/{db_id}/sync_schema")
         return db_id
 
-    def run_sql(self, db_id: int, sql: str) -> list:
+    # `db_id` у `run_sql` и `create_card` — `int | None`, потому что дашборды передают
+    # сюда результат `find_database` как есть, а он даёт None для ненайденного подключения.
+    # Сузить до `int` можно только проверкой на None у вызывающего, то есть сменой поведения.
+    def run_sql(self, db_id: int | None, sql: str) -> list[list[Any]]:
         """Выполнить native-SQL и вернуть строки (для списков значений фильтров)."""
         _, res = self._api("POST", "/api/dataset",
                           {"type": "native", "native": {"query": sql}, "database": db_id})
-        return (res or {}).get("data", {}).get("rows", []) if isinstance(res, dict) else []
+        rows: list[list[Any]] = (
+            (res or {}).get("data", {}).get("rows", []) if isinstance(res, dict) else [])
+        return rows
 
     # ── карточки и дашборды ──
-    def create_card(self, name, db_id, sql, display, viz=None, tags=None) -> int:
-        native = {"query": sql}
+    def create_card(self, name: str, db_id: int | None, sql: str, display: str,
+                    viz: dict[str, Any] | None = None,
+                    tags: dict[str, Any] | None = None) -> int:
+        # `viz`/`tags` уезжают в тело запроса как есть (visualization_settings и
+        # template-tags Metabase) — форму задаёт чужой API, отсюда `Any` в значениях.
+        native: dict[str, Any] = {"query": sql}
         if tags:
             native["template-tags"] = tags
         st, res = self._api("POST", "/api/card", {
@@ -103,7 +116,7 @@ class MetabaseClient:
             "visualization_settings": viz or {}})
         if st not in (200, 202):
             raise RuntimeError(f"card '{name}' failed: {st} {res}")
-        return res["id"]
+        return int(res["id"])
 
     def upsert_dashboard(self, title: str) -> int:
         """Вернуть id дашборда; если уже есть — очистить (старые карточки в архив).
@@ -119,13 +132,13 @@ class MetabaseClient:
         items = dl.get("data", dl) if isinstance(dl, dict) else dl
         if not isinstance(items, list):
             raise RuntimeError(f"dashboard list: неожиданный формат ответа: {dl!r}")
-        d_id = next((d["id"] for d in items if d.get("name") == title), None)
+        d_id = next((int(d["id"]) for d in items if d.get("name") == title), None)
         if d_id is None:
             # 202 — асинхронное создание, такой же успех, как 200 (см. create_card).
             st, res = self._api("POST", "/api/dashboard", {"name": title})
             if st not in (200, 202):
                 raise RuntimeError(f"dashboard '{title}' failed: {st} {res}")
-            return res["id"]
+            return int(res["id"])
         _, full = self._api("GET", f"/api/dashboard/{d_id}")
         for dc in (full or {}).get("dashcards", []):
             cid = dc.get("card_id")
@@ -134,8 +147,9 @@ class MetabaseClient:
         self._api("PUT", f"/api/dashboard/{d_id}", {"dashcards": []})
         return d_id
 
-    def set_dashboard(self, d_id: int, dashcards: list, parameters=None) -> None:
-        payload = {"dashcards": dashcards}
+    def set_dashboard(self, d_id: int, dashcards: list[dict[str, Any]],
+                      parameters: list[dict[str, Any]] | None = None) -> None:
+        payload: dict[str, Any] = {"dashcards": dashcards}
         if parameters is not None:
             payload["parameters"] = parameters
         st, res = self._api("PUT", f"/api/dashboard/{d_id}", payload)

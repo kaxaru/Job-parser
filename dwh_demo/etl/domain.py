@@ -11,6 +11,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from .rates import load_rates, resolve_currency, to_rub
 
@@ -144,11 +145,13 @@ def strip_html(s: str) -> str:
     return _WS_RE.sub(" ", html.unescape(_TAG_RE.sub(" ", s or ""))).strip()
 
 
-def _num(x):
+def _num(x: object) -> float | None:
+    # `object`, а не `float | None`: на вход идёт значение из чужого JSON, и isinstance
+    # здесь — единственная проверка, что вилка вообще число (портал кладёт и строку).
     return x if isinstance(x, (int, float)) else None
 
 
-def _label(table: dict[str, str], code) -> str | None:
+def _label(table: dict[str, str], code: str | None) -> str | None:
     """Код внешнего справочника -> подпись. Пусто -> None, а НЕ пустая подпись.
 
     Родитель кодирует «не указано» пустой строкой (`Experience.from_code`: «Пусто/неизвестный
@@ -191,11 +194,11 @@ CITY_MAX = 200
 REMOTE_CITY = "Remote"
 
 
-def _cap(s, n=CITY_MAX):
+def _cap(s: str | None, n: int = CITY_MAX) -> str | None:
     return s[:n] if isinstance(s, str) and len(s) > n else s
 
 
-def _location(label):
+def _location(label: str | None) -> str | None:
     """Подпись локации портала -> значение измерения. Пусто и сентинел `Remote` -> None.
 
     Измерение НАЗЫВАЕТСЯ городом (`core.cities`, `mart.city_stats`), но портал кладёт сюда
@@ -227,7 +230,7 @@ class Vacancy:
     skills: tuple[str, ...]
 
     @classmethod
-    def from_raw(cls, rec: dict, fx: dict[str, float] | None = None) -> Vacancy:
+    def from_raw(cls, rec: dict[str, Any], fx: dict[str, float] | None = None) -> Vacancy:
         """Разбор сырой записи парсера в типизированную вакансию (бывш. _to_row).
 
         id — строка: основной проект неймспейсит id по источникам (`hirify_733072`,

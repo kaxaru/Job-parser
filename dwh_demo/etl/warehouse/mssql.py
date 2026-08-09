@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any, cast
 
 from ..domain import Vacancy
 
@@ -60,21 +61,28 @@ FROM staging.stg_skills k JOIN core.skills sk ON sk.name = k.skill;
 class MSSQLWarehouse:
     name = "mssql"
 
-    def __init__(self, dsn: dict, schema_sql: Path):
+    def __init__(self, dsn: dict[str, str | int], schema_sql: Path):
         self.dsn = dsn                       # server, port, user, password, database
         self.schema_sql = Path(schema_sql)
 
-    def _conn(self, database: str | None = None, autocommit: bool = True):
+    def _conn(self, database: str | None = None, autocommit: bool = True) -> Any:
         """autocommit=True — режим DDL: `CREATE DATABASE` в T-SQL внутри транзакции нельзя.
-        Загрузка открывает соединение с autocommit=False, см. политику в `load`."""
+        Загрузка открывает соединение с autocommit=False, см. политику в `load`.
+
+        Возврат Any: соединение — непрозрачный ресурс для `with`, а точный тип у pymssql
+        зависит от выбранной перегрузки `connect` и доступен только при ленивом импорте."""
         import pymssql  # ленивый импорт: нужен только при реальном использовании mssql
-        d = dict(self.dsn)
+        # Any — внешняя граница: DSN уходит в драйвер целиком, одним `**`, а его стабы
+        # объявляют port строкой, тогда как pymssql принимает и int (и так его кладёт конфиг).
+        d: dict[str, Any] = dict(self.dsn)
         if database:
             d["database"] = database
         return pymssql.connect(charset="UTF-8", autocommit=autocommit, **d)
 
     def init_schema(self) -> None:
-        db = self.dsn["database"]
+        # cast, а не `str(...)`: имя БД в DSN — строка (`MSSQL_DB` из окружения), и приведение
+        # изменило бы поведение на нестроке (сейчас там TypeError на проверке ниже).
+        db = cast(str, self.dsn["database"])
         # Идентификатор в T-SQL параметром не передать, имя БД идёт в текст DDL. Значит,
         # проверяем сами: ']' закрывает скобочное квотирование `[db]`, кавычка рвёт литерал
         # внутри DB_ID('db'). Имя приходит из НАШЕГО конфига (MSSQL_DB), поэтому это fail
@@ -135,11 +143,13 @@ class MSSQLWarehouse:
                     skill_rows[i:i + BATCH_SIZE])
             cur.execute(LOAD_SQL)
             cur.execute("SELECT COUNT(*) FROM core.vacancies")
-            in_fact = cur.fetchone()[0]     # читаем ДО commit: транзакция видит свою запись
+            # Читаем ДО commit: транзакция видит свою запись. `int` — курсор без стабов
+            # отдаёт Any, и не-число обязано падать здесь, а не в `Pipeline._verify`.
+            in_fact = int(cur.fetchone()[0])
             conn.commit()
             return in_fact
 
     def count(self) -> int:
         with self._conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM core.vacancies")
-            return cur.fetchone()[0]
+            return int(cur.fetchone()[0])

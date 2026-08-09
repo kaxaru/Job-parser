@@ -9,6 +9,8 @@
 факту — поэтому ни в заголовке, ни в SQL списка порталов НЕТ."""
 from __future__ import annotations
 
+from typing import Any
+
 from ..client import MetabaseClient
 from ..config import PG_ENGINE, PG_NAME
 from .base import REMOTE_LIKE, RUB, layout
@@ -20,7 +22,7 @@ from .base import REMOTE_LIKE, RUB, layout
 TITLE = "Источники — сравнение порталов"
 
 
-def _bar2(dim: str, series: str, metric: str) -> dict:
+def _bar2(dim: str, series: str, metric: str) -> dict[str, list[str]]:
     """Столбчатая с группировкой по второму измерению (dim × series -> metric)."""
     return {"graph.dimensions": [dim, series], "graph.metrics": [metric]}
 
@@ -32,7 +34,7 @@ class SourceComparisonDashboard:
     def build(self, client: MetabaseClient) -> None:
         pg = client.find_database(PG_NAME, PG_ENGINE)
 
-        def card(name, sql, display, viz=None):
+        def card(name: str, sql: str, display: str, viz: dict[str, Any] | None = None) -> int:
             return client.create_card(name, pg, sql, display, viz, tags={})
 
         c_vol = card("Вакансий по источникам",

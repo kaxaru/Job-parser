@@ -5,6 +5,8 @@ SQL — на T-SQL (TOP вместо LIMIT, COUNT(*) и т.п.).
 """
 from __future__ import annotations
 
+from typing import Any
+
 from ..client import MetabaseClient
 from ..config import MS_ENGINE, MS_NAME
 from .base import REMOTE_LIKE, RUB, bar, layout
@@ -21,7 +23,7 @@ class MssqlOverviewDashboard:
     def build(self, client: MetabaseClient) -> None:
         db = client.find_database(MS_NAME, MS_ENGINE)
 
-        def card(name, sql, display, viz=None):
+        def card(name: str, sql: str, display: str, viz: dict[str, Any] | None = None) -> int:
             return client.create_card(name, db, sql, display, viz)
 
         c_total = card("Всего вакансий", "SELECT COUNT(*) AS vacancies FROM core.vacancies", "scalar")
