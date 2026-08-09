@@ -166,6 +166,7 @@ _EXAMPLE_BLACKLISTS = json.loads(_EXAMPLE.read_text(encoding="utf-8"))["blacklis
 _DEFAULT_RULE = {                       # правило -> имя дефолтного регекса в candidates.py
     "senior": "APPLY_SENIOR_BLACKLIST",
     "internship": "APPLY_INTERNSHIP_BLACKLIST",
+    "other_engineering": "APPLY_OTHER_ENGINEERING_BLACKLIST",
     "management": "APPLY_MANAGEMENT_BLACKLIST",
     "non_engineering": "APPLY_ROLE_BLACKLIST",
     "qa": "APPLY_QA_BLACKLIST",
@@ -202,6 +203,10 @@ _CANON_TITLES = [
     ("internship", "Стажер бэкенд-разработки"),
     ("internship", "Стажировка в команду бэкенда"),
     ("internship", "Практикант-программист"),
+    # 09.08.2026: крон откликнулся на «Инженер-химик» — гейт специализации обошёл
+    # тайтл через техи из описания (hh.ru/vacancy/135163990).
+    ("other_engineering", "Инженер-химик"),
+    ("other_engineering", "Химик-технолог"),
     ("management", "Руководитель отдела разработки"),
     ("management", "Начальник ИТ-управления"),
     ("management", "Директор по разработке"),

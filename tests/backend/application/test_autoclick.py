@@ -966,3 +966,35 @@ def test_words_starting_with_intern_are_not_internships(name):
 def test_internship_wins_over_qa_in_the_reason(name="Стажёр QA Automation"):
     # порядок таблицы значим: «Стажёр QA» интереснее назвать стажировкой, чем тестированием
     assert out_of_scope(name) is OutOfScope.INTERNSHIP
+
+
+# ─── Инженерия не про софт (инцидент 09.08.2026) ────────────────────────────────
+# Крон откликнулся на «Инженер-химик» (hh.ru/vacancy/135163990). Дыра была НЕ в блеклисте:
+# `parsing.py::_detect_role` считает роль по тайтлу И ТЕХАМ ИЗ ОПИСАНИЯ, упоминание Python
+# в описании химической вакансии дало `Role.DEVELOPER`, и гейт `if not v.role.is_it`
+# в `pick_candidates` её пропустил. Рецидив инцидента «Продюсер AI-видео» из errors.md.
+@pytest.mark.parametrize("name", [
+    "Инженер-химик",
+    "Химик-технолог",
+    "Химик-разработчик в области бытовой химии",
+])
+def test_chemistry_is_out_of_scope(name):
+    assert out_of_scope(name) is OutOfScope.OTHER_ENGINEERING
+
+
+@pytest.mark.parametrize("name", [
+    "Python-разработчик",
+    "Backend-разработчик (химическая промышленность)",   # домен заказчика роли не меняет
+    "Инженер-программист АХИМИКС",                       # «химик» внутри слова — не совпадение
+])
+def test_software_roles_stay_in_scope_near_chemistry(name):
+    assert out_of_scope(name) is None
+
+
+def test_description_techs_cannot_smuggle_a_chemist_past_the_title_rule():
+    # Ядро инцидента: гейт специализации обходится техами из ОПИСАНИЯ, а правило по тайтлу
+    # техов не видит — поэтому оно и поставлено на тайтл.
+    from hrwork.domain.parsing import _detect_role
+    assert _detect_role("Инженер-химик", []).is_it is False
+    assert _detect_role("Инженер-химик", ["Python"]).is_it is True     # так и просочилось
+    assert out_of_scope("Инженер-химик") is OutOfScope.OTHER_ENGINEERING

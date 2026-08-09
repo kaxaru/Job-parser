@@ -180,7 +180,8 @@ _goto(url)
 
 Причина — **VO, а не строка-литерал** (`candidates.py::OutOfScope`): она уходит в логи и в
 сводку чистки очереди, то есть это доменное понятие с конечным набором значений. Значение
-enum = подпись для человека (`.label`): `senior/lead` · `стажировка` · `руководящая` ·
+enum = подпись для человека (`.label`): `senior/lead` · `стажировка` ·
+`инженерия не про софт` · `руководящая` ·
 `не инженерная роль` · `QA` · `аналитик` · `ML/DS` · `DevOps/SRE` · `другой язык`.
 `clean_queue` печатает по ним `Counter` — видно, чем именно забивалась очередь.
 
@@ -194,14 +195,21 @@ enum = подпись для человека (`.label`): `senior/lead` · `ст
    Слова стоят целиком, а не префиксом `intern*`: иначе «Internal Tools Developer»
    и «International …» вылетали бы из отбора ни за что. Правило идёт вторым, чтобы «Стажёр QA»
    попадал в сводку как стажировка, а не как тестирование
-3. `MANAGEMENT` — `_is_management` (см. ниже)
-4. `NON_ENGINEERING` — `APPLY_ROLE_BLACKLIST`: риск-аналитик/портфельный/планирование ресурсов
-5. `QA` — `APPLY_QA_BLACKLIST`, **безусловно**: стоит ДО аналитики и ML именно потому, что
+3. `OTHER_ENGINEERING` — `APPLY_OTHER_ENGINEERING_BLACKLIST`: химия, электроника,
+   энергетика и прочая инженерия не про софт. Правило на ТАЙТЛ, и это принципиально:
+   `parsing.py::_detect_role` считает роль по тайтлу И ТЕХАМ ИЗ ОПИСАНИЯ, поэтому
+   упоминание Python в описании химической вакансии давало `Role.DEVELOPER`, и гейт
+   `if not v.role.is_it` в `pick_candidates` её пропускал — 09.08.2026 крон так
+   откликнулся на «Инженер-химик» (hh.ru/vacancy/135163990). Тайтл техов не видит,
+   обойти его описанием нельзя. Рецидив инцидента «Продюсер AI-видео» из errors.md
+4. `MANAGEMENT` — `_is_management` (см. ниже)
+5. `NON_ENGINEERING` — `APPLY_ROLE_BLACKLIST`: риск-аналитик/портфельный/планирование ресурсов
+6. `QA` — `APPLY_QA_BLACKLIST`, **безусловно**: стоит ДО аналитики и ML именно потому, что
    исключение для инженерных гибридов на него не распространяется
-6. `ANALYST` — `APPLY_ANALYST_BLACKLIST` при отсутствии `APPLY_TARGET_ENGINEERING` в тайтле
-7. `ML` — `APPLY_ML_BLACKLIST` при том же условии
-8. `DEVOPS` — `APPLY_DEVOPS_BLACKLIST` при отсутствии `_CODE_MARKER` (см. ниже)
-9. `OTHER_LANG` — `APPLY_LANG_BLACKLIST` при отсутствии «python» в тайтле: Java/C#/C++/PHP/
+7. `ANALYST` — `APPLY_ANALYST_BLACKLIST` при отсутствии `APPLY_TARGET_ENGINEERING` в тайтле
+8. `ML` — `APPLY_ML_BLACKLIST` при том же условии
+9. `DEVOPS` — `APPLY_DEVOPS_BLACKLIST` при отсутствии `_CODE_MARKER` (см. ниже)
+10. `OTHER_LANG` — `APPLY_LANG_BLACKLIST` при отсутствии «python» в тайтле: Java/C#/C++/PHP/
    Go/Scala/Ruby/Kotlin/Rust/1С/.NET (JS/TS/React **не** блокируют — Python-fullstack допустим)
 
 **Новое правило = строка в таблице плюс член `OutOfScope`.** Ветвление трогать не нужно —
