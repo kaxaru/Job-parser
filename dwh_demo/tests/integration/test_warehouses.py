@@ -92,12 +92,21 @@ EXPECTED_FACT = [
     (ID_ARBEITNOW_B, "arbeitnow", None, None, None, None, False, False, 9000000, 12000000),
     ("getmatch_54219", "getmatch", "Казань", "Gamma", "3–6 лет", "Офис", False, False,
      261000, 348000),
-    # remote_mentioned=True от слова «remote» в тексте — ОТДЕЛЬНОЕ понятие от формата работы
-    (ID_HIMALAYAS, "himalayas", "Remote", "Northwind", None, "Удалённо", True, True,
+    # Город — None, хотя портал прислал `area.name = "Remote"`: это СЕНТИНЕЛ
+    # (`etl/domain.py::REMOTE_CITY`, зеркало `hrwork/domain/models.py`), а не место.
+    # Решение 09.08.2026: измерение локаций не должен возглавлять «Remote» — витрина
+    # подпишет такую строку бакетом `NO_CITY_LABEL`. Информация не теряется: формат
+    # работы несут `schedule` и `is_remote` в этой же строке.
+    # remote_mentioned=True от слова «remote» в тексте — ОТДЕЛЬНОЕ понятие от формата работы.
+    (ID_HIMALAYAS, "himalayas", None, "Northwind", None, "Удалённо", True, True,
      12000000, 16000000),
-    # `shift` — незнакомый непустой код графика: проходит как есть, без подписи
+    # `shift` — незнакомый непустой код графика: проходит как есть, без подписи.
+    # Рубли выведены из спецификации, а не из вывода: вилка 4500–6000 BYR, код валюты
+    # канонизируется BYR -> BYN (`etl/rates.py::resolve_currency`), курсы в юнит-прогоне
+    # синтетические (`conftest.FX_FOR_TESTS`: BYN 3.0, RUB 100.0 за USD), значит
+    # 4500 / 3.0 * 100 = 150 000 и 6000 / 3.0 * 100 = 200 000.
     ("hirify_733072", "hirify", "Минск", "Delta", "Без опыта", "shift", False, False,
-     180000, 240000),
+     150000, 200000),
     ("talanto_e9f687b5-2c41-4a0e-9d3f-77b1a5c0d842", "talanto", CITY_AGGREGATOR,
      "Talanto Client", "1–3 года", "Офис", False, False, None, None),
 ]

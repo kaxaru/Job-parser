@@ -42,6 +42,26 @@ def test_fts_mode_with_query():
     assert "doc @@ q" in sql
 
 
+# ── Сниппет: HTML экранируется в SQL, а обрезка идёт ДО экранирования ───────────────────
+# Сниппет — единственное поле выдачи, которое страница поиска вставляет в DOM без `esc()`
+# (ради подсветки `<mark>`), поэтому экранирование обязано случиться в SQL. Обрезка ПОСЛЕ
+# экранирования резала по экранированному тексту и рвала сущность пополам («&amp;» -> «&am»),
+# а обрывок уходил в разметку как есть (аудит 09.08.2026). Литералы спецификации: три
+# replace в порядке `&` `<` `>` поверх УЖЕ обрезанных 180 символов исходного описания.
+_ESC = "'&', '&amp;'), '<', '&lt;'), '>', '&gt;')"
+
+
+def test_plain_snippet_escapes_the_cut_text_instead_of_cutting_the_escaped_one():
+    sql, _ = S._build_sql(q=None, city=None, sal_min=0)
+    assert f"replace(replace(replace(left(coalesce(description, ''), 180), {_ESC} || '…' AS snippet" in sql
+
+
+def test_fts_snippet_escapes_whole_description_before_highlighting():
+    """Экранируем ДО ts_headline, чтобы его `<mark>` остались единственной разметкой."""
+    sql, _ = S._build_sql(q="python", city=None, sal_min=0)
+    assert f"ts_headline('russian', replace(replace(replace(coalesce(description, ''), {_ESC}, q, " in sql
+
+
 # Пороги — ЛИТЕРАЛЫ спецификации (30/60), а не FRESH_DAYS/GHOST_DAYS из того же места,
 # что и реализация: сломанная константа ломала бы обе стороны одинаково (аудит 09.08.2026).
 @pytest.mark.parametrize("fresh,marker", [

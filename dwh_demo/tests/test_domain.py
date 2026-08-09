@@ -57,10 +57,13 @@ def test_salary_flattened():
 
 
 def test_salary_null():
+    # один кортеж вместо цепочек `assert a and b`: цепочка — «скрытый цикл», её провал
+    # не называет виновника (потерялась валюта, gross или обе границы), кортеж печатает
+    # обе стороны расхождения целиком
     v = Vacancy.from_raw({**FULL, "salary": None}, fx=FX)
-    assert v.salary_min is None and v.salary_max is None
-    assert v.salary_min_rub is None and v.salary_max_rub is None
-    assert v.salary_currency is None and v.salary_gross is None
+    assert (v.salary_min, v.salary_max,
+            v.salary_min_rub, v.salary_max_rub,
+            v.salary_currency, v.salary_gross) == (None, None, None, None, None, None)
 
 
 # ── валюта и рублёвые суммы ──────────────────────────────────────────────────
