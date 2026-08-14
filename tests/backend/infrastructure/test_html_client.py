@@ -1,11 +1,17 @@
 """Тесты дозагрузки карточек HH: сбой сети не затирает описания; инкремент по кешу."""
 import asyncio
 
+from hrwork.domain.employment import Employment
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
-from hrwork.infrastructure.sources.hh import HHHtmlClient, _record_from_search_item
+from hrwork.infrastructure.sources.hh import (
+    HHHtmlClient,
+    _rebuild_techs,
+    _record_from_search_item,
+)
 from hrwork.infrastructure.storage import VacancyRecord
+from hrwork.infrastructure.storage.repository import JsonVacancyRepository
 
 
 def _rec(vid="1", req="старый текст", desc="<p>старое описание</p>", sig=""):
@@ -99,3 +105,56 @@ def test_record_salary_zero_bound_and_missing():
     n = _record_from_search_item({**base, "compensation": {"currencyCode": "RUR"}},
                                  city="М", city_id="1")
     assert n.vacancy.salary is None
+
+
+# ── Форма оформления: структурное поле hh (разведка 10.08.2026) ───────────────────────
+
+def _hh_item(**over):
+    base = {"vacancyId": 7, "name": "Python Dev", "creationTime": "2026-05-01T00:00:00+03:00",
+            "publicationTime": {"$": "2026-05-02T00:00:00+03:00"}}
+    return {**base, **over}
+
+
+def test_labor_contract_checkbox_becomes_the_domain_form():
+    r = _record_from_search_item(_hh_item(acceptLaborContract=True),
+                                 city="М", city_id="1")
+    assert r.vacancy.employment == (Employment.LABOR_CODE,)
+    assert r.portal_employment == (Employment.LABOR_CODE,)
+
+
+def test_civil_law_contract_list_becomes_the_domain_forms():
+    item = _hh_item(acceptLaborContract=False, civilLawContracts=[
+        {"civilLawContractsElement": ["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"]}])
+    r = _record_from_search_item(item, city="М", city_id="1")
+    assert r.vacancy.employment == (Employment.SELF_EMPLOYED, Employment.SOLE_TRADER)
+
+
+def test_employer_who_filled_nothing_leaves_the_form_unstated():
+    # 444 из 712 вакансий замера: галочки не проставлены -> «не указано», а не «нет ТК»
+    r = _record_from_search_item(_hh_item(acceptLaborContract=False), city="М", city_id="1")
+    assert r.vacancy.employment == ()
+
+
+def test_field_and_text_add_up_instead_of_replacing_each_other():
+    """Галочка говорит про ТК, текст карточки — про самозанятость: обе формы обязаны
+    оказаться на вакансии. Поле есть только у hh и заполнено не всегда, поэтому текст
+    не отбрасывается; текст называет форму не всегда, поэтому не отбрасывается поле."""
+    item = _hh_item(acceptLaborContract=True)
+    r = _record_from_search_item(item, city="М", city_id="1")
+    r.requirement = "Возможна работа как самозанятый"
+    _rebuild_techs(r)
+    assert r.vacancy.employment == (Employment.LABOR_CODE, Employment.SELF_EMPLOYED)
+
+
+def test_portal_answer_survives_a_save_load_roundtrip():
+    """Ответ поля портала пересчитать из текста нельзя, поэтому он лежит в raw отдельно.
+    Без этого правка словаря форм (смена EMPLOYMENT_SIG) молча теряла бы всё, что
+    работодатель сказал ГАЛОЧКОЙ, а не прозой."""
+    item = _hh_item(acceptLaborContract=True, civilLawContracts=[
+        {"civilLawContractsElement": ["INDIVIDUAL_PERSON"]}])
+    rec = _record_from_search_item(item, city="М", city_id="1")
+    raw = JsonVacancyRepository._to_dict(rec)
+    assert raw["employment"] == ["labor_code", "civil_contract"]
+    back = JsonVacancyRepository._from_dict({**raw, "_ev": "устаревшая-сигнатура"})
+    assert back.portal_employment == (Employment.LABOR_CODE, Employment.CIVIL_CONTRACT)
+    assert back.vacancy.employment == (Employment.LABOR_CODE, Employment.CIVIL_CONTRACT)

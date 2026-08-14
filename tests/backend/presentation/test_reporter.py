@@ -18,7 +18,8 @@ from hrwork.infrastructure.net import rates
 from hrwork.presentation.views import reporter
 
 # Все отчёты реестра `_REPORTS` — литерал по спецификации docs/feed.md («Отчёты»:
-# 01_cities.csv … 12_sources.csv, у компаний два файла). Тот же литерал служит стражем
+# 01_cities.csv … 14_employment_by_source.csv; 13-го тут нет — воронку пишет `funnel.py`
+# мимо реестра, у компаний два файла). Тот же литерал служит стражем
 # согласованности для `reporter.MANAGED_CSV`: одна сторона сравнения обязана быть
 # литералом, иначе тест повторил бы реализацию.
 _ALL_REPORTS = {
@@ -26,7 +27,7 @@ _ALL_REPORTS = {
     "04_salary_city_lang.csv", "05_top_stacks.csv", "06_salary_by_exp.csv",
     "07_python_stack.csv", "08_js_stack.csv", "09_remote_by_city.csv",
     "10_freshness_by_city.csv", "11_companies.csv", "11c_company_sizes.csv",
-    "12_sources.csv",
+    "12_sources.csv", "14_employment_by_source.csv",
 }
 
 
@@ -119,3 +120,28 @@ def test_managed_csv_lists_exactly_the_reports_writer_produces():
     # страж согласованности: имя, добавленное в реестр отчётов, но забытое в MANAGED_CSV,
     # перестало бы чиститься и тихо показывало бы числа прошлого прогона
     assert reporter.MANAGED_CSV == _ALL_REPORTS
+
+
+# --- отчёт 14: заголовки CSV — подписи форм из домена (контракт с charts.py) ---
+
+def test_employment_report_names_columns_with_domain_labels(tmp_path):
+    """Заголовки читает `charts.py::chart_employment` строгим `Employment.from_label`.
+    Ожидаемое — литералы из спеки («ТК РФ/РБ, Самозанятый, ИП, ГПХ»), а не генерация из
+    enum: иначе тест повторил бы реализацию и разрешил любое переименование."""
+    import csv as _csv
+
+    from hrwork.domain.employment import Employment
+    vacs = [
+        Vacancy(id="1", name="x", city="М", city_id="1", salary=None, experience=None,
+                schedule=Schedule.OFFICE, source="hh",
+                employment=(Employment.LABOR_CODE, Employment.SELF_EMPLOYED)),
+        Vacancy(id="2", name="x", city="М", city_id="1", salary=None, experience=None,
+                schedule=Schedule.OFFICE, source="hh", employment=()),
+    ]
+    reporter.run_reports(vacs, out_dir=tmp_path)
+    with open(tmp_path / "14_employment_by_source.csv", encoding="utf-8-sig") as f:
+        header, row = list(_csv.reader(f))[:2]
+    assert header == ["Портал", "Вакансий", "ТК РФ/РБ", "Самозанятый", "ИП", "ГПХ",
+                      "Не указано", "%названо"]
+    # вакансия с двумя формами считается в обоих столбцах, но «названо» у неё одно
+    assert row == ["hh", "2", "1", "1", "0", "0", "1", "50.0"]

@@ -239,7 +239,10 @@ Playwright-путь покрыт **вокруг браузера**: `pick_candid
 - `test_parsing.py` (70) — разбор сырых данных HH -> `Vacancy`, не-IT фильтр
 - `test_grade.py` (50) — VO `Grade`: ОДИН словарь тайтлов на чаты и анкеты (до 07.08.2026
   копий было две, и их лексиконы разошлись) + страж намеренных расхождений с `_GRADE_TO_EXP`
-- `test_domain_vo.py` (31) — `Schedule` / `Experience` / `Salary`: `is_remote_like`
+- `test_employment.py` (42) — VO `Employment`: словарь форм оформления, два контракта разбора
+  (`from_code` мягкий / `from_label` строгий), объединение структурного поля портала с
+  найденным в тексте, своя сигнатура кеша
+- `test_domain_vo.py` (34) — `Schedule` / `Experience` / `Salary`: `is_remote_like`
   (REMOTE+HYBRID), границы вилки через `is None`, идемпотентность `.net()`
 - `test_salary_period.py` (30) — VO `SalaryPeriod` и `Salary.monthly`: разбор диалектов
   порталов, инференс по величине, пересчёт час/год -> месяц. Инвариант домена: вся вилка
@@ -266,8 +269,9 @@ Playwright-путь покрыт **вокруг браузера**: `pick_candid
   суточный потолок дренажа
 - `test_chat_reply.py` (44) — сборка/отправка автоответов, anti-loop, classify inject,
   rephrase human-gate
-- `test_chat_class.py` (39) — тип сообщения + кто написал
-- `test_analyzer.py` (34) — агрегация на in-memory вакансиях; округление через `round`
+- `test_chat_class.py` (48) — тип сообщения + кто написал
+- `test_analyzer.py` (37) — агрегация на in-memory вакансиях; округление через `round`;
+  срез форм оформления по источникам
 - `test_funnel.py` (24) — воронка автоотказов: исход ТОЛЬКО по статусу HH, бакеты латентности,
   схлопывание дублей журнала по разобранному моменту
 - `test_blacklist_override.py` (23) — чёрные списки отбора настраиваются профилем, а не
@@ -298,8 +302,8 @@ Playwright-путь покрыт **вокруг браузера**: `pick_candid
 
 - `test_talanto.py` (62) — ACL talanto -> `VacancyRecord`, `_meta_header`, `_sig`, порядок
   выдачи бюджета обогащения
-- `test_getmatch.py` (51) — ACL getmatch, `_normalize` / `_sig`, gross -> net, грейд из
-  кеша описаний
+- `test_getmatch.py` (54) — ACL getmatch, `_normalize` / `_sig`, gross -> net, грейд из
+  кеша описаний, плоский текст карточки в `requirement`
 - `test_hirify.py` (33) — ACL hirify, инференс периода зарплаты, четвёртый путь описания
   (протухший кеш как фолбэк)
 - `test_search.py` (32) — сборка SQL поиска без БД: фильтры, режимы, класс свежести
@@ -333,17 +337,17 @@ Playwright-путь покрыт **вокруг браузера**: `pick_candid
 
 **`backend/presentation/`** — 226
 
-- `test_server.py` (78) — маршрутизация, gzip-кэш (304/ETag), лимит тела (413/400),
-  нормализация `employer` в `POST /api/apply`
-- `test_feed_build.py` (68) — payload `feed-data.js`: JS-глобалы, round-trip полей карточки,
+- `test_feed_build.py` (83) — payload `feed-data.js`: JS-глобалы, round-trip полей карточки,
   `SAL_MAX`/FX
-- `test_charts.py` (31) — фигуры из CSV-отчётов: `_num`, stacked-pct, города/источники/heatmap/
-  компании/воронка автоотказов
+- `test_server.py` (77) — маршрутизация, gzip-кэш (304/ETag), лимит тела (413/400),
+  нормализация `employer` в `POST /api/apply`
+- `test_charts.py` (36) — фигуры из CSV-отчётов: `_num`, stacked-pct, города/источники/heatmap/
+  компании/воронка автоотказов/формы оформления
 - `test_dashboard.py` (22) — сборка HTML: панели чартов, вкладки источников, деградация
   на пустом входе; сборка герметична (в сеть не ходит)
 - `test_feed_bridge.py` (10) — стражи моста Python -> JS: офлайн-фолбэк в `src/feed/*.js`
   равен источнику в Python
-- `test_reporter.py` (10) — `ReportWriter`: запись CSV и чистка устаревших файлов прогона
+- `test_reporter.py` (11) — `ReportWriter`: запись CSV и чистка устаревших файлов прогона
   по белому списку `MANAGED_CSV`
 - `test_sanitize.py` (7) — санитайзер описаний, XSS
 

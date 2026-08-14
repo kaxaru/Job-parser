@@ -180,6 +180,8 @@ def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
     # 07.08, читателя в JS не осталось), а его вычисление роняло сборку на опечатке в
     # resume_profile.json::exp_ids — см. test_feed_survives_unknown_exp_id_in_profile.
     "SCHED_LABELS_PY", "REMOTE_LIKE_PY",
+    # форма оформления: подписи ТК/самозанятый/ИП/ГПХ — из домена (Employment), 10.08.2026
+    "EMP_LABELS_PY",
     # PORTAL_SITES_PY добавлен 01.08.2026 и в этот список НЕ попал — страж отставал от
     # кода почти неделю (найдено аудитом 07.08). Он и есть мост подписей порталов в JS,
     # без которого talanto и getmatch подписывались как «hh.ru».
@@ -370,6 +372,18 @@ def test_schedule_bridge_carries_domain_labels_and_remote_like(feed_globals):
         "remote": "Удалённо", "flexible": "Гибрид", "fullDay": "Офис",
     }
     assert _const(feed_globals["text"], "REMOTE_LIKE_PY") == ["remote", "flexible"]
+
+
+def test_employment_bridge_carries_domain_labels(feed_globals):
+    """Подписи форм оформления едут из домена (`domain/employment.py`), 10.08.2026.
+
+    Ожидаемое — литералы из спеки («ТК РФ/РБ, самозанятый, ИП, ГПХ»), а не
+    `{e.code: e.label ...}`: иначе тест повторил бы реализацию. Эти подписи видит
+    пользователь на чипах фильтра и в модалке карточки."""
+    assert _const(feed_globals["text"], "EMP_LABELS_PY") == {
+        "labor_code": "ТК РФ/РБ", "self_employed": "Самозанятый",
+        "sole_trader": "ИП", "civil_contract": "ГПХ",
+    }
 
 
 def test_state_labels_bridge_carries_every_status_label(feed_globals):

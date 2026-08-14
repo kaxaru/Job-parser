@@ -21,6 +21,7 @@ import pytest
 
 from hrwork.application.apply.chat import chat, chat_class
 from hrwork.config import PORTAL_SITES
+from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
 from hrwork.infrastructure.storage import MARK_VALUES
@@ -65,6 +66,8 @@ def _js_strings(text: str) -> list[str]:
     # Подписи формата работы (Schedule.label) — моста не было вовсе до 08.08.2026,
     # совпадал 1 код из 3, плюс в JS жили мёртвые shift / flyInFlyOut.
     ("SCHED_LABELS_PY", {s.hh_code: s.label for s in Schedule}),
+    # Подписи форм оформления (Employment.label): их видно в модалке и на чипах фильтра.
+    ("EMP_LABELS_PY", {e.code: e.label for e in Employment}),
     # Домены порталов в модалке (инцидент 01.08.2026: talanto подписывался как «hh.ru»).
     ("PORTAL_SITES_PY", PORTAL_SITES),
 ])

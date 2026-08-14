@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from hrwork.config import RAW_FILE
+from hrwork.domain.employment import EMPLOYMENT_SIG, Employment
 from hrwork.domain.models import Vacancy
 from hrwork.domain.parsing import DETECT_SIG, parse_vacancy
 
@@ -35,6 +36,12 @@ class VacancyRecord:
     sig: str = ""                    # маркер изменения вакансии (инкрементальный enrich)
     enriched: bool = False           # получено ли полное описание (не tldr-заглушка)
     enriched_at: str | None = None   # когда реально дозагружено (для max-age кеша)
+    # Ответ СТРУКТУРНОГО поля портала о форме оформления (у hh — `acceptLaborContract` +
+    # `civilLawContracts`). Лежит ЗДЕСЬ, а не на `Vacancy`: сущности нужны сами формы
+    # (`Vacancy.employment` — объединение поля и текста), а это их происхождение, то есть
+    # payload портала. Хранить обязательно: из текста его не пересчитать, и без него
+    # правка словаря форм молча теряла бы всё, что работодатель сказал галочкой, а не прозой.
+    portal_employment: tuple[Employment, ...] = ()
 
     @property
     def id(self) -> str:
@@ -86,6 +93,8 @@ class JsonVacancyRepository:
             sig=d.get("_sig", "") or "",
             enriched=bool(d.get("_enriched")),
             enriched_at=d.get("_enriched_at"),
+            portal_employment=tuple(filter(None, (Employment.from_code(c)
+                                                  for c in d.get("employment") or ()))),
         )
 
     @staticmethod
@@ -108,6 +117,9 @@ class JsonVacancyRepository:
             "created_at": v.created_at,
             "published_at": v.published_at,
             "responses": v.responses,
+            # Ответ структурного поля портала о форме оформления — ПЕРВОКЛАССНОЕ поле,
+            # а не кеш: пересчитать его из текста нельзя (см. `VacancyRecord`).
+            "employment": [e.code for e in r.portal_employment],
             "_source": v.source,
             "_sig": r.sig,
             "_enriched": r.enriched,
@@ -117,6 +129,9 @@ class JsonVacancyRepository:
             # считается по тайтлу и техам, это дёшево, а ROLE_PATTERNS правятся чаще.
             "_techs": v.techs,
             "_dv": DETECT_SIG,
+            # Кеш форм оформления — своя сигнатура (`_ev`), см. `parsing.py::parse_vacancy`.
+            "_emp": [e.code for e in v.employment],
+            "_ev": EMPLOYMENT_SIG,
         }
 
 

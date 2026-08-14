@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 
 from hrwork.domain import freshness
+from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.role import Role
 from hrwork.domain.salary import Salary
@@ -32,6 +33,11 @@ class Vacancy:
     published_at: str | None = None  # ISO: когда последний раз поднята/переопубликована
     responses: int | None = None     # сколько уже откликнулось (конкуренция)
     source: str = 'hh'               # портал-источник (hh / hirify / …) — для агрегатора
+    # Формы оформления, УПОМЯНУТЫЕ в тексте вакансии (ТК/самозанятость/ИП/ГПХ). Кортеж,
+    # а не одно значение: «по ТК РФ или как самозанятый» — обычная формулировка, и
+    # вакансия обязана попадать в оба фильтра. Пустой кортеж = в тексте не сказано;
+    # додумывать «раз это hh, значит ТК» нельзя (`domain/employment.py`).
+    employment: tuple[Employment, ...] = ()
 
     # ── Поведение сущности над её же датами/форматом (раньше — свободные функции
     # freshness.*(v.created_at) у каждого потребителя). Тонкие делегаты к доменному

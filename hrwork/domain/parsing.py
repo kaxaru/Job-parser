@@ -15,6 +15,7 @@ from typing import Any
 # Развязка — вынос чистых констант в модуль без side-effect'ов, см. docs/domain.md
 # «Известные компромиссы».
 from hrwork.config import LANG_KEYS, ROLE_PATTERNS, TECH_PATTERNS
+from hrwork.domain.employment import EMPLOYMENT_SIG, Employment, detect_employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
@@ -273,16 +274,27 @@ def _detect_role(name: str, techs: list[str]) -> Role:
 def build_vacancy(*, vid: Any, name: Any, city: Any, city_id: Any, salary: Any,
                   experience: Any, schedule: Any, detect_text: Any, employer: Any,
                   created_at: Any, published_at: Any, responses: Any, source: Any,
-                  techs: list[str] | None = None) -> Vacancy:
+                  techs: list[str] | None = None,
+                  employment: tuple[Employment, ...] | None = None,
+                  employment_field: tuple[Employment, ...] = ()) -> Vacancy:
     """Доменная фабрика: собрать Vacancy, посчитав техи (по detect_text) и роль (по тайтлу).
     Единая точка детекции стека/роли для ВСЕХ ACL — и persisted-dict (parse_vacancy),
     и адаптеров источников (hh/hirify). detect_text = тайтл + текст сниппета/карточки.
 
     `techs` — ГОТОВЫЕ техи из кеша (parse_vacancy, см. DETECT_SIG). Передаются, только
     когда сигнатура словарей совпала; иначе None и считаем заново. Роль от техов дешёвая,
-    её всегда считаем здесь — так она не разъедется с текущим ROLE_PATTERNS."""
+    её всегда считаем здесь — так она не разъедется с текущим ROLE_PATTERNS.
+
+    `employment` — то же самое для форм оформления (кеш `_emp`, своя сигнатура
+    EMPLOYMENT_SIG). `employment_field` — формы, названные СТРУКТУРНЫМ полем портала
+    (`Employment.from_hh_fields`); они ОБЪЕДИНЯЮТСЯ с найденными в тексте, а не заменяют их:
+    поле есть только у hh и заполнено не у всех, а текст называет форму и там, где галочки
+    не проставили. Дублей не будет — объединение идёт через множество, порядок канонический."""
     if techs is None:
         techs = _detect_techs(detect_text)
+    if employment is None:
+        found = {*employment_field, *detect_employment(detect_text)}
+        employment = tuple(emp for emp in Employment if emp in found)
     return Vacancy(
         id          = vid,
         name        = name,
@@ -298,6 +310,7 @@ def build_vacancy(*, vid: Any, name: Any, city: Any, city_id: Any, salary: Any,
         published_at = published_at,
         responses    = responses,
         source       = source or 'hh',
+        employment   = employment,
     )
 
 
@@ -327,4 +340,15 @@ def parse_vacancy(raw: dict[str, Any]) -> Vacancy:
         # -> запись перезаписывается сбором целиком; словарь меняется -> не сойдётся
         # DETECT_SIG, и техи пересчитаются сами.
         techs        = raw.get('_techs') if raw.get('_dv') == DETECT_SIG else None,
+        # Формы оформления из кеша — по СВОЕЙ сигнатуре (`_ev`), не по `_dv`: словари
+        # стека и форм правятся независимо, и общая сигнатура заставляла бы пересчитывать
+        # стек (46 с на 81k записей) из-за правки одного слова про ИП.
+        employment   = (tuple(filter(None, (Employment.from_code(c)
+                                            for c in raw.get('_emp') or ())))
+                        if raw.get('_ev') == EMPLOYMENT_SIG else None),
+        # Ответ СТРУКТУРНОГО поля портала: его нельзя пересчитать из текста, поэтому он
+        # лежит в raw отдельным полем и подмешивается при промахе кеша (иначе правка
+        # словаря форм молча теряла бы всё, что сказано галочками, а не прозой).
+        employment_field = tuple(filter(None, (Employment.from_code(c)
+                                               for c in raw.get('employment') or ()))),
     )

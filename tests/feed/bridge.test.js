@@ -27,7 +27,7 @@ const vac = over => ({
 });
 const flt = over => ({
   search: [], resumeOnly: false, langs: new Set(), roles: new Set(), showNonIt: false,
-  exps: new Set(), minSal: 0, maxSal: 1e6, salMax: 1e6, city: '', schedule: 'all',
+  exps: new Set(), emps: new Set(), minSal: 0, maxSal: 1e6, salMax: 1e6, city: '', schedule: 'all',
   status: 'all', source: 'all', displayCur: 'RUB', dateFrom: '', dateTo: '',
   sort: 'none', matchSort: false, ...over,
 });

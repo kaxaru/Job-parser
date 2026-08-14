@@ -3,6 +3,7 @@ import asyncio
 
 import pytest
 
+from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.role import Role
 from hrwork.domain.schedule import Schedule
@@ -15,6 +16,7 @@ from hrwork.infrastructure.sources.getmatch import (
     _normalize,
     _sig,
 )
+from hrwork.infrastructure.sources.text import strip_html
 from hrwork.infrastructure.storage import files
 from hrwork.infrastructure.storage.repository import JsonVacancyRepository
 
@@ -313,3 +315,30 @@ def test_one_broken_card_does_not_kill_the_source(monkeypatch):
     src = _src(monkeypatch, pages)
     out = asyncio.run(src.collect())
     assert [r.vacancy.id for r in out] == ["getmatch_35091"]
+
+
+# ── Текст карточки идёт в детекцию, а не только короткая выжимка (10.08.2026) ──────────
+
+def test_requirement_carries_the_flat_card_text_not_the_short_teaser():
+    """Замер 10.08.2026: ТК/ГПХ называются в 24 % описаний getmatch, а домен видел 0 % —
+    в detect_text шла только выжимка `offer_description`, а форма живёт в теле карточки.
+
+    Плоский текст обязан лежать именно в `requirement`: из него `parse_vacancy` собирает
+    detect_text при ЗАГРУЗКЕ, и разойдись он со сбором — кеш `_emp` закрепил бы тот разбор,
+    что случился первым."""
+    r = _normalize(ITEM, {**FULL, "description":
+                          "<p>Оформление по ТК РФ</p><ul><li>ДМС</li></ul>"})
+    assert r.requirement == "Оформление по ТК РФ ДМС"
+    assert r.vacancy.employment == (Employment.LABOR_CODE,)
+
+
+def test_card_without_description_falls_back_to_the_teaser():
+    # карточка не дозагружена -> в требованиях остаётся выжимка списка, а не пустая строка
+    assert _normalize(ITEM).requirement == "Что делать: развёртывать и настраивать серверы EDR."
+
+
+def test_tags_become_spaces_so_neighbouring_words_do_not_glue():
+    # `<li>Python</li><li>Go</li>` без пробела дал бы «PythonGo», и ни стек, ни форма
+    # оформления не нашлись бы
+    assert strip_html("<li>Python</li><li>Go</li>") == "Python Go"
+    assert strip_html("") == ""

@@ -6,6 +6,7 @@ from typing import Any
 import plotly.graph_objects as go
 
 from hrwork.config import ACCENT, BG, GRID, PAPER, REPORTS_DIR, TEXT
+from hrwork.domain.employment import Employment
 from hrwork.domain.freshness import FreshnessClass
 
 # Каталог CSV-отчётов передаётся ЯВНО в каждую chart_*-функцию (по-портальные срезы дашборда
@@ -357,6 +358,51 @@ def chart_by_source(base: Path = REPORTS_DIR) -> go.Figure:
         **_layout("Порталы: вакансий по источникам агрегатора"),
         xaxis=dict(title="Портал", tickfont=dict(color=TEXT, size=13)),
         yaxis=dict(title="Вакансий", showgrid=True, gridcolor=GRID),
+    )
+    return fig
+
+
+def chart_employment(base: Path = REPORTS_DIR) -> go.Figure:
+    """Форма оформления по порталам: доля вакансий портала, где форма НАЗВАНА в тексте.
+
+    Сгруппированные бары, а НЕ 100%-стек (`_stacked_pct_bars`), хотя по виду напрашивается:
+    стек подразумевает, что доли делят одно целое, а форм у вакансии бывает несколько
+    («по ТК РФ или как самозанятый»), и сумма долей портала законно превышает 100 %.
+    Нормировать такое к сотне значило бы нарисовать неправду.
+
+    Столбец «Не указано» показан НАРАВНЕ с формами и первым в легенде: формы читаются из
+    текста описания, а у talanto и hirify описания — tldr-заглушки (медиана 30 и 59
+    символов, замер 10.08.2026). Без этого столбца график читался бы как «на talanto
+    оформления нет», хотя верное чтение — «портал не дал текста, чтобы это узнать»."""
+    rows = _read(base, "14_employment_by_source.csv")
+    if not rows:
+        return go.Figure(layout=_layout("Форма оформления по порталам: нет данных"))
+    rows_s = sorted(rows, key=lambda r: int(r["Вакансий"]))
+    srcs = [r["Портал"] for r in rows_s]
+    totals = [int(r["Вакансий"]) for r in rows_s]
+
+    def share(col: str) -> list[float]:
+        return [round(int(r[col]) * 100 / t, 1) if t else 0.0 for r, t in zip(rows_s, totals)]
+
+    # Подписи столбцов читаются СТРОГИМ парсером: заголовок CSV, разошедшийся с доменом,
+    # обязан упасть здесь, а не нарисовать пустые бары (`Employment.from_label`).
+    forms = [(Employment.from_label(c).label, share(c))
+             for c in rows_s[0] if c not in ("Портал", "Вакансий", "Не указано", "%названо")]
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Не указано", x=share("Не указано"), y=srcs, orientation="h",
+                         marker_color="#4a4d58",
+                         hovertemplate="%{y}<br>форма не названа: %{x}%<extra></extra>"))
+    for (label, vals), color in zip(forms, ("#54A24B", "#4C78A8", "#E45756", "#B279A2")):
+        fig.add_trace(go.Bar(name=label, x=vals, y=srcs, orientation="h", marker_color=color,
+                             hovertemplate="%{y}<br>" + label + ": %{x}%<extra></extra>"))
+    fig.update_layout(
+        **_layout("Форма оформления: доля вакансий портала, где она названа в тексте"),
+        barmode="group",
+        height=max(520, len(srcs) * 60 + 120),
+        xaxis=dict(title="Доля вакансий портала, %", showgrid=True, gridcolor=GRID,
+                   ticksuffix="%"),
+        yaxis=dict(title="", showgrid=False, tickfont=dict(size=13)),
+        legend=dict(orientation="h", y=-0.12, yanchor="top", x=0.5, xanchor="center"),
     )
     return fig
 

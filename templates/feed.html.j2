@@ -148,6 +148,19 @@
     </div>
   </div>
 
+  <!-- Оформление: чипы рендерятся из домена (Employment), value = код формы.
+       Формы вычитываются из ТЕКСТА описания — структурного поля порталы не отдают,
+       поэтому чип «Не указано» (пустой код) собирает большинство карточек. -->
+  <div class="filter-group">
+    <span class="filter-label" title="Форма оформления названа в тексте вакансии; порталы отдельным полем её не отдают">Оформление</span>
+    <div class="lang-grid">
+      {% for code, label in emps %}
+      <input type="checkbox" class="lang-cb emp-cb" id="emp-{{ loop.index0 }}" value="{{ code }}">
+      <label class="lang-label" for="emp-{{ loop.index0 }}">{{ label }}</label>
+      {% endfor %}
+    </div>
+  </div>
+
   <!-- Resume match -->
   <div class="filter-group">
     <span class="filter-label">Под меня</span>

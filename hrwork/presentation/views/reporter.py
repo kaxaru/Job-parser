@@ -12,6 +12,7 @@ from typing import Any
 from hrwork.application.analyzer import Analyzer
 from hrwork.config import REPORTS_DIR, log
 from hrwork.domain import freshness
+from hrwork.domain.employment import Employment
 from hrwork.domain.models import Vacancy
 
 # Файлы, которыми ВЛАДЕЕТ ReportWriter: `cleanup` удаляет только их. Каталог вывода
@@ -25,7 +26,7 @@ MANAGED_CSV: frozenset[str] = frozenset({
     '04_salary_city_lang.csv', '05_top_stacks.csv', '06_salary_by_exp.csv',
     '07_python_stack.csv', '08_js_stack.csv', '09_remote_by_city.csv',
     '10_freshness_by_city.csv', '11_companies.csv', '11c_company_sizes.csv',
-    '12_sources.csv',
+    '12_sources.csv', '14_employment_by_source.csv',
 })
 
 
@@ -225,11 +226,29 @@ def report_by_source(a: Analyzer, w: ReportWriter) -> None:
     w.csv('12_sources.csv', cols, rows)
 
 
+def report_employment_by_source(a: Analyzer, w: ReportWriter) -> None:
+    # 14. Формы оформления по порталам. Заголовки столбцов — ПОДПИСИ форм из домена
+    # (`Employment.label`), обратно их читает `charts.py` строгим `Employment.from_label`:
+    # переименование подписи обязано падать громко, а не рисовать пустой график.
+    rows_src = a.employment_by_source()
+    if not rows_src:
+        return
+    forms = list(Employment)
+    cols = ['Портал', 'Вакансий', *(f.label for f in forms), 'Не указано', '%названо']
+    rows = [[r['source'], r['total'], *(r['forms'][f] for f in forms),
+             r['unknown'], r['named_pct']] for r in rows_src]
+    w.table(cols, rows,
+            '14. Форма оформления по порталам (столбцы форм НЕ складываются в «Вакансий»: '
+            'вакансия бывает «по ТК или как самозанятый»)')
+    w.csv('14_employment_by_source.csv', cols, rows)
+
+
 # Реестр отчётов = порядок генерации. Добавить отчёт = дописать функцию сюда.
 _REPORTS = [
     report_cities, report_tech_by_city, report_salary_by_lang, report_salary_city_lang,
     report_top_stacks, report_salary_by_exp, report_lang_stacks, report_remote_by_city,
     report_freshness, report_companies, report_company_sizes, report_by_source,
+    report_employment_by_source,
 ]
 
 

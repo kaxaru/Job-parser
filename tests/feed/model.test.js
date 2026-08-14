@@ -13,6 +13,8 @@ import {
   isDiscard, isInvited,
   journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
   comparableSalary,
+  employmentLabel,
+  hrReplyTime,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте.
@@ -31,7 +33,7 @@ function vac(over = {}) {
 function flt(over = {}) {
   return {
     search: [], resumeOnly: false, langs: new Set(), roles: new Set(),
-    showNonIt: false, exps: new Set(),
+    showNonIt: false, exps: new Set(), emps: new Set(),
     minSal: 0, maxSal: 1_000_000, salMax: 1_000_000,
     city: '', schedule: 'all', status: 'all', source: 'all', displayCur: 'RUB',
     dateFrom: '', dateTo: '', sort: 'none', matchSort: false,
@@ -902,5 +904,164 @@ describe('filterVacancies — опыт: карточка без грейда', (
 
   it('ни один чип не выбран -> фильтр снят, видно обе', () => {
     assert.deepEqual(filterVacancies([noGrade, junior], flt()).map(v => v.id), ['w3', 'jr']);
+  });
+});
+
+/* Форма оформления (10.08.2026). Карточка несёт СПИСОК форм, потому что вакансия бывает
+   «по ТК РФ или как самозанятый»: она обязана попадать в оба фильтра сразу. Порталы
+   структурного поля не отдают, форма читается из текста описания — поэтому у большинства
+   карточек список ПУСТ, и его ловит чип с пустым кодом (`feed.py::EMP_UNKNOWN`). */
+describe('filterVacancies — форма оформления', () => {
+  const tk    = vac({ id: 'tk',   emp_ids: ['labor_code'] });
+  const both  = vac({ id: 'both', emp_ids: ['labor_code', 'self_employed'] });
+  const gph   = vac({ id: 'gph',  emp_ids: ['civil_contract'] });
+  const none  = vac({ id: 'none', emp_ids: [] });
+  const all   = [tk, both, gph, none];
+
+  it('ни один чип не выбран -> фильтр снят, видно все', () => {
+    assert.deepEqual(filterVacancies(all, flt()).map(v => v.id), ['tk', 'both', 'gph', 'none']);
+  });
+
+  it('чип «ТК» -> видно и вакансию с одной формой, и вакансию с двумя', () => {
+    const f = flt({ emps: new Set(['labor_code']) });
+    assert.deepEqual(filterVacancies(all, f).map(v => v.id), ['tk', 'both']);
+  });
+
+  it('чип «Самозанятый» -> видно вакансию, где ТК идёт первой из двух форм', () => {
+    const f = flt({ emps: new Set(['self_employed']) });
+    assert.deepEqual(filterVacancies(all, f).map(v => v.id), ['both']);
+  });
+
+  it('чип «Не указано» -> видно ТОЛЬКО вакансию с пустым списком', () => {
+    const f = flt({ emps: new Set(['']) });
+    assert.deepEqual(filterVacancies(all, f).map(v => v.id), ['none']);
+  });
+
+  it('все пять чипов выбраны -> равносильно снятому фильтру', () => {
+    const f = flt({ emps: new Set(['labor_code', 'self_employed', 'sole_trader', 'civil_contract', '']) });
+    assert.deepEqual(filterVacancies(all, f).map(v => v.id), ['tk', 'both', 'gph', 'none']);
+  });
+
+  it('карточка без поля emp_ids не роняет фильтр и считается «не указано»', () => {
+    const legacy = vac({ id: 'old' });
+    assert.deepEqual(filterVacancies([legacy], flt({ emps: new Set(['']) })).map(v => v.id), ['old']);
+    assert.deepEqual(filterVacancies([legacy], flt({ emps: new Set(['labor_code']) })).map(v => v.id), []);
+  });
+
+  it('группа «оформление» считается активным фильтром', () => {
+    assert.equal(countActiveFilters(flt({ emps: new Set(['labor_code']) })), 1);
+    assert.equal(countActiveFilters(flt()), 0);
+  });
+});
+
+describe('employmentLabel', () => {
+  it('две формы -> подписи через точку', () => {
+    assert.equal(employmentLabel({ emp_ids: ['labor_code', 'self_employed'] }),
+      'ТК РФ/РБ · Самозанятый');
+  });
+
+  it('форма не названа -> пустая строка, а не «ТК» по умолчанию', () => {
+    assert.equal(employmentLabel({ emp_ids: [] }), '');
+    assert.equal(employmentLabel({}), '');
+  });
+});
+
+/* Инцидент 10.08.2026. Под фильтром «С контактами» первым стоял «Сетевой инженер» с ответом
+   в 09:25, а «Учитель кружка программирования» с ответом в 14:13 — самым свежим за день —
+   оказался в середине списка. Сортировка была исправна: у учителя ПУСТОЙ `hr_ts`, потому что
+   ключ печётся из чат-данных, скачанных на момент сборки (лента собралась в 14:40, крон чата
+   привёз ответ в 17:12). Оверлей serve обновляет `v.chat`, но `hr_ts` не трогает.
+   Лечение — `hrReplyTime`: живой чат приоритетнее испечённого ключа. */
+describe('сортировка «Ответы HR» — живой чат против испечённого ключа', () => {
+  const baked = vac({ id: 'net', name: 'Сетевой инженер', hr_ts: '2026-08-10T09:25:06+03:00' });
+  const live = vac({
+    id: 'teacher', name: 'Учитель кружка программирования', hr_ts: '',
+    chat: { sender: 'human', ts: '2026-08-10T14:13:12+03:00', contact: '@hr' },
+  });
+
+  it('свежий ответ из живого чата поднимается выше испечённого', () => {
+    const f = flt({ sort: 'reply_new' });
+    assert.deepEqual(filterVacancies([baked, live], f).map(v => v.id), ['teacher', 'net']);
+  });
+
+  it('призрак с живым чатом больше не падает в конец', () => {
+    // под «С контактами» карточка без чата не видна вовсе, поэтому у «сетевого» он тоже есть:
+    // последнее сообщение — отказ работодателя, время совпадает с испечённым ключом
+    const net = vac({ id: 'net', hr_ts: '2026-08-10T09:25:06+03:00',
+      chat: { sender: 'human', ts: '2026-08-10T09:25:06+03:00', contact: '+7 900' } });
+    const ghost = syntheticCard('g', {});
+    ghost.chat = { sender: 'human', ts: '2026-08-10T18:00:00+03:00', contact: '+7 900' };
+    const f = flt({ sort: 'reply_new', chatFilter: 'contact' });
+    assert.deepEqual(filterVacancies([net, ghost], f).map(v => v.id), ['g', 'net']);
+  });
+});
+
+describe('hrReplyTime — какой ответ считается ответом HR', () => {
+  it('живой ответ человека побеждает испечённый ключ', () => {
+    assert.equal(
+      hrReplyTime({ hr_ts: '2026-08-01T10:00:00+03:00',
+        chat: { sender: 'human', ts: '2026-08-10T14:13:12+03:00' } }),
+      '2026-08-10T14:13:12+03:00');
+  });
+
+  it('шаблонное письмо работодателя — тоже ответ (как в feed.py::_last_hr_replies)', () => {
+    assert.equal(hrReplyTime({ hr_ts: '', chat: { sender: 'template', ts: '2026-08-10T12:00:00+03:00' } }),
+      '2026-08-10T12:00:00+03:00');
+  });
+
+  it('автоответ бота вакансию не поднимает', () => {
+    assert.equal(hrReplyTime({ hr_ts: '', chat: { sender: 'bot', ts: '2026-08-10T20:00:00+03:00' } }), '');
+  });
+
+  it('последнее слово за нами -> берём испечённый ключ, а не время своего письма', () => {
+    // analyze() при нашем последнем сообщении оставляет sender пустым
+    assert.equal(hrReplyTime({ hr_ts: '2026-08-01T10:00:00+03:00', chat: { sender: '', ts: '2026-08-10T19:00:00+03:00' } }),
+      '2026-08-01T10:00:00+03:00');
+  });
+
+  it('чата нет вовсе -> испечённый ключ, пусто -> пустая строка', () => {
+    assert.equal(hrReplyTime({ hr_ts: '2026-08-01T10:00:00+03:00' }), '2026-08-01T10:00:00+03:00');
+    assert.equal(hrReplyTime({}), '');
+  });
+});
+
+/* 10.08.2026: «Ответы HR» показывает призраков. Включая эту сортировку, человек просит
+   «покажи, где ответили» — а вакансии, выпавшие из выдачи, оставались невидимыми до тех
+   пор, пока он не добавит ещё и чат-фильтр. Но только тех, где ответ ЕСТЬ: иначе в выдачу
+   высыпался бы весь журнал откликов по выпавшим вакансиям. */
+describe('«Ответы HR» открывает призраков с ответом', () => {
+  const real = vac({ id: 'real', hr_ts: '2026-08-01T10:00:00+03:00' });
+
+  const ghostAnswered = () => {
+    const g = syntheticCard('ga', {});
+    g.chat = { sender: 'human', ts: '2026-08-10T18:00:00+03:00', contact: '' };
+    return g;
+  };
+  const ghostSilent = () => syntheticCard('gs', {});   /* отклик был, ответа нет */
+
+  it('без чат-фильтра сортировка «Ответы HR» показывает призрака с ответом первым', () => {
+    const f = flt({ sort: 'reply_new' });
+    assert.deepEqual(
+      filterVacancies([real, ghostAnswered()], f).map(v => v.id), ['ga', 'real']);
+  });
+
+  it('призрак БЕЗ ответа остаётся скрытым и в этой сортировке', () => {
+    const f = flt({ sort: 'reply_new' });
+    assert.deepEqual(filterVacancies([real, ghostSilent()], f).map(v => v.id), ['real']);
+  });
+
+  it('в остальных сортировках призрак с ответом по-прежнему скрыт', () => {
+    for (const sort of ['none', 'date_new', 'desc']) {
+      assert.deepEqual(
+        filterVacancies([real, ghostAnswered()], flt({ sort })).map(v => v.id), ['real'],
+        `сортировка ${sort}`);
+    }
+  });
+
+  it('чат-фильтр по-прежнему показывает призраков независимо от сортировки', () => {
+    const g = ghostAnswered();
+    g.chat.contact = '+7 900';
+    const f = flt({ sort: 'none', chatFilter: 'contact' });
+    assert.deepEqual(filterVacancies([g], f).map(v => v.id), ['ga']);
   });
 });

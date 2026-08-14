@@ -6,6 +6,7 @@ from typing import Any
 
 from hrwork.config import LANG_KEYS, MIN_SAMPLE_CITY_LANG, MIN_SAMPLE_SALARY
 from hrwork.domain import freshness
+from hrwork.domain.employment import Employment
 from hrwork.domain.models import Vacancy
 from hrwork.infrastructure.net import rates
 
@@ -226,6 +227,35 @@ class Analyzer:
         удалёнка, гост. Сравнить охват/качество HH vs hirify vs …"""
         rows = [{"source": src, **s} for src, s in self._group_stats("source").items()]
         return sorted(rows, key=lambda r: -r["total"])
+
+    def employment_by_source(self) -> list[dict[str, Any]]:
+        """Разрез форм оформления (ТК/самозанятость/ИП/ГПХ) ПО ПОРТАЛАМ.
+
+        По портальному разрезу, а не общий: формы читаются из текста описания, и
+        насколько текст вообще о них говорит — свойство ПОРТАЛА, а не рынка. Замер
+        10.08.2026: hh называет форму у 60 % описаний, getmatch — у 24 %, а у talanto
+        и hirify описания это tldr-заглушки (медиана 30 и 59 символов), то есть их ноль
+        означает «нечего читать», а не «оформления нет». Общая цифра по всей базе
+        смешала бы эти три разных состояния в одно среднее.
+
+        Суммы по формам НЕ дают total: вакансия «по ТК РФ или как самозанятый» попадает
+        в оба столбца. Поэтому в строке есть `named` (у скольких форма названа ХОТЬ КАКАЯ)
+        и `unknown` — только они и складываются в total."""
+        by_src: dict[str, list[Vacancy]] = defaultdict(list)
+        for v in self.vacs:
+            by_src[v.source].append(v)
+        rows = []
+        for src, vacs in by_src.items():
+            named = sum(1 for v in vacs if v.employment)
+            rows.append({
+                "source": src,
+                "total": len(vacs),
+                "named": named,
+                "unknown": len(vacs) - named,
+                "named_pct": round(named * 100 / len(vacs), 1) if vacs else 0.0,
+                "forms": {f: sum(1 for v in vacs if f in v.employment) for f in Employment},
+            })
+        return sorted(rows, key=lambda r: -int(r["total"]))
 
     def freshness_by_city(self) -> list[dict[str, Any]]:
         """По городам: свежие / гост / медианный возраст — для дашборда качества выдачи."""

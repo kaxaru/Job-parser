@@ -35,6 +35,7 @@ from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.sources.text import strip_html
 from hrwork.infrastructure.storage import VacancyRecord
 
 from .base import Source, check_list_complete, normalize_each, register_source
@@ -169,7 +170,14 @@ def _normalize(it: dict[str, Any], full: dict[str, Any] | None = None,
                                               src.get("required_years_of_experience"))
 
     name = str(it.get("position") or "")
-    snippet = str(it.get("offer_description") or "")
+    # Текст для детекции = ПОЛНОЕ описание карточки, как у hh (`hh.py::_enrich` кладёт в
+    # requirement keySkills + очищенный текст). Раньше сюда шла только короткая выжимка
+    # `offer_description`, и это стоило форм оформления: замер 10.08.2026 нашёл ТК/ГПХ
+    # в 24 % описаний getmatch, а домен видел 0 % — форма называется в теле карточки,
+    # куда детектор не заглядывал. Плоский текст обязан лежать и в `requirement`: из него
+    # `parse_vacancy` собирает detect_text при загрузке, и иначе разбор на СБОРЕ и на
+    # ЗАГРУЗКЕ давал бы разные ответы (кеш `_emp` закрепил бы тот, что попался первым).
+    snippet = strip_html(desc_html) or str(it.get("offer_description") or "")
     company = it.get("company") or {}
     published = it.get("published_at")
     vac = build_vacancy(

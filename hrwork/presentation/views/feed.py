@@ -35,6 +35,7 @@ from hrwork.config import (
     TEXT,
     log,
 )
+from hrwork.domain.employment import Employment
 from hrwork.domain.parsing import has_remote
 from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
 from hrwork.infrastructure.net import rates
@@ -112,6 +113,22 @@ def sanitize_desc(src: str) -> str:
 #: баллов, «это качество данных портала, а не несоответствие резюме». Фильтр просто
 #: догнал скоринг, который решил этот вопрос раньше и правильно.
 EXP_UNKNOWN = ("", "Не указан")
+
+
+# ── Чипы формы оформления ─────────────────────────────────────────────────────
+#: Чип «не указано» для формы оформления. Код — ПУСТАЯ СТРОКА, как у `EXP_UNKNOWN`, но
+#: значит другое: у опыта пустой код лежит в самой карточке (`exp_id`), а здесь карточка
+#: несёт СПИСОК форм (`emp_ids`), и пустой код фильтра означает «список пуст»
+#: (`model.js::filterVacancies`).
+#:
+#: Чип обязателен, а не опционален. Структурное поле есть только у hh, и даже там его
+#: заполняют не все; на прочих порталах форму приходится вычитывать из текста, а текста
+#: часто нет. Срез сбора 10.08.2026 (124 512 карточек): hh — 82 %, getmatch — 18 %,
+#: остальные семь порталов — ноль (у talanto и hirify описания это tldr-заглушки, медиана
+#: 30 и 59 символов; у западных российских форм не бывает). Итого 103 869 карточек (83 %)
+#: попадают именно в этот чип. Без него фильтр «выбрано всё» перестал бы быть равносилен
+#: «фильтр снят» — ровно та поломка, что была с опытом.
+EMP_UNKNOWN = ("", "Не указано")
 
 
 # ── Ползунок зарплаты ─────────────────────────────────────────────────────────
@@ -208,6 +225,10 @@ def build_feed() -> None:
             "exp":      v.experience.label if v.experience else "",
             "exp_id":   v.experience.hh_id if v.experience else "",
             "schedule": v.schedule.hh_code,
+            # Формы оформления — СПИСОК кодов (вакансия бывает «по ТК или как самозанятый»).
+            # Подписи не дублируем: их отдаёт мост EMP_LABELS_PY, иначе переименование
+            # подписи потребовало бы пересбора всех 74 МБ данных.
+            "emp_ids":  [e.code for e in v.employment],
             "techs":    v.techs,
             "remote_any": remote_any,
             "role":     v.role.label,
@@ -289,6 +310,10 @@ def build_feed() -> None:
         f"const SCHED_LABELS_PY = "
         f"{json.dumps({s.hh_code: s.label for s in Schedule}, ensure_ascii=False)};\n"
         f"const REMOTE_LIKE_PY = {json.dumps(list(REMOTE_LIKE_CODES))};\n"
+        # Формы оформления: код -> подпись из домена (Employment). Карточка везёт только
+        # коды, подпись берётся отсюда — один источник на чипы, карточку и модалку.
+        f"const EMP_LABELS_PY = "
+        f"{json.dumps({e.code: e.label for e in Employment}, ensure_ascii=False)};\n"
         # тупиковые виды чата (chat_class.FROZEN_KINDS): бейдж, фильтр «Личные» и счётчик
         f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
         # подпись портала в карточке (config.PORTAL_SITES) — единый источник с Python
@@ -330,6 +355,9 @@ def build_feed() -> None:
         # правка EXP_LABELS молча ломала и чипы, и скоринг. `value` чипа — доменный КОД,
         # фильтр сравнивает его с `exp_id` карточки.
         exps=[*EXP_LABELS.items(), EXP_UNKNOWN],
+        # Чипы «Оформление» — из домена (Employment), `value` = код формы; последний чип
+        # «Не указано» с пустым кодом ловит карточки с пустым `emp_ids` (EMP_UNKNOWN).
+        emps=[*((e.code, e.label) for e in Employment), EMP_UNKNOWN],
         sal_max=sal_max,
         sal_step=SALARY_STEP,
         total_records=len(records),

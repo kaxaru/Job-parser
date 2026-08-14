@@ -4,6 +4,7 @@ import datetime
 import pytest
 
 from hrwork.application.analyzer import Analyzer
+from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import Vacancy
 from hrwork.domain.role import Role
@@ -312,3 +313,47 @@ def test_by_source_splits_by_portal():
     assert rows[0]["remote"] == 2
     hf = next(r for r in rows if r["source"] == "hirify")
     assert (hf["total"], hf["office"]) == (1, 1)
+
+
+# ── Форма оформления по порталам (10.08.2026) ────────────────────────────────────────
+# Разрез портальный, а не общий: форма читается из ТЕКСТА описания, и «сколько раз она
+# названа» — свойство портала. У talanto и hirify описания это tldr-заглушки, их ноль
+# значит «нечего читать», а не «оформления нет».
+
+def _emp_vac(vid, source, forms):
+    return Vacancy(id=vid, name="x", city="М", city_id="1", salary=None,
+                   experience=None, schedule=Schedule.OFFICE, source=source,
+                   employment=forms)
+
+
+def test_employment_by_source_counts_each_named_form():
+    rows = Analyzer.with_live_rates([
+        _emp_vac("1", "hh", (Employment.LABOR_CODE,)),
+        _emp_vac("2", "hh", (Employment.LABOR_CODE, Employment.SELF_EMPLOYED)),
+        _emp_vac("3", "hh", ()),
+        _emp_vac("4", "talanto", ()),
+    ]).employment_by_source()
+    hh = next(r for r in rows if r["source"] == "hh")
+    assert hh["total"] == 3
+    assert hh["forms"][Employment.LABOR_CODE] == 2
+    assert hh["forms"][Employment.SELF_EMPLOYED] == 1
+    assert hh["forms"][Employment.SOLE_TRADER] == 0
+
+
+def test_employment_by_source_counts_a_two_form_vacancy_once_as_named():
+    # «по ТК РФ или как самозанятый» — ОДНА вакансия с двумя формами: в столбцах формы
+    # она учтена дважды, в «названо» — один раз. Складываются только named + unknown.
+    rows = Analyzer.with_live_rates([
+        _emp_vac("1", "hh", (Employment.LABOR_CODE, Employment.SELF_EMPLOYED)),
+        _emp_vac("2", "hh", ()),
+    ]).employment_by_source()
+    assert (rows[0]["named"], rows[0]["unknown"], rows[0]["total"]) == (1, 1, 2)
+    assert rows[0]["named_pct"] == 50.0
+
+
+def test_employment_by_source_reports_a_portal_that_never_names_the_form():
+    # talanto: описаний по сути нет -> честный ноль названных, а не пустая строка отчёта
+    rows = Analyzer.with_live_rates([
+        _emp_vac("1", "talanto", ()), _emp_vac("2", "talanto", ()),
+    ]).employment_by_source()
+    assert (rows[0]["source"], rows[0]["named"], rows[0]["named_pct"]) == ("talanto", 0, 0.0)

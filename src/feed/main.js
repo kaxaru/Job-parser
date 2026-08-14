@@ -30,6 +30,7 @@ const store = createStore({
   roles: new Set(),
   showNonIt: false,
   exps: new Set(),
+  emps: new Set(),           /* формы оформления: ТК/самозанятый/ИП/ГПХ + «не указано» */
   minSal: 0,
   maxSal: SAL_MAX,
   salMax: SAL_MAX,
@@ -148,7 +149,10 @@ document.getElementById('modal-box').addEventListener('click', async e => {
 });
 
 /* ── Фильтры ── */
-document.querySelectorAll('.lang-cb:not(.exp-cb)').forEach(cb => {
+/* `.lang-cb` — общий класс разметки чипа-галочки, поэтому языковой обработчик обязан
+   исключить ВСЕ специализированные чипы (опыт, оформление), иначе код формы попал бы
+   в набор языков и обнулил выдачу. */
+document.querySelectorAll('.lang-cb:not(.exp-cb):not(.emp-cb)').forEach(cb => {
   cb.addEventListener('change', () => {
     const langs = store.get().langs;
     if (cb.checked) langs.add(cb.value); else langs.delete(cb.value);
@@ -160,6 +164,13 @@ document.querySelectorAll('.exp-cb').forEach(cb => {
     const exps = store.get().exps;
     if (cb.checked) exps.add(cb.value); else exps.delete(cb.value);
     store.update({ exps });
+  });
+});
+document.querySelectorAll('.emp-cb').forEach(cb => {
+  cb.addEventListener('change', () => {
+    const emps = store.get().emps;
+    if (cb.checked) emps.add(cb.value); else emps.delete(cb.value);
+    store.update({ emps });
   });
 });
 document.querySelectorAll('.role-cb').forEach(cb => {
@@ -281,6 +292,7 @@ if (matchBtn) matchBtn.addEventListener('click', () => {
 function resetFilters() {
   store.get().langs.clear();
   store.get().exps.clear();
+  store.get().emps.clear();
   store.get().roles.clear();
   document.querySelectorAll('.lang-cb, .role-cb').forEach(cb => { cb.checked = false; });
   if (nonitBtn) nonitBtn.classList.remove('active');
@@ -574,7 +586,7 @@ async function initOverlay() {
   for (const [id, rec] of Object.entries(forms || {})) {
     const v = V_MAP[id];
     if (!v) continue;
-    const dead = !!(rec && rec.dead);
+    const dead = !!rec?.dead;
     if (!v.needs_form || v.form_dead !== dead) {
       v.needs_form = true; v.form_dead = dead; bustCard(id); changed = true;
     }

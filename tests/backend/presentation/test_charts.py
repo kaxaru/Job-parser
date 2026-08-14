@@ -18,6 +18,7 @@ from hrwork.presentation.views.charts import (
     chart_cities,
     chart_companies,
     chart_company_funnel,
+    chart_employment,
     chart_freshness,
     chart_remote,
     chart_tech_heatmap,
@@ -246,3 +247,54 @@ def test_chart_returns_titled_empty_figure_on_empty_report(tmp_path, func, name,
     assert len(fig.data) == traces
     assert list(fig.data[0].y) == []         # ни одной категории на оси
     assert fig.layout.title.text == title
+
+
+# --- chart_employment: доли форм внутри портала, «не указано» наравне с формами ---
+
+_EMP_HEADER = ["Портал", "Вакансий", "ТК РФ/РБ", "Самозанятый", "ИП", "ГПХ",
+               "Не указано", "%названо"]
+
+
+def test_employment_chart_shows_share_within_each_portal(tmp_path):
+    # 200 вакансий hh, из них 100 с ТК и 20 с самозанятостью -> 50% и 10% ОТ ПОРТАЛА
+    _write_csv(tmp_path, "14_employment_by_source.csv", _EMP_HEADER,
+               [["hh", 200, 100, 20, 0, 0, 90, 55.0]])
+    fig = chart_employment(tmp_path)
+    shares = {t.name: list(t.x) for t in fig.data}
+    assert shares["ТК РФ/РБ"] == [50.0]
+    assert shares["Самозанятый"] == [10.0]
+    assert shares["Не указано"] == [45.0]
+
+
+def test_employment_chart_is_grouped_not_normalized_to_hundred(tmp_path):
+    """Сумма долей портала законно превышает 100 %: вакансия «по ТК или как самозанятый»
+    попадает в оба столбца. Стек с barnorm нарисовал бы неправду, поэтому режим group."""
+    _write_csv(tmp_path, "14_employment_by_source.csv", _EMP_HEADER,
+               [["hh", 10, 10, 10, 0, 0, 0, 100.0]])
+    fig = chart_employment(tmp_path)
+    assert fig.layout.barmode == "group"
+    assert fig.layout.barnorm is None
+    assert sum(t.x[0] for t in fig.data) == 200.0
+
+
+def test_employment_chart_puts_unknown_first_in_the_legend(tmp_path):
+    # «Не указано» первым: у talanto и hirify описаний нет, и без этого столбца график
+    # читался бы как «на портале нет оформления», а не «портал не дал текста»
+    _write_csv(tmp_path, "14_employment_by_source.csv", _EMP_HEADER,
+               [["talanto", 100, 0, 0, 0, 0, 100, 0.0]])
+    assert next(t.name for t in chart_employment(tmp_path).data) == "Не указано"
+
+
+def test_employment_chart_rejects_a_column_header_that_left_the_domain(tmp_path):
+    # заголовок CSV — подпись формы из домена; разъехавшийся обязан падать громко,
+    # а не рисовать график без одного столбца
+    _write_csv(tmp_path, "14_employment_by_source.csv",
+               ["Портал", "Вакансий", "Подряд", "Не указано", "%названо"],
+               [["hh", 10, 1, 9, 10.0]])
+    with pytest.raises(ValueError):
+        chart_employment(tmp_path)
+
+
+def test_employment_chart_on_empty_report_returns_a_figure(tmp_path):
+    _write_csv(tmp_path, "14_employment_by_source.csv", _EMP_HEADER, [])
+    assert isinstance(chart_employment(tmp_path), go.Figure)

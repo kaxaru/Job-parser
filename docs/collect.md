@@ -218,6 +218,14 @@ Enrich — тот же инкрементальный паттерн, что hir
 600/день и жизни записи кеша 14 дней дают потолок 8 400 описаний = 21 % портала. Если
 экспирация забирает бюджет первой, новые карточки не обогащаются никогда.
 
+**Форма оформления берётся СТРУКТУРНЫМ полем** (`Employment.from_hh_fields`), а не только
+текстом: в состоянии страницы поиска лежат `acceptLaborContract` (ТК) и
+`civilLawContracts[].civilLawContractsElement[]` (`SELF_EMPLOYED` / `INDIVIDUAL_ENTREPRENEUR`
+/ `INDIVIDUAL_PERSON`) — это ровно то, что стоит за фильтром «Оформление» на hh.ru.
+Найдено разведкой 10.08.2026; до неё считалось, что поля нет и форму можно взять только из
+описания. Ответ поля хранится в raw (`employment`) — из текста его не пересчитать, см.
+[`domain.md`](domain.md#employment--domainemploymentpyemployment).
+
 ## getmatch — JSON-API
 
 Endpoint `https://getmatch.ru/api/offers?sa=any&p=1&offset=N&limit=100&pa=all`
@@ -238,6 +246,15 @@ Endpoint `https://getmatch.ru/api/offers?sa=any&p=1&offset=N&limit=100&pa=all`
 `_detect_techs`: точка детекции стека одна на все источники. Подписи города «Весь мир» и
 «Worldwide» (`getmatch.py::_NO_PLACE_LABELS`) сводятся к доменной `REMOTE_CITY` по той же
 причине, что у talanto; уточнённые формы («Remote - United States») — нет.
+
+**В `requirement` кладётся ПЛОСКИЙ ТЕКСТ КАРТОЧКИ** (`sources/text.py::strip_html` от
+`description`), а не короткая выжимка `offer_description`, как было до 10.08.2026. Ровно так
+же поступает hh (`hh.py::_enrich` пишет туда keySkills + очищенное описание), и это не
+стилистика: из `snippet.requirement` `parse_vacancy` собирает `detect_text` при ЗАГРУЗКЕ.
+Пока туда шла выжимка, детекция на СБОРЕ и на ЗАГРУЗКЕ видела разный текст. Стоило это форм
+оформления: замер 10.08.2026 нашёл ТК/ГПХ в 24 % описаний getmatch, а домен видел 0 % —
+форма называется в теле карточки, куда детектор не заглядывал. Выжимка осталась фолбэком
+для недозагруженных карточек.
 
 **`salary_taxes: gross|net` приходит явно, и `_salary` ОБЯЗАН позвать `.net()`.** getmatch —
 единственный источник, отдающий `gross=True`, а на диск запись ложится с `gross: false`

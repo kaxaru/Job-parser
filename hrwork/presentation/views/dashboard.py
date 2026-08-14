@@ -31,6 +31,7 @@ from .charts import (
     chart_companies_remote,
     chart_companies_sizes,
     chart_company_funnel,
+    chart_employment,
     chart_freshness,
     chart_heatmap_city_lang,
     chart_js_stack,
@@ -59,6 +60,9 @@ _CHARTS = {
     "companies_remote": (chart_companies_remote,  "Удалёнка: компании",    "11_companies.csv"),
     "company_funnel":   (chart_company_funnel,    "Автоотказы / воронка",  "13_company_funnel.csv"),
     "by_source":        (chart_by_source,         "Порталы",               "12_sources.csv"),
+    # «Оформление» — только в общем срезе (как «Порталы»): график СРАВНИВАЕТ порталы
+    # между собой, и внутри одного портала у него остался бы один бар.
+    "employment":       (chart_employment,        "Оформление",            "14_employment_by_source.csv"),
 }
 
 SOURCE_LABELS = {"all": "Все"}      # порталы берут своё имя как есть
@@ -176,8 +180,8 @@ def build_dashboard() -> None:
         vd: dict[str, str] = {}
         for k in keys:
             _fn, _lbl, csvf = _CHARTS[k]
-            if k == "by_source" and src != "all":
-                continue                                   # «Порталы» — только в общем срезе
+            if k in ("by_source", "employment") and src != "all":
+                continue                    # межпортальные срезы — только в общем
             if not (base / csvf).exists():
                 continue                                   # у источника нет данных для графика
             # to_json, а НЕ to_html: to_html оборачивает фигуру в <script>Plotly.newPlot(…),

@@ -26,12 +26,14 @@ from hrwork.config import (
     SEARCH_QUERIES,
     log,
 )
+from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.parsing import build_vacancy, is_hard_non_it
 from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.sources.text import strip_html
 from hrwork.infrastructure.storage import VacancyRecord
 
 
@@ -53,7 +55,6 @@ BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 _STATE_RE = re.compile(
     r'<template[^>]*id="HH-Lux-InitialState"[^>]*>(.*?)</template>', re.S)
-_TAG_RE = re.compile(r"<[^>]+>")
 
 
 def _extract_state(html: str) -> dict[str, Any] | None:
@@ -65,10 +66,6 @@ def _extract_state(html: str) -> dict[str, Any] | None:
         return state
     except json.JSONDecodeError:
         return None
-
-
-def _strip_html(s: str) -> str:
-    return re.sub(r"\s+", " ", _TAG_RE.sub(" ", s)).strip()
 
 
 def _work_formats(item: dict[str, Any]) -> list[str]:
@@ -94,6 +91,12 @@ def _record_from_search_item(item: dict[str, Any], *, city: str, city_id: str) -
     # Большой разрыв creation<->publication = «висит и переоткрывается» (гост-вакансия).
     pub = item.get("publicationTime") or {}
     name = item.get("name", "")
+    # Форма оформления — ровно то, что стоит за фильтром «Оформление» на hh.ru: галочка
+    # `acceptLaborContract` (ТК) плюс список `civilLawContracts` (самозанятый / ИП /
+    # физлицо-ГПХ). Что эти коды значат, знает домен (`Employment.from_hh_fields`);
+    # адаптеру остаётся ДОСТАТЬ поля из своей схемы.
+    portal_emp = Employment.from_hh_fields(item.get("acceptLaborContract"),
+                                           item.get("civilLawContracts"))
     vac = build_vacancy(
         vid=str(item.get("vacancyId")), name=name,
         city=city, city_id=city_id,
@@ -106,11 +109,13 @@ def _record_from_search_item(item: dict[str, Any], *, city: str, city_id: str) -
         published_at=pub.get("$") or pub.get("@timestamp"),     # ISO или unix-секунды
         responses=item.get("totalResponsesCount"),              # уже откликнулось (конкуренция)
         source="hh",
+        employment_field=portal_emp,                            # объединится с найденным в тексте
     )
     # sig — маркер изменения для инкрементального enrich: переоткрытие бампит publicationTime
     sig = pub.get("$") or pub.get("@timestamp") or item.get("creationTime") or ""
     return VacancyRecord(vacancy=vac, url=(item.get("links") or {}).get("desktop", ""),
-                         sig=sig)                               # enriched=False, описание пусто
+                         sig=sig,                               # enriched=False, описание пусто
+                         portal_employment=portal_emp)          # переживёт правку словаря форм
 
 
 def _rebuild_techs(rec: VacancyRecord) -> None:
@@ -123,6 +128,7 @@ def _rebuild_techs(rec: VacancyRecord) -> None:
         detect_text=v.name + " " + rec.requirement,
         employer=v.employer, created_at=v.created_at, published_at=v.published_at,
         responses=v.responses, source=v.source,
+        employment_field=rec.portal_employment,   # ответ поля портала не теряется при пересборке
     )
 
 
@@ -194,7 +200,7 @@ class HHHtmlClient:
         skills = (view.get("keySkills") or {}).get("keySkill") or []
         desc_html = view.get("description") or ""
         await asyncio.sleep(PAGE_DELAY)
-        techs_text = " ".join(skills) + " " + _strip_html(desc_html)
+        techs_text = " ".join(skills) + " " + strip_html(desc_html)
         return techs_text, desc_html
 
     async def _enrich(self, rec: VacancyRecord) -> None:

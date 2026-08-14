@@ -127,6 +127,20 @@ export const SCHED_LABELS = (typeof SCHED_LABELS_PY !== 'undefined' && SCHED_LAB
   remote: 'Удалённо', flexible: 'Гибрид', fullDay: 'Офис',
 };
 
+/* Подписи форм оформления. Единый источник — Python (domain/employment.py::Employment.label),
+   инжектится как EMP_LABELS_PY; хардкод ниже — ДОСЛОВНЫЙ фолбэк для офлайна/тестов
+   (страж «фолбэк == инжект» — tests/backend/presentation/test_feed_bridge.py). */
+export const EMP_LABELS = (typeof EMP_LABELS_PY !== 'undefined' && EMP_LABELS_PY) || {
+  labor_code: 'ТК РФ/РБ', self_employed: 'Самозанятый',
+  sole_trader: 'ИП', civil_contract: 'ГПХ',
+};
+
+/* Подпись формы для карточки: «ТК РФ/РБ · Самозанятый». Пусто, если форма в тексте
+   вакансии не названа — подставлять «ТК» по умолчанию нельзя (домен об этом молчит). */
+export function employmentLabel(v) {
+  return (v.emp_ids || []).map(c => EMP_LABELS[c] || c).join(' · ');
+}
+
 /* Что считается удалёнкой. Единый источник — Python (schedule.py::REMOTE_LIKE_CODES),
    инжектится как REMOTE_LIKE_PY; хардкод — дословный фолбэк.
    Решение 08.08.2026: remote-like = remote + гибрид. До него ответов было два — кнопка
@@ -338,6 +352,30 @@ export function journalById(applied) {
   return byId;
 }
 
+/* Время последнего ЖИВОГО ответа работодателя — ключ сортировки «Ответы HR».
+   Приоритет у ЖИВОГО чата (`v.chat`, его подливает оверлей serve), и только потом
+   `v.hr_ts`, испечённый при сборке ленты.
+
+   Инцидент 10.08.2026. Владелец: под фильтром «С контактами» первым стоял «Сетевой инженер»
+   с ответом в 09:25, а «Учитель кружка программирования» с ответом в 14:13 — самым свежим
+   за день — оказался в середине списка. Причина не в сортировке: у него ПУСТОЙ `hr_ts`.
+   Ключ печётся из чат-данных, СКАЧАННЫХ на момент сборки, а не из времени самого сообщения:
+   лента собралась в 14:40, крон чата привёз этот ответ в 17:12. Оверлей serve обновляет
+   `v.chat` (поэтому карточка и попадает в «С контактами», и показывает свежий текст), но
+   `hr_ts` не трогает — так расходились «что видно в карточке» и «чем сортируем».
+   Вторая половина того же дефекта — призраки (`syntheticCard`): у них `hr_ts` не
+   проставлялся ВООБЩЕ, а чат-фильтры их показывают. Итого 9 карточек из 17 под
+   «С контактами» шли без ключа.
+
+   Бот исключён так же, как в `feed.py::_last_hr_replies`: автоответы приходят пачкой сразу
+   после отклика и вытеснили бы живые ответы наверх. Последнее слово за нами (`sender` пуст)
+   -> живого ключа нет, берём испечённый: наш собственный ответ поднимать вакансию не должен. */
+export function hrReplyTime(v) {
+  const c = v.chat;
+  if (c?.sender && c.sender !== 'bot' && c.ts) return c.ts;
+  return v.hr_ts || '';
+}
+
 /* Карточка-«призрак» для отклика на вакансию, которой нет в текущем сборе: поля неизвестны,
    кроме тех, что сохранил журнал (имя, ссылка, работодатель). Скрыта в общем списке
    (filterVacancies: _synthetic), видна в «Мои отклики» и под чат-фильтрами. */
@@ -345,8 +383,10 @@ export function syntheticCard(id, a = {}) {
   return {
     id, name: a.name || `Вакансия ${id}`, url: a.url || `https://hh.ru/vacancy/${id}`,
     employer: a.employer || '', city: '', techs: [], sal_from: null, sal_to: null,
-    sal_mid: null, currency: '', exp: '', exp_id: '', schedule: '', remote_any: false, role: '',
+    sal_mid: null, currency: '', exp: '', exp_id: '', emp_ids: [], schedule: '',
+    remote_any: false, role: '',
     age: null, gap: null, fresh: 'unknown', resp: null, status: null, needs_form: false,
+    hr_ts: '',                 /* ключ «Ответы HR» даёт живой чат (`hrReplyTime`), не сборка */
     form_dead: false, source: '', _synthetic: true, applied: a,
   };
 }
@@ -399,6 +439,7 @@ export function countActiveFilters(f = {}) {
     size(f.langs) > 0,
     size(f.roles) > 0,
     size(f.exps) > 0,
+    size(f.emps) > 0,
     !!(f.city || '').trim(),
     !!(f.search || []).length,
     (f.schedule || 'all') !== 'all',
@@ -441,8 +482,15 @@ export function filterVacancies(vacancies, f) {
 
   const filtered = vacancies.filter(v => {
     /* карточки-«призраки» (отклик на выпавшую из выдачи вакансию): в общем списке скрыты,
-       но показываем в чат-фильтрах — по ним висят живые чаты, на которые надо ответить. */
-    if (v._synthetic && !f.chatFilter) return false;
+       но показываем в чат-фильтрах — по ним висят живые чаты, на которые надо ответить.
+
+       Сортировка «Ответы HR» — второе исключение (10.08.2026): включая её, человек просит
+       «покажи, где ответили», а шесть вакансий с ответами оставались невидимыми, пока он не
+       догадается добавить ещё и чат-фильтр. Показываем ТОЛЬКО призраков С ОТВЕТОМ: без
+       этого условия в выдачу высыпался бы весь журнал откликов по выпавшим вакансиям,
+       и они пустым ключом осели бы в хвосте — шум вместо ответов. */
+    if (v._synthetic && !f.chatFilter
+        && !(f.sort === 'reply_new' && hrReplyTime(v))) return false;
     if (f.search.length) {
       const hay = (`${v.name} ${v.employer || ''}`).toLowerCase();
       if (!f.search.every(t => hay.includes(t))) return false;
@@ -457,6 +505,13 @@ export function filterVacancies(vacancies, f) {
     /* чипы опыта несут доменный КОД грейда (шаблон рендерит их из EXP_LABELS), карточка —
        exp_id; сравнение по подписи ломалось бы от переименования в EXP_LABELS */
     if (f.exps.size > 0 && !f.exps.has(v.exp_id)) return false;
+    /* Оформление: карточка несёт СПИСОК форм (вакансия бывает «по ТК или как самозанятый»),
+       поэтому совпадение — по пересечению, а не по равенству. Пустой список = форма в тексте
+       не названа, и ловит его чип с пустым кодом (views/feed.py::EMP_UNKNOWN). */
+    if (f.emps.size > 0) {
+      const ids = v.emp_ids || [];
+      if (!(ids.length ? ids.some(e => f.emps.has(e)) : f.emps.has(''))) return false;
+    }
     if (f.minSal > 0 || f.maxSal < f.salMax) {
       const mid = comparableSalary(v, f.displayCur || 'RUB');
       if (mid === null) {
@@ -526,7 +581,7 @@ export function filterVacancies(vacancies, f) {
      старой вакансии тонул внизу и его можно было не заметить. Без ответа -> в конец. */
   if (f.sort === 'reply_new') {
     filtered.sort((a, b) => {
-      const at = a.hr_ts || '', bt = b.hr_ts || '';
+      const at = hrReplyTime(a), bt = hrReplyTime(b);
       if (!at && !bt) return 0;
       if (!at) return 1;
       if (!bt) return -1;

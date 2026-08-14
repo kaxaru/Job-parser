@@ -3,8 +3,8 @@
 
 import { coverLetter, coverTemplates } from './cover.js';
 import { loadDescriptions } from './marks.js';
-import {
-  SCHED_LABELS, STATUS_BTNS, ageColor, cardColor, cardTone, chatAgeLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, safeUrl, statusInfo, tagClr, tagInk,
+import {ageColor, cardColor, cardTone, chatAgeLabel, employmentLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, 
+  SCHED_LABELS, STATUS_BTNS, safeUrl, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
 
@@ -81,7 +81,7 @@ export function statusBadge(v) {
     const stAge = v.chat?.needs_reply ? '' : chatAgeLabel(v.chat?.ts);
     out += `<span class="status-badge" style="background:${st.color}"`
          + ` title="Статус на HH: ${esc(st.label)}">${esc(st.label)}`
-         + `${stAge ? ' · ' + stAge : ''}</span>`;
+         + `${stAge ? ` · ${stAge}` : ''}</span>`;
   }
   if (v.needs_form) {
     out += '<span class="status-badge" style="background:#A35F90"'
@@ -113,7 +113,7 @@ export function statusBadge(v) {
     const age = chatAgeLabel(c.ts);                  /* давность последнего сообщения работодателя */
     out += `<span class="status-badge" style="background:${bg}${fg}"`
          + ` title="${esc(tip)}">${who}${who ? ' ' : ''}${esc(c.label || 'ответ')}`
-         + `${age ? ' · ' + age : ''}`
+         + `${age ? ` · ${age}` : ''}`
          + `${c.manual_only ? ' · решай сам' : ''}${locked}</span>`;
   }
   if (v.chat?.contact) {                      /* рекрутёр оставил связь прямо в переписке */
@@ -309,7 +309,9 @@ export function showModal(v) {
   activeId = v.id;
   const sal      = fmtSal(v, _displayCur);
   const schedLbl = SCHED_LABELS[v.schedule] || v.schedule || '';
-  const salLine  = [sal, v.exp, schedLbl].filter(Boolean).join(' · ');
+  /* Форма оформления — только в модалке: в карточке строка и так несёт зарплату, грейд
+     и формат, а форма названа лишь у части вакансий (см. views/feed.py::EMP_UNKNOWN). */
+  const salLine  = [sal, v.exp, schedLbl, employmentLabel(v)].filter(Boolean).join(' · ');
   const sub      = [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
   const portal   = portalSite(v.source);
   /* автоклик (Playwright) — только HH; у прочих порталов лишь прямая ссылка */
