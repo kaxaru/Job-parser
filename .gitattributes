@@ -1,0 +1,4 @@
+# Экспорт задачи планировщика: schtasks отдаёт и принимает UTF-16LE с BOM.
+# Без `binary` git нормализует CRLF -> LF и ломает файл: восстановить задачу
+# командой `schtasks /Create /XML` уже не выйдет.
+*.task.xml binary
