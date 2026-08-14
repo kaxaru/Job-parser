@@ -69,9 +69,9 @@ save(records) -> None
 
 ### `vacancies_raw.json` — кеш данных
 
-**Назначение.** Все собранные вакансии **девяти источников** (hh, hirify, talanto, getmatch,
-arbeitnow, himalayas, web3, themuse, jobicy), после кросс-портального дедупа
-(`domain/dedup.py`).
+**Назначение.** Все собранные вакансии **двенадцати источников** (hh, hirify, talanto,
+getmatch, arbeitnow, himalayas, web3, themuse, jobicy, greenhouse, ashby, devitjobs),
+после кросс-портального дедупа (`domain/dedup.py`).
 
 **Формат.** Массив записей. Реальная запись (описание вырезано, сниппет обрезан):
 
@@ -130,7 +130,8 @@ arbeitnow, himalayas, web3, themuse, jobicy), после кросс-портал
 - `_enriched: false` — описание ещё не добрано (tldr-заглушка hirify)
 - **id неймспейснуты у всех порталов, кроме hh**: `hirify_749017`, `talanto_<uuid>`,
   `getmatch_<id>`, `arbeitnow_<slug>`, `himalayas_<хвост guid>`, `web3_<id>`,
-  `themuse_<id>`, `jobicy_<id>`. У hh id остаётся числовым как есть — он владелец
+  `themuse_<id>`, `jobicy_<id>`, `greenhouse_<id>`, `ashby_<uuid>`, `devitjobs_<_id>`.
+  У hh id остаётся числовым как есть — он владелец
   «пространства без префикса», и остальные с ним не сталкиваются. Префикс проставляет
   ACL источника в `vid=` при вызове `build_vacancy`, а не хранилище
 
@@ -148,7 +149,7 @@ arbeitnow, himalayas, web3, themuse, jobicy), после кросс-портал
   "cities": ["1", "2", "3", "..."],
   "queries": ["разработчик", "программист", "software engineer", "..."],
   "sources": ["hh", "hirify", "talanto", "getmatch", "arbeitnow", "himalayas", "web3",
-              "themuse", "jobicy"],
+              "themuse", "jobicy", "greenhouse", "ashby", "devitjobs"],
   "count": 92730
 }
 ```

@@ -287,6 +287,7 @@ const PORTAL_SITES = (typeof PORTAL_SITES_PY !== 'undefined' && PORTAL_SITES_PY)
   hh: 'hh.ru', hirify: 'hirify.me', talanto: 'talanto.work', getmatch: 'getmatch.ru',
   arbeitnow: 'arbeitnow.com', himalayas: 'himalayas.app', web3: 'web3.career',
   themuse: 'themuse.com', jobicy: 'jobicy.com',
+  greenhouse: 'greenhouse.io', ashby: 'ashbyhq.com', devitjobs: 'devitjobs.uk',
 };
 export function portalSite(source) {
   const s = source || 'hh';

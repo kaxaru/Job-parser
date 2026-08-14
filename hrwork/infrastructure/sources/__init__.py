@@ -6,7 +6,10 @@
 # Регистрация источников (side-effect импорта). HHSource регистрируется в base при импорте выше;
 # hirify — здесь. Новый портал -> добавить строку.
 from . import arbeitnow as _arbeitnow  # noqa: F401
+from . import ashby as _ashby  # noqa: F401
+from . import devitjobs as _devitjobs  # noqa: F401
 from . import getmatch as _getmatch  # noqa: F401
+from . import greenhouse as _greenhouse  # noqa: F401
 from . import himalayas as _himalayas  # noqa: F401
 from . import hirify as _hirify  # noqa: F401
 from . import jobicy as _jobicy  # noqa: F401

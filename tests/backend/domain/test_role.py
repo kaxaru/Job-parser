@@ -35,13 +35,21 @@ def test_from_label_roundtrips(role):
 # и заведён, только с другой стороны.
 
 def test_every_role_pattern_has_a_role_member():
-    # Литерал по спеке (docs/testing.md, «Тесты-стражи»): 16 ключей паттернов.
+    # Литерал по спеке (docs/testing.md, «Тесты-стражи»): 17 ключей паттернов.
     assert sorted(ROLE_PATTERNS) == sorted([
-        "Mobile", "QA", "DevOps", "Data Eng", "Data/ML", "Аналитик", "Embedded",
+        "Mobile", "QA", "DevOps", "Data Eng", "GenAI", "Data/ML", "Аналитик", "Embedded",
         "Security", "Gamedev", "Architect", "Дизайнер", "Frontend", "Backend",
         "Fullstack", "Менеджер", "Разработчик"])
 
 
+def test_genai_is_matched_before_data_ml():
+    """Порядок ключей — единственное, что разводит GenAI и Data/ML: выигрывает первое
+    совпадение, а генеративные токены намеренно оставлены и в Data/ML (вынимать их оттуда
+    нельзя, см. config). Перестановка ключей местами тихо обнулила бы новую роль."""
+    keys = list(ROLE_PATTERNS)
+    assert keys.index("GenAI") < keys.index("Data/ML")
+
+
 def test_non_it_is_the_only_role_without_a_pattern():
-    # 17 членов Role против 16 ключей: NON_IT служебный, паттерна у него нет
+    # 18 членов Role против 17 ключей: NON_IT служебный, паттерна у него нет
     assert {r.label for r in Role} - set(ROLE_PATTERNS) == {"Не-IT"}

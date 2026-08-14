@@ -442,8 +442,9 @@ GET /api/search?q=python&city=Москва&sal=150000&limit=20&offset=0
   созданная `2026-07-08T20:00Z` вакансия в `2026-08-08T06:00Z` была `fresh` в ленте и
   `recent` в поиске, то есть выпадала из `fresh=fresh`
 - `source` — портал из белого списка `search.py::SOURCES`, а это **`tuple(config.SOURCES)`**,
-  то есть все девять действующих порталов: `hh` | `hirify` | `talanto` | `getmatch` |
-  `arbeitnow` | `himalayas` | `web3` | `themuse` | `jobicy`. Свой кортеж здесь держать нельзя —
+  то есть все двенадцать действующих источников: `hh` | `hirify` | `talanto` | `getmatch` |
+  `arbeitnow` | `himalayas` | `web3` | `themuse` | `jobicy` | `greenhouse` | `ashby` |
+  `devitjobs`. Свой кортеж здесь держать нельзя —
   он уже разъезжался с реальным набором (getmatch, 01.08.2026), и новый портал молча выпадал
   из фильтра поиска, хотя в данных был
 - `limit` — int, потолок **100** (`LIMIT_MAX`)

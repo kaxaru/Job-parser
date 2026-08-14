@@ -324,6 +324,109 @@ def test_detect_role_english_engineering_titles(title, expected):
     assert _detect_role(title, []) is expected
 
 
+# ── GenAI: прикладная работа на генеративных моделях ──────────────────────────────────
+# Роль заведена 14.08.2026 и отделена от Data/ML СОДЕРЖАТЕЛЬНО: LLM/RAG/агенты/промпты —
+# другая профессия, чем обучение моделей. Граница проведена по ОБУЧЕНИЮ: кто тренирует
+# модель (претрейн, пост-тренинг, RLHF), тот остаётся Data/ML, даже если модель
+# генеративная. Замер по 131 804 тайтлам: GenAI 1962, Data/ML 12 221.
+@pytest.mark.parametrize("title, expected", [
+    # прикладная разработка на моделях -> GenAI
+    ("GenAI Engineer", Role.GENAI),
+    ("Generative AI Engineer", Role.GENAI),
+    ("LLM Engineer", Role.GENAI),
+    ("RAG Engineer", Role.GENAI),
+    ("Prompt Engineer", Role.GENAI),
+    ("Промпт-инженер", Role.GENAI),
+    ("AI-разработчик", Role.GENAI),
+    ("Разработчик AI/ Разработчик LLM", Role.GENAI),
+    ("Разработчик (организация RAG и создание ИИ-агентов)", Role.GENAI),
+    ("Team Lead команды RAG-платформы", Role.GENAI),
+    # обучение моделей -> остаётся Data/ML, хотя модель генеративная
+    ("MLE (Online RL) / Post-Training LLM (Middle+ / Senior)", Role.DATA_ML),
+    ("Senior Research Engineer (LLM Pretraining)", Role.DATA_ML),
+    ("Senior DL (VLM, GigaChat Vision)", Role.DATA_ML),
+    # классический ML новой ролью не тронут
+    ("ML-инженер", Role.DATA_ML),
+    ("Data Scientist", Role.DATA_ML),
+    ("Computer Vision Engineer", Role.DATA_ML),
+])
+def test_detect_role_separates_genai_from_model_training(title, expected):
+    assert _detect_role(title, []) is expected
+
+
+# ── Data Eng: работа с хранилищами ────────────────────────────────────────────────────
+# Роль расширена 14.08.2026 по жалобе на скоринг: «Ведущий разработчик Clickhouse» падал
+# в общий фолбэк «Разработчик» с множителем желанности 1.0 и набирал 95 %, хотя работа
+# заведомо DWH. Замер: безусловные DWH-слова переносят 74 вакансии, ложных не видно.
+@pytest.mark.parametrize("title, expected", [
+    ("Ведущий разработчик Clickhouse", Role.DATA_ENG),
+    ("Разработчик хранилищ данных", Role.DATA_ENG),
+    ("Разработчик корпоративного хранилища данных", Role.DATA_ENG),
+    ("Data Warehouse Architect", Role.DATA_ENG),
+    ("Инженер по витринам данных", Role.DATA_ENG),
+    ("Greenplum-разработчик", Role.DATA_ENG),
+    # «инженерИИ данных» — точная форма `инженер данных` мимо, а начальник DWH-отдела
+    # получал множитель разработчика и 100 % совпадения
+    ("Руководитель отдела инженерии данных", Role.DATA_ENG),
+])
+def test_detect_role_recognises_data_warehouse_work(title, expected):
+    assert _detect_role(title, []) is expected
+
+
+@pytest.mark.parametrize("title, expected", [
+    ("Backend Engineer (ClickHouse)", Role.BACKEND),
+    ("Software Engineer (Platform/Backend) (ClickHouse)", Role.BACKEND),
+])
+def test_analytic_database_alone_does_not_make_it_data_eng(title, expected):
+    """Аналитическая СУБД в тайтле роль НЕ определяет: замер нашёл ровно эти два честных
+    бэкенда, поэтому `clickhouse` взят с защитой от бэкенд-слов."""
+    assert _detect_role(title, []) is expected
+
+
+# ── Дыры в маркерах ролей, найденные по жалобам на скоринг 14.08.2026 ────────────────
+# Все четыре тайтла падали в общий фолбэк «Разработчик» с множителем желанности 1.0
+# и получали 88-93 % совпадения, хотя работа не бэкендовая.
+@pytest.mark.parametrize("title, expected", [
+    ("Разработчик Дашбордов", Role.ANALYST),
+    ("Разработчик аналитических решений", Role.ANALYST),
+    ("Разработчик BigData", Role.DATA_ENG),
+    ("Senior Big Data Developer (Apache Spark)", Role.DATA_ENG),
+    # форма через дефис проваливалась между кириллическим `дата-инженер`
+    # и латинским `data engineer` (тот требует пробела)
+    ("Data-инженер", Role.DATA_ENG),
+    ("Инженер Linux", Role.DEVOPS),
+    ("Системный инженер Linux", Role.DEVOPS),
+])
+def test_detect_role_closes_known_fallback_gaps(title, expected):
+    assert _detect_role(title, []) is expected
+
+
+@pytest.mark.parametrize("title, expected", [
+    # `dashboard` латиницей — интерфейс, а не BI: замер нашёл ровно этих двоих
+    ("Dashboard Experience Developer", Role.DEVELOPER),
+    ("Staff Software Engineer, Dashboard", Role.DEVELOPER),
+    # ОС — предметная область, а не профессия: голое `linux` украло бы 52 Embedded
+    ("Разработчик встраиваемого ПО Linux C/C++", Role.EMBEDDED),
+])
+def test_domain_words_alone_do_not_steal_the_role(title, expected):
+    """Слово о технологии само по себе роль не задаёт — та же ловушка, что «AI-first»
+    у GenAI и «Wildberries» у блеклиста: имя профессии бьёт предметную область."""
+    assert _detect_role(title, ["Python"]) is expected
+
+
+def test_bare_ai_in_title_is_not_a_genai_role():
+    """Голое «AI» — описание продукта, а не профессия. Замер: широкий вариант забирал
+    10 712 вакансий и воровал роль у Mobile (92), QA (191) и DevOps (97)."""
+    assert _detect_role("DevOps / Infrastructure Engineer (AI-first)", []) is Role.DEVOPS
+    assert _detect_role("Senior AQA Engineer (AI)", []) is Role.QA
+
+
+def test_minpromtorg_is_not_a_prompt_engineer():
+    """«промт» без границ слова сидит внутри «Мин-промт-оргом» — подстрочная ловушка,
+    из-за которой снабженец уезжал в GenAI (замер 14.08.2026)."""
+    assert _detect_role("Специалист по работе с Минпромторгом", []) is Role.NON_IT
+
+
 def test_devsecops_stays_security_not_devops():
     """DevOps проверяется РАНЬШЕ Security: пока `devsecops` стоял в DevOps, 24 вакансии
     с явной «безопасной разработкой» переставали быть Security."""

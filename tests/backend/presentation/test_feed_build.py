@@ -430,6 +430,10 @@ def test_portal_sites_bridge_carries_the_domain_of_every_source(feed_globals):
         "web3":      "web3.career",
         "themuse":   "themuse.com",
         "jobicy":    "jobicy.com",
+        # ATS работодателей: общего сайта-витрины у источника нет, подпись — имя платформы
+        "greenhouse": "greenhouse.io",
+        "ashby":      "ashbyhq.com",
+        "devitjobs":  "devitjobs.uk",
     }
 
 

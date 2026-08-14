@@ -126,6 +126,7 @@ _GRADE_TO_EXP: list[tuple[str, Experience]] = [
     ("junior",      Experience.BETWEEN_1_3),
     ("middle",      Experience.BETWEEN_1_3),
     ("midweight",   Experience.BETWEEN_1_3),   # jobicy
+    ("regular",     Experience.BETWEEN_1_3),   # devitjobs.uk — британское имя середины
     ("mid",         Experience.BETWEEN_1_3),   # mid-level / Mid Level
     ("senior",      Experience.BETWEEN_3_6),
     ("lead",        Experience.MORE_6),

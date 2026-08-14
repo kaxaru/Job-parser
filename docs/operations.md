@@ -117,8 +117,9 @@ foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
 `search_demo/load.py` (переиндексация поиска), `hh.py dashboard` (Plotly),
 `python -m etl all` (DWH).
 
-**Что делает.** Пересбор вакансий ДЕВЯТИ источников (hh, hirify, talanto, getmatch,
-arbeitnow, himalayas, web3, themuse, jobicy — фактический список всегда в `config.py::SOURCES`)
+**Что делает.** Пересбор вакансий ДВЕНАДЦАТИ источников (hh, hirify, talanto, getmatch,
+arbeitnow, himalayas, web3, themuse, jobicy, greenhouse, ashby, devitjobs — фактический
+список всегда в `config.py::SOURCES`)
 -> `data/vacancies_raw.json`, следом освежает ленту, поиск, дашборд и DWH из этого же среза.
 
 Число источников важно для планирования: задача стоит с `ExecutionTimeLimit PT2H`, и до
