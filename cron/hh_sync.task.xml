@@ -1,0 +1,101 @@
+﻿<?xml version="1.0" encoding="UTF-16"?>
+
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+
+  <RegistrationInfo>
+
+    <Date>2026-07-06T00:46:49</Date>
+
+    <Author>MSI\khide</Author>
+
+    <URI>\hh_sync</URI>
+
+  </RegistrationInfo>
+
+  <Principals>
+
+    <Principal id="Author">
+
+      <UserId>S-1-5-21-1438393909-1439689016-3748983449-1001</UserId>
+
+      <LogonType>InteractiveToken</LogonType>
+
+    </Principal>
+
+  </Principals>
+
+  <Settings>
+
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+
+    <RestartOnFailure>
+
+      <Count>2</Count>
+
+      <Interval>PT5M</Interval>
+
+    </RestartOnFailure>
+
+    <StartWhenAvailable>true</StartWhenAvailable>
+
+    <IdleSettings>
+
+      <Duration>PT10M</Duration>
+
+      <WaitTimeout>PT1H</WaitTimeout>
+
+      <StopOnIdleEnd>true</StopOnIdleEnd>
+
+      <RestartOnIdle>false</RestartOnIdle>
+
+    </IdleSettings>
+
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
+
+  </Settings>
+
+  <Triggers>
+
+    <CalendarTrigger>
+
+      <StartBoundary>2026-07-19T10:45:00+04:00</StartBoundary>
+
+      <Repetition>
+
+        <Interval>PT3H</Interval>
+
+        <Duration>PT12H</Duration>
+
+        <StopAtDurationEnd>true</StopAtDurationEnd>
+
+      </Repetition>
+
+      <ScheduleByDay>
+
+        <DaysInterval>1</DaysInterval>
+
+      </ScheduleByDay>
+
+    </CalendarTrigger>
+
+  </Triggers>
+
+  <Actions Context="Author">
+
+    <Exec>
+
+      <Command>wscript.exe</Command>
+
+      <Arguments>"D:\claude_python\petprojects\hr_work\cron\run_hidden.vbs" "D:\claude_python\petprojects\hr_work\cron\cron_sync.bat"</Arguments>
+
+    </Exec>
+
+  </Actions>
+
+</Task>

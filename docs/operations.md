@@ -29,8 +29,9 @@ npm install                                    # esbuild + biome
 ### Регистрация крон-задач (чистая машина)
 
 Планировщик задач Windows не входит в репо — на новой машине задачи создаются вручную.
-Действие каждой обёрнуто в `cron/run_hidden.vbs` (запускает `.bat` без окна). Активны четыре
-— `hh_collect`, `hh_apply`, `hh_chat`, `hh_sync` (`hh_bump` отключена, слита в `hh_apply`):
+Действие каждой обёрнуто в `cron/run_hidden.vbs` (запускает `.bat` без окна). Активны три
+— `hh_collect`, `hh_apply`, `hh_chat` (`hh_bump` отключена и слита в `hh_apply`, `hh_sync`
+снята 14.08.2026 как дубль синка внутри `hh_chat` — см. ниже):
 
 ```bat
 set REPO=<путь к вашему клону hr_work>       REM напр. C:\projects\hr_work
@@ -52,7 +53,7 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
 
 Проверка — `schtasks /Query /TN hh_collect /V /FO LIST`.
 
-### Автоперезапуск при падении (все четыре задачи)
+### Автоперезапуск при падении (все три задачи)
 
 `RestartCount = 2`, `RestartInterval = PT5M` — упавший прогон планировщик поднимает сам,
 через 5 минут, до двух раз. Ставится только через COM: `schtasks /Create` этого не умеет,
@@ -62,7 +63,7 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
 ```powershell
 $s = New-Object -ComObject Schedule.Service; $s.Connect()
 $f = $s.GetFolder("\")
-foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
+foreach ($n in "hh_apply","hh_collect","hh_chat") {
     $d = $f.GetTask($n).Definition
     $d.Settings.RestartCount = 2
     $d.Settings.RestartInterval = "PT5M"
@@ -98,7 +99,7 @@ foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
 10:00 ─┬─ hh_apply                     каждые 90 мин до 23:30, по 20 откликов
 10:30 ─┼─ hh_chat                      каждые 90 мин до 23:30: синк чатов + автоответы (loop)
 12:00 ─┼─ hh_collect                   раз в сутки
-10:45 ─┼─ hh_sync                      каждые 3 ч до 22:45: статусы откликов из чатов
+       ├─ hh_sync                      СНЯТА 14.08.2026 (синк делает hh_chat)
        └─ hh_bump                      отключена (слита в hh_apply)
 ```
 
@@ -196,11 +197,11 @@ python, node и chromium сиротами.
 **Расписание.** Каждые 90 минут в окне 10:30–23:30, лимит 80 мин.
 
 **⚠️ Единственная задача, которая НЕ РАБОТАЕТ ОТ БАТАРЕИ.** У `hh_chat` стоят
-`DisallowStartIfOnBatteries=true` и `StopIfGoingOnBatteries=true`, у остальных трёх
-(`hh_apply`, `hh_collect`, `hh_sync`) — `false`. Проверить:
+`DisallowStartIfOnBatteries=true` и `StopIfGoingOnBatteries=true`, у остальных двух
+(`hh_apply`, `hh_collect`) — `false`. Проверить:
 
 ```powershell
-foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
+foreach ($n in "hh_apply","hh_collect","hh_chat") {
   $x = [xml](schtasks /Query /TN $n /XML)
   "{0,-12} {1,-6} {2}" -f $n, $x.Task.Settings.DisallowStartIfOnBatteries, `
                             $x.Task.Settings.StopIfGoingOnBatteries
@@ -243,27 +244,31 @@ foreach ($n in "hh_apply","hh_collect","hh_chat","hh_sync") {
 - Предохранитель `--loop-rounds 8` от зацикливания; `--reply-limit 10` на раунд
 
 **Отношение к `hh_sync`.** `hh_chat` делает синк первым шагом каждые 90 мин — чаще, чем
-`hh_sync` со своими 3 ч, поэтому какое-то время `hh_sync` держали отключённой: два
-`sync_statuses` параллельно перезаписывают `chat_messages.json` (гонка).
+`hh_sync` со своими 3 ч. Отдельная задача не добавляла ни одного синка и при этом рисковала
+пересечься: два `sync_statuses` параллельно перезаписывают `chat_messages.json` (гонка).
+Поэтому 14.08.2026 `hh_sync` снята совсем.
 
 ---
 
-### `hh_sync` — ВКЛЮЧЕНА, дублирует синк `hh_chat`
+### `hh_sync` — СНЯТА 14.08.2026
 
-Состояние на 04.08.2026 (сверено с планировщиком): задача включена, `Missed=0`, идёт
-`cron_sync.bat` -> `hh.py autoclick --sync-status` в 10:45 и далее каждые 3 ч до 22:45.
-Работает по кукам, браузер и `autoclick.lock` не берёт, поэтому наложение на `hh_apply`
-безвредно.
+Задача удалена из планировщика; её определение сохранено в `cron/hh_sync.task.xml`, чтобы
+восстановление было одной командой (`schtasks /Create /XML`). `cron_sync.bat` оставлен —
+он годится как ручной прогон синка.
 
-**Опасно другое — наложение на `hh_chat`**, который делает тот же синк каждые 90 мин.
-Прогон `hh_sync` не мгновенный: 22:45 -> 23:06 (21 минута на 1903 отклика). Пересечения
-пока не случалось только из-за расстановки слотов (`hh_chat` 22:30, следующий 00:00), но
-запас — минуты, и он сокращается с ростом числа откликов. При пересечении два `sync_statuses`
-перезапишут `chat_messages.json` друг поверх друга.
+**Почему снята.** Она делала ровно то же, что `hh_chat` первым шагом каждого прогона:
+`hh.py autoclick --sync-status`. `hh_chat` идёт каждые 90 мин, `hh_sync` шла раз в 3 ч —
+то есть не добавляла ни одного синка, которого не случилось бы и без неё.
 
-Либо отключить `hh_sync` (`schtasks /Change /TN hh_sync /DISABLE`) — синк и так делает
-`hh_chat` вдвое чаще, — либо развести слоты так, чтобы окно `hh_sync` гарантированно
-укладывалось между прогонами `hh_chat`.
+Опасность была не в дублировании, а в **наложении**: прогон синка не мгновенный
+(22:45 -> 23:06, 21 минута на 1903 отклика), и при пересечении с `hh_chat` два
+`sync_statuses` перезаписывают `chat_messages.json` друг поверх друга. Не пересекалось
+только из-за расстановки слотов (`hh_chat` 22:30, следующий 00:00), а запас измерялся
+минутами и сокращался с ростом числа откликов.
+
+Альтернатива — развести слоты так, чтобы окно `hh_sync` гарантированно укладывалось между
+прогонами `hh_chat`, — отвергнута: она сохраняет гонку и лишь делает её реже, а выигрыша
+нет вовсе (синк и так идёт вдвое чаще).
 
 ---
 
