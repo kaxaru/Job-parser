@@ -244,19 +244,31 @@ watchdog против зависаний.
 ## Мост Python -> JS
 
 Лента — статические файлы, но часть констант обязана совпадать с Python. Чтобы они не
-разошлись молча, `feed.py::build_feed` инжектит в `feed-data.js` **15 глобалов**: данные
-(`VACANCIES`, `SAL_MAX`, `SAVED_MARKS`), курсы (`FX_RATES`, `FX_ALIAS`) и десять мостовых
-констант с суффиксом `_PY` — `STATE_LABELS_PY`, `RESUME_CORE_PY`, `MARK_VALUES_PY`,
-`SCHED_LABELS_PY`, `REMOTE_LIKE_PY`, `CHAT_FROZEN_PY`, `PORTAL_SITES_PY`,
+разошлись молча, `feed.py::build_feed` инжектит в `feed-data.js` **22 глобала**: данные
+(`VACANCIES`, `SAL_MAX`, `SAVED_MARKS`), курсы (`FX_RATES`, `FX_ALIAS`) и семнадцать
+мостовых констант с суффиксом `_PY` — `STATE_LABELS_PY`, `RESUME_CORE_PY`,
+`RESUME_TIERS_PY`, `RESUME_ROLE_FIT_PY`, `RESUME_CORE_SAT_PY`, `LANG_KEYS_PY`,
+`RESUME_LANGS_PY`, `RESUME_LANG_FIT_PY`, `MARK_VALUES_PY`, `SCHED_LABELS_PY`,
+`REMOTE_LIKE_PY`, `EMP_LABELS_PY`, `CHAT_FROZEN_PY`, `PORTAL_SITES_PY`,
 `DISCARD_STATES_PY`, `INVITED_STATES_PY`, `FEED_COVER_TEMPLATES_PY`.
 
 Что стоит за менее очевидными: `PORTAL_SITES_PY` — подпись портала в карточке
 (`config.PORTAL_SITES`; с девятью источниками хардкод домена в JS разъехался бы первым);
 `SCHED_LABELS_PY` и `REMOTE_LIKE_PY` — подписи формата работы и «что считается удалёнкой»,
 оба из домена (`Schedule.label`, `schedule.py::REMOTE_LIKE_CODES`), заведены 08.08.2026
-вместе с фиксом расхождения «офис или удалёнка». `RESUME_EXPS_PY` из набора **убран**: мост
-был мёртвым (после снятия жёсткого фильтра по грейду читателя в JS не осталось), а его
-вычисление роняло сборку ленты на опечатке в `resume_profile.json::exp_ids`.
+вместе с фиксом расхождения «офис или удалёнка»; `EMP_LABELS_PY` — подписи форм
+оформления (`employment.py::Employment.label`), заведён 10.08.2026: карточка везёт только
+коды форм, и без моста подпись пришлось бы дублировать в JS либо гнать в 74 МБ данных.
+
+Шесть констант скоринга (`RESUME_TIERS_PY`, `RESUME_ROLE_FIT_PY`, `RESUME_CORE_SAT_PY`,
+`LANG_KEYS_PY`, `RESUME_LANGS_PY`, `RESUME_LANG_FIT_PY`) заведены 14.08.2026 вместе с
+переделкой модели «% совпадения». До неё веса стека были **захардкожены в `resume.js`**, и
+настроить профиль под себя можно было только правкой кода — при том что рядом уже лежал
+`resume_profile.json`, куда пользователь кладёт своё ядро. Мост убирает второй источник
+правды: ярусы, множители ролей и языки считаются в `config.py` поверх профиля, JS их только
+читает. `RESUME_EXPS_PY` из набора **убран**: мост был мёртвым (после снятия жёсткого фильтра
+по грейду читателя в JS не осталось), а его вычисление роняло сборку ленты на опечатке в
+`resume_profile.json::exp_ids`.
 
 Правило моста целиком:
 

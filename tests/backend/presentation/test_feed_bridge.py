@@ -13,6 +13,11 @@
 Чего здесь СОЗНАТЕЛЬНО нет: `resume.js::RESUME_CORE` (фолбэк `['Python','FastAPI']`) —
 он сверяется с `config.RESUME_CORE`, который читается из `resume_profile.json` запускающего,
 и у форка с другим резюме страж падал бы на чужой настройке, а не на дрейфе кода.
+
+По той же причине ярусы стека и множители ролей сверяются с ДЕФОЛТАМИ конфига
+(`_RESUME_STACK_DEFAULT`, `_RESUME_ROLE_FIT_DEFAULT`), а не с разрешёнными
+`RESUME_STACK_TIERS`/`RESUME_ROLE_FIT`: профиль их перекрывает и в офлайн-копию не попадает
+по построению. Страж ловит ровно дрейф КОДА — правку дефолта в Python без правки копии в JS.
 """
 import re
 from pathlib import Path
@@ -20,7 +25,14 @@ from pathlib import Path
 import pytest
 
 from hrwork.application.apply.chat import chat, chat_class
-from hrwork.config import PORTAL_SITES
+from hrwork.config import (
+    _RESUME_LANG_FIT_DEFAULT,
+    _RESUME_ROLE_FIT_DEFAULT,
+    _RESUME_STACK_DEFAULT,
+    _STACK_TIER_WEIGHTS,
+    LANG_KEYS,
+    PORTAL_SITES,
+)
 from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
 from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
@@ -94,17 +106,59 @@ def test_mark_values_fallback_keeps_python_order():
 
 # ── Ключи скоринга опыта — доменные коды, а не подписи ────────────────────────────────
 def test_exp_score_is_keyed_by_domain_grade_codes():
-    """`resume.js::EXP_SCORE` ключуется кодами `Experience`, и покрыт КАЖДЫЙ грейд.
+    """`resume.js::EXP_FIT` ключуется кодами `Experience`, и покрыт КАЖДЫЙ грейд.
 
     Раньше ключами были подписи ('Без опыта', '1–3 года', …) — третья копия
     `config.EXP_LABELS` после конфига и чипов шаблона. Переименование подписи обнуляло бы
-    баллы за опыт у всех карточек молча: скоринг тихо переходил на «неизвестный опыт -> 12».
+    баллы за опыт у всех карточек молча: скоринг тихо переходил на «неизвестный опыт».
     Незнакомый код (новый член Experience) даст тот же тихий эффект, поэтому набор сверяется
     целиком, а не «все ключи валидны»."""
-    literal = _RESUME_JS[_RESUME_JS.index("const EXP_SCORE"):]
+    literal = _RESUME_JS[_RESUME_JS.index("const EXP_FIT"):]
     literal = literal[literal.index("{"):literal.index("}") + 1]
-    keys = set(re.findall(r"(\w+):\s*\d+", literal))
+    keys = set(re.findall(r"(\w+):\s*[\d.]+", literal))
     assert keys == {e.hh_id for e in Experience}
+
+
+def _js_num_map(text: str) -> dict[str, float]:
+    """JS-литерал `{ключ: число}` -> dict. Ключ бывает голым идентификатором (`Backend: 1`)
+    и строкой (`'Data/ML': 0.3`) — разбираем оба вида."""
+    out: dict[str, float] = {}
+    for m in re.finditer(r"(?:'([^']+)'|([A-Za-zА-Яа-я][\w./-]*))\s*:\s*(-?[\d.]+)", text):
+        out[m.group(1) or m.group(2)] = float(m.group(3))
+    return out
+
+
+def test_stack_tiers_fallback_matches_config_default():
+    """Ярусы стека в офлайн-копии == дефолт конфига, развёрнутый в веса.
+
+    Сверка именно с ДЕФОЛТОМ, а не с `RESUME_STACK_TIERS`: последний перекрывается
+    `resume_profile.json` запускающего, и страж падал бы на чужом резюме вместо дрейфа кода
+    (та же причина, по которой не сверяется RESUME_CORE — см. шапку модуля)."""
+    expected = {tech: weight
+                for tier, weight in _STACK_TIER_WEIGHTS.items()
+                for tech in _RESUME_STACK_DEFAULT[tier]}
+    assert _js_num_map(_fallback_src(_RESUME_JS, "RESUME_TIERS_PY")) == expected
+
+
+def test_lang_keys_fallback_matches_the_domain_set():
+    """Что вообще СЧИТАЕТСЯ языком — константа кода (`config.LANG_KEYS`), не профиля,
+    поэтому сверяется целиком. Разойдись копия — ось языка начала бы принимать за «чужой»
+    то, чего в наборе нет, и наоборот."""
+    assert set(_js_strings(_fallback_src(_RESUME_JS, "LANG_KEYS_PY"))) == set(LANG_KEYS)
+
+
+def test_lang_fit_fallback_matches_config_default():
+    """Множители оси языка. Средний исход («язык не назван» -> 0.5) отличать от «чужой»
+    (0.1) обязательно: у части вакансий стек в тексте не перечислен вовсе."""
+    assert _js_num_map(_fallback_src(_RESUME_JS, "RESUME_LANG_FIT_PY")) == _RESUME_LANG_FIT_DEFAULT
+
+
+def test_role_fit_fallback_matches_config_default():
+    """Множители ролей в офлайн-копии == дефолт конфига.
+
+    Это ось ЖЕЛАНИЯ, и её расхождение тихое вдвойне: балл поедет, а состав ленты нет —
+    заметить можно только по порядку карточек."""
+    assert _js_num_map(_fallback_src(_RESUME_JS, "RESUME_ROLE_FIT_PY")) == _RESUME_ROLE_FIT_DEFAULT
 
 
 def test_state_labels_fallback_carries_the_two_keys_that_drifted():

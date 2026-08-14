@@ -30,13 +30,18 @@ from hrwork.config import (
     PAPER,
     PORTAL_SITES,
     RESUME_CORE,
+    RESUME_CORE_SATURATION,
+    RESUME_LANG_FIT,
+    RESUME_LANGS,
+    RESUME_ROLE_FIT,
+    RESUME_STACK_TIERS,
     ROLE_PATTERNS,
     TEMPLATE_DIR,
     TEXT,
     log,
 )
 from hrwork.domain.employment import Employment
-from hrwork.domain.parsing import has_remote
+from hrwork.domain.parsing import has_remote, langs_in_title
 from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
 from hrwork.infrastructure.net import rates
 from hrwork.infrastructure.storage import MARK_VALUES, vacancy_repository
@@ -230,6 +235,10 @@ def build_feed() -> None:
             # подписи потребовало бы пересбора всех 74 МБ данных.
             "emp_ids":  [e.code for e in v.employment],
             "techs":    v.techs,
+            # Языки, названные В ТАЙТЛЕ. Отдельно от `techs` (там языки из описания тоже):
+            # ось языка в скоринге обязана верить тайтлу, иначе «Инженер-разработчик C++»
+            # получает «свой язык» за Python, найденный в теле вакансии.
+            "title_langs": langs_in_title(v.name),
             "remote_any": remote_any,
             "role":     v.role.label,
             # свежесть: возраст с создания, разрыв переоткрытия, класс, отклики
@@ -300,6 +309,21 @@ def build_feed() -> None:
         # Единый источник Python->JS (иначе молча расходятся): подписи статусов и профиль резюме.
         f"const STATE_LABELS_PY = {json.dumps(chat.STATE_LABELS, ensure_ascii=False)};\n"
         f"const RESUME_CORE_PY = {json.dumps(RESUME_CORE)};\n"
+        # Скоринг «% совпадения». Ярусы стека и множители ролей живут в Python
+        # (config + resume_profile.json) и инжектятся — в JS их дублировать нельзя, иначе
+        # правка профиля молча не доезжала бы до бейджа. До 14.08.2026 веса стека были
+        # захардкожены в resume.js, и настроить их можно было только правкой кода.
+        f"const RESUME_TIERS_PY = "
+        f"{json.dumps(RESUME_STACK_TIERS, ensure_ascii=False)};\n"
+        f"const RESUME_ROLE_FIT_PY = "
+        f"{json.dumps(RESUME_ROLE_FIT, ensure_ascii=False)};\n"
+        f"const RESUME_CORE_SAT_PY = {RESUME_CORE_SATURATION};\n"
+        # Язык — ПЕРВАЯ проверка скоринга. LANG_KEYS едет из конфига (что вообще считается
+        # языком), RESUME_LANGS выводится из ядра профиля (какие из них мои).
+        f"const LANG_KEYS_PY = {json.dumps(sorted(LANG_KEYS), ensure_ascii=False)};\n"
+        f"const RESUME_LANGS_PY = {json.dumps(RESUME_LANGS, ensure_ascii=False)};\n"
+        f"const RESUME_LANG_FIT_PY = "
+        f"{json.dumps(RESUME_LANG_FIT, ensure_ascii=False)};\n"
         f"const MARK_VALUES_PY = {json.dumps(list(MARK_VALUES))};\n"     # словарь пометок (marks.py)
         # Формат работы: подписи и «что считается удалёнкой» — из домена (Schedule).
         # До 08.08.2026 моста не было вовсе: model.js держал свой SCHED_LABELS, где из трёх

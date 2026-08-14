@@ -59,7 +59,10 @@ function tagsHTML(techs, limit) {
 
 function matchBadge(v) {
   const m = resumeMatch(v);
-  const title = `Совпадение с резюме ${m.pct}% — стек ${m.stack}/60 · опыт ${m.exp}/25 · удалёнка ${m.remote}/15`;
+  /* Множитель роли показываем ЯВНО: без него бейдж необъясним — вакансия с сильным стеком
+     может стоять внизу только потому, что это Data Eng, куда владелец профиля не идёт. */
+  const title = `Совпадение с резюме ${m.pct}% — стек ${m.stack}/60 · опыт ${m.exp}/25`
+    + ` · удалёнка ${m.remote}/15 · язык ×${m.lang} · роль ×${m.role}`;
   return `<span class="match-badge" style="background:${matchColor(m.pct)};color:${matchInk(m.pct)}"
     title="${esc(title)}">${m.pct}%</span>`;
 }

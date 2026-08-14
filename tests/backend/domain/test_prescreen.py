@@ -33,7 +33,7 @@ def test_screened_covers_every_tech_of_the_dictionary():
     все 510 случаев останутся зелёными, а тег перестанет детектиться в проде. Здесь одна
     сторона — литерал: объём словаря стека назван числом в docs/testing.md."""
     assert [tech for tech, _rx, _screen in _SCREENED] == list(TECH_PATTERNS)
-    assert len(_SCREENED) == 55        # объём словаря стека, docs/testing.md
+    assert len(_SCREENED) == 61        # объём словаря стека, docs/testing.md
 
 
 # Словарь фрагментов: вытаскиваем литеральные куски из САМИХ паттернов (авто-покрытие всех

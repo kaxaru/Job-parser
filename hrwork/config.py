@@ -356,6 +356,100 @@ except (json.JSONDecodeError, OSError):
 RESUME_CORE = _rp["core"]            # технологии-ядро (нужна хотя бы одна) — показ/отклик
 RESUME_EXP_IDS = _rp["exp_ids"]      # допустимый опыт (raw id, см. EXP_LABELS)
 
+# ─── Скоринг «% совпадения»: ЯРУСЫ СТЕКА и ЖЕЛАННОСТЬ РОЛИ ───────────────────────────
+# Две РАЗНЫЕ оси, и смешивать их нельзя (разбор 14.08.2026):
+#   * ярус стека отвечает «насколько я к этому ГОТОВ»;
+#   * множитель роли — «насколько я туда ХОЧУ».
+# Пока роль выставлялась по близости навыков, близость считалась дважды: у DevOps
+# инфраструктурные техи и так набирают по оси стека, и добавочный высокий множитель
+# поднимал направление, куда владелец профиля идти не собирается.
+#
+# Почему роль вообще нужна, хотя есть техи. Замер по кешу 14.08.2026: из 30 533 вакансий
+# с Python 10 657 (35 %) — это Data/ML, Аналитик и Data Eng. По стеку они НЕ отличаются от
+# бэкенда: среднее число попаданий в ядро у Data Eng 1.57 против 1.35 у «Разработчика» —
+# там те же Kafka, ClickHouse и PostgreSQL. Сколько ни крути веса техов, дата-инженер
+# будет обгонять бэкендера; различает только роль.
+#
+# Формат человеческий (списки имён), как у блеклистов: числа проставляет код, не человек.
+_STACK_TIER_WEIGHTS = {"core": 1.0, "adjacent": 0.5, "background": 0.2}
+_RESUME_STACK_DEFAULT = {
+    # то, чем владею
+    "core": ["Python", "FastAPI", "SQLAlchemy", "Alembic", "PostgreSQL", "Redis",
+             "RabbitMQ", "Kafka", "ClickHouse", "MySQL", "Airflow", "Celery"],
+    # рядом: разберусь по ходу. Django не трогал; RAG и LangChain — заявленное направление
+    # развития (прикладной GenAI без претрейна и файнтюнинга), поэтому половина веса,
+    # а не полный. 'ML/AI' сюда НЕ входит: этот тег накрывает и обучение моделей тоже.
+    "adjacent": ["Django", "RAG", "LangChain"],
+    # общая инженерная гигиена: есть почти у всех, сигнал слабый, но не нулевой
+    "background": ["Docker", "Kubernetes", "Nginx", "AWS", "GCP", "Azure",
+                   "Yandex Cloud", "GitLab CI", "GitHub Actions", "Terraform", "Ansible",
+                   "MongoDB", "Elasticsearch", "SQLite", "MSSQL", "Oracle DB"],
+}
+# Ключ — ЯРЛЫК роли (Role.label). Согласованность с доменом держит страж
+# tests/backend/domain/test_role.py: у каждой роли обязан быть множитель.
+_RESUME_ROLE_FIT_DEFAULT = {
+    "Backend": 1.0, "Разработчик": 1.0, "Architect": 1.0,
+    "GenAI": 0.8,                    # желаемое развитие: RAG и гардрейлы, без претрейна
+    "Fullstack": 0.6,                # подходит, но ниже GenAI; нехватку фронта снимет ось стека
+    "DevOps": 0.3,                   # близко по навыкам, идти не хочу — близость уже в стеке
+    "Data Eng": 0.3, "Data/ML": 0.3, "Аналитик": 0.3,
+    "QA": 0.15, "Frontend": 0.15, "Mobile": 0.15, "Security": 0.15,
+    "Embedded": 0.15, "Gamedev": 0.15, "Менеджер": 0.15, "Дизайнер": 0.15,
+    "Не-IT": 0.0,
+}
+
+
+def _profile_map(key: str, default: dict[str, float]) -> dict[str, float]:
+    """Числовая карта из профиля; ключа нет -> `default`. Чужой тип — предупреждение
+    и дефолт (профиль пишет человек, ронять сбор из-за опечатки нельзя)."""
+    raw = _rp.get(key)
+    if raw is None:
+        return default
+    if not isinstance(raw, dict) or not all(
+            isinstance(v, (int, float)) for v in raw.values()):
+        log.warning("resume_profile.json: «{}» должен быть словарём «имя: число» — "
+                    "беру значение по умолчанию", key)
+        return default
+    return {str(k): float(v) for k, v in raw.items()}
+
+
+def _stack_tiers() -> dict[str, float]:
+    """Ярусы -> плоская карта «тех: вес». Профиль задаёт СПИСКИ ИМЁН по ярусам, вес яруса
+    известен коду: человек не должен подбирать числа, чтобы поправить свой стек."""
+    src = _rp.get("stack_tiers")
+    tiers = src if isinstance(src, dict) else _RESUME_STACK_DEFAULT
+    out: dict[str, float] = {}
+    for tier, weight in _STACK_TIER_WEIGHTS.items():
+        for tech in (tiers.get(tier) or []):
+            out[str(tech)] = weight
+    return out or dict.fromkeys(RESUME_CORE, 1.0)
+
+
+RESUME_STACK_TIERS = _stack_tiers()
+RESUME_ROLE_FIT = _profile_map("role_fit", _RESUME_ROLE_FIT_DEFAULT)
+
+# ─── ЯЗЫК — первая проверка, и она главнее стека ──────────────────────────────────────
+# Порядок допущений (решение владельца профиля 14.08.2026): сначала ЯЗЫК, потом стек,
+# потом роль. Без этой оси формула проваливалась грубо: «Ведущий разработчик 1С» с техами
+# 1С/PostgreSQL/Kafka/RabbitMQ набирал 91 % — три ядровых попадания давали насыщение,
+# а 1С весом 0 просто растворялся в знаменателе. Замер: 498 вакансий БЕЗ единого «своего»
+# языка имели балл >= 70, среди них Go, Java, C++, Rust, PHP и Bitrix.
+#
+# Язык берётся из ЯКОРЯ профиля (`RESUME_CORE` ∩ `LANG_KEYS`), а не отдельной настройкой:
+# ядро уже отвечает на вопрос «на чём я пишу» для жёсткого фильтра ленты, и второй источник
+# того же ответа разъехался бы — ровно тот дефект, ради которого профиль и заводился.
+# Само вычисление — НИЖЕ, сразу после LANG_KEYS (он объявлен в конце файла, рядом с
+# TECH_PATTERNS): порядок в модуле важен, ссылаться на ещё не объявленное имя нельзя.
+#
+# Три исхода, и средний важен: «язык не назван» — это НЕ «язык чужой». У части вакансий
+# стек в тексте не перечислен вовсе, и карать их наравне с Java-вакансией нельзя.
+_RESUME_LANG_FIT_DEFAULT = {"own": 1.0, "none": 0.5, "foreign": 0.1}
+RESUME_LANG_FIT = _profile_map("lang_fit", _RESUME_LANG_FIT_DEFAULT)
+# Сколько попаданий в ядро считать полной вовлечённостью стека. Вакансия не перечисляет
+# все восемь ядровых техов никогда: медиана попаданий по кешу — 1-2, поэтому насыщение
+# на трёх. Выше порога добавка не растёт — иначе вернулась бы портальная многословность.
+RESUME_CORE_SATURATION = int(os.getenv('RESUME_CORE_SATURATION', '3'))
+
 
 def _profile_list(key: str, default: list[str]) -> list[str]:
     """Список строк из профиля; ключа нет -> `default`.
@@ -600,11 +694,26 @@ TECH_PATTERNS: dict[str, str] = {
     'Oracle DB':        r'\boracle\b',
     'MSSQL':            r'\bmssql\b|sql server',
     'SQLite':           r'\bsqlite\b',
+    # ORM и миграции: чаще всего идут в связке с Python-бэкендом, но своим тегом полезны —
+    # без них «FastAPI + Postgres» и «FastAPI + Postgres + SQLAlchemy + Alembic» неразличимы,
+    # хотя вторая вакансия про ту же работу говорит подробнее. Замер 14.08.2026: SQLAlchemy
+    # 194 вакансии, Alembic 36, ни одной в «Не-IT» (алембик-перегонный куб не всплыл).
+    'SQLAlchemy':       r'\bsqlalchemy\b|\bsql\s?alchemy\b',
+    'Alembic':          r'\balembic\b',
     # DevOps / инфра
     'Docker':           r'\bdocker\b',
     'Kubernetes':       r'\bkubernetes\b|\bk8s\b',
     'Kafka':            r'\bkafka\b',
     'RabbitMQ':         r'\brabbitmq\b',
+    # Очередь задач Python-бэкенда, соседка Redis/RabbitMQ. Опасение про овощ замером
+    # не подтвердилось: 159 вакансий, «Не-IT» ноль — пищевые вакансии отсекаются раньше.
+    'Celery':           r'\bcelery\b',
+    # Оркестратор пайплайнов. ОСТОРОЖНО с трактовкой: навык питоновский, но 40 % пойманных —
+    # это Data Eng (594 из 1487), то есть присутствие Airflow в вакансии сигналит про
+    # DWH-работу. Разводить «умею» и «хочу» должен скоринг (ярус стека против множителя
+    # роли, см. RESUME_ROLE_FIT), а не словарь. Опасение про «air flow» (вентиляция)
+    # не подтвердилось: «Не-IT» 33 из 1487, 2 %.
+    'Airflow':          r'\bairflow\b|\bapache\s+air\s?flow\b',
     'GitLab CI':        r'\bgitlab\b',
     'GitHub Actions':   r'\bgithub actions\b',
     'Ansible':          r'\bansible\b',
@@ -617,6 +726,13 @@ TECH_PATTERNS: dict[str, str] = {
     'Yandex Cloud':     r'\byandex cloud\b|яндекс.?облако',
     # ML / AI
     'ML/AI':            r'machine learning|\bml\b|deep learning|tensorflow|pytorch|\bllm\b|нейросет',
+    # Прикладной GenAI-инструментарий. Отдельно от 'ML/AI' намеренно: тот мешок на 13 690
+    # вакансий не различает обучение моделей и построение продукта поверх них, а разница
+    # ровно в этом (см. границу ролей GenAI/Data-ML). Замер 14.08.2026: LangChain 372
+    # вакансии, RAG 880, «Не-IT» ~1 %.
+    # `\brag\b` ТОЛЬКО с границами слова: без них подстрока сидит в drag/storage/фрагмент.
+    'LangChain':        r'\blangchain\b|\blang\s?chain\b|\bllamaindex\b|\bllama\s?index\b',
+    'RAG':              r'\brag\b|retrieval.augmented',
     # Web3 / Blockchain
     'Web3/Blockchain':  r'web3|web 3\.0|blockchain|solidity|\bdefi\b|smart contract|\bcrypto\b|\bnft\b',
     # Мобайл
@@ -631,6 +747,11 @@ LANG_KEYS = {
     'Python', 'JavaScript', 'TypeScript', 'Java', 'Go',
     'C++', 'C#', 'PHP', 'Kotlin', 'Swift', 'Rust', 'Ruby', 'Scala', '1С',
 }
+
+# Мои языки для скоринга — пересечение якоря профиля с набором выше. Объявлено ЗДЕСЬ,
+# а не рядом с остальными RESUME_*, потому что LANG_KEYS определяется только сейчас.
+# Обоснование самой оси — у `RESUME_LANG_FIT` выше.
+RESUME_LANGS = [t for t in RESUME_CORE if t in LANG_KEYS]
 
 # Роль вакансии по ТАЙТЛУ (порядок важен — первое совпадение). Классифицирует
 # «безъязыковые» (аналитик/QA/devops/…) и отделяет не-IT. Гейт: вакансия считается

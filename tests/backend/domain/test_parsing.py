@@ -8,6 +8,7 @@ from hrwork.domain.parsing import (
     _detect_techs,
     _salary_mid,
     is_hard_non_it,
+    langs_in_title,
     parse_vacancy,
 )
 from hrwork.domain.role import Role
@@ -412,6 +413,21 @@ def test_domain_words_alone_do_not_steal_the_role(title, expected):
     """Слово о технологии само по себе роль не задаёт — та же ловушка, что «AI-first»
     у GenAI и «Wildberries» у блеклиста: имя профессии бьёт предметную область."""
     assert _detect_role(title, ["Python"]) is expected
+
+
+# ── Язык из тайтла ───────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("title, expected", [
+    ("Инженер-разработчик C++", ["C++"]),
+    ("Python-разработчик", ["Python"]),
+    ("Fullstack (Python/TypeScript)", ["Python", "TypeScript"]),
+    ("Software Engineer (Cloud)", []),
+    ("Разработчик Дашбордов", []),
+])
+def test_langs_in_title_reads_only_the_title(title, expected):
+    """Ось языка в скоринге обязана верить ТАЙТЛУ: «Инженер-разработчик C++» получал
+    «свой язык» за Python, найденный в ОПИСАНИИ. Пустой список = тайтл молчит,
+    и тогда вызывающий вправе посмотреть в описание."""
+    assert sorted(langs_in_title(title)) == sorted(expected)
 
 
 def test_bare_ai_in_title_is_not_a_genai_role():
