@@ -6,17 +6,30 @@
   беспроксишном пути (hirify, HH без прокси). Проксированные запросы (ротация IP у HH) пул не
   умеет -> для них откат на curl автоматически. Экспериментальный флаг, A/B на своей сети.
 
-Ретраи/бэкофф и валидацию контента делают вызывающие (у HH и hirify они осознанно разные).
+Ретрай-цикл с бэкоффом и валидацию контента делают вызывающие, но САМ ЦИКЛ живёт здесь:
+`fetch_bytes_retry`/`fetch_json_retry` — единственная его реализация. До 23.09.2026 он был
+скопирован девять раз (`sources/{arbeitnow,getmatch,hirify,jobicy,talanto,themuse,web3career}`,
+`devitjobs.py`, `ats.py`), и политику, поправленную в одном адаптере, остальные восемь
+продолжали работать по старой — то есть под троттлингом портал отдавал усечённый срез, а
+санити-гейт сбора морозил кеш ВСЕХ порталов (аудит 22.09.2026, §3.1). Числа попыток и пауз
+у порталов РАЗНЫЕ и остаются разными — они и есть параметр `RetryPolicy`.
+
 Контракт у обоих бэкендов ОДИН: не-200, пустое тело или сбой -> None, редиректы следуются.
 Разъезд здесь стоит дорого: под curl (боевой дефолт) 429/503 с телом возвращались как успех,
 и адаптер принимал троттлинг за «данные кончились» — ни одного ретрая (аудит 08.08.2026).
 """
 import asyncio
+import json
 import re
 import shutil
-from typing import Any
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from time import monotonic
+from typing import Any, TypeVar
 
 from hrwork.config import CURL_MAX_TIME, HTTP_BACKEND, log
+
+T = TypeVar("T")
 
 CURL = shutil.which("curl") or "curl"
 # Код ответа curl печатает в stderr (`%{stderr}`), а НЕ хвостом к телу: тело остаётся
@@ -68,6 +81,101 @@ async def fetch_bytes(url: str, *, headers: dict[str, Any] | None = None, proxy:
     if _BACKEND == "httpx" and proxy is None:
         return await _httpx_fetch(url, headers, max_time)
     return await _curl_fetch(url, headers, proxy, max_time)
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """Политика ретраев ТРАНСПОРТА: сколько попыток и паузы между ними (экспоненциально).
+
+    Числа НЕ унифицированы намеренно: они — свойство портала (насколько охотно он отдаёт
+    срез), а не стиль кода. `attempts` — всего попыток, включая первую."""
+
+    attempts: int
+    backoff_start: float
+    backoff_max: float
+
+
+#: Лёгкие публичные JSON-API (arbeitnow, jobicy, themuse, web3.career) и борды ATS: короткий
+#: бэкофф 1 -> 2 -> 4 с — портал либо отвечает сразу, либо лежит.
+RETRY_STANDARD = RetryPolicy(attempts=3, backoff_start=1.0, backoff_max=8.0)
+#: Крупные агрегаторы (hirify, getmatch, talanto): четыре попытки и потолок паузы 10 с —
+#: прогон длинный, и транзиентный сбой на одной из сотен страниц стоит дороже ожидания.
+RETRY_PATIENT = RetryPolicy(attempts=4, backoff_start=1.0, backoff_max=10.0)
+
+#: Хук пустой попытки: (номер попытки, сколько она шла). Нужен там, где длительность —
+#: часть диагностики (devitjobs: по времени разводятся таймаут под нагрузкой и мгновенный
+#: HTTP-отказ, а `fetch_bytes` причину не отдаёт).
+EmptyAttemptHook = Callable[[int, float], None]
+
+
+async def _retry(attempt: Callable[[], Awaitable[T | None]], policy: RetryPolicy,
+                 on_empty: EmptyAttemptHook | None = None) -> T | None:
+    """Один ретрай-цикл на весь сбор: `None` от попытки -> пауза с удвоением -> ещё попытка.
+
+    Пауза после ПОСЛЕДНЕЙ попытки не делается: ждать после того, как попытки кончились,
+    нечего. Восемь из девяти прежних копий цикла спали там вхолостую (у девятой, devitjobs,
+    этой паузы не было намеренно) — здесь это поведение одно на всех.
+    """
+    delay = policy.backoff_start
+    for n in range(1, policy.attempts + 1):
+        started = monotonic()
+        out = await attempt()
+        if out is not None:
+            return out
+        if on_empty is not None:
+            on_empty(n, monotonic() - started)
+        if n < policy.attempts:
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, policy.backoff_max)
+    return None
+
+
+async def fetch_bytes_retry(url: str, *, headers: dict[str, Any] | None = None,
+                            proxy: str | None = None, max_time: int = CURL_MAX_TIME,
+                            policy: RetryPolicy,
+                            on_empty: EmptyAttemptHook | None = None) -> bytes | None:
+    """GET url с ретраями транспорта -> сырые bytes либо None после всех попыток.
+
+    Для тех, кто разбирает тело сам и по своим правилам (devitjobs.py: битый JSON — это НЕ
+    повод ретраить, он логируется как своя ошибка схемы).
+    """
+    async def _try() -> bytes | None:
+        return await fetch_bytes(url, headers=headers, proxy=proxy, max_time=max_time)
+
+    return await _retry(_try, policy, on_empty)
+
+
+async def fetch_json_retry(url: str, *, headers: dict[str, Any] | None = None,
+                           proxy: str | None = None, max_time: int = CURL_MAX_TIME,
+                           policy: RetryPolicy,
+                           parse: Callable[[Any], Any] | None = None,
+                           log_context: str = "") -> Any | None:
+    """GET url с ретраями транспорта -> разобранный JSON (либо None после всех попыток).
+
+    Ретраятся и сбой транспорта, и битый JSON: и то и другое — сбой доставки, а не «выдача
+    кончилась». Пустой ОТВЕТ портала (`[]`/`{}` в теле) сюда не относится — это успех, и
+    отличать «троттлинг» от «конца выдачи» должен вызывающий (`base.py::get_page_with_empty_retry`).
+
+    `parse` вытаскивает карточки из конверта портала (`payload["data"]`/`["jobs"]`/`["results"]`)
+    или превращает ответ в список (web3.career отдаёт `[заголовок, справка, [вакансии]]`).
+    Вернувший `None` `parse` считается сбоем и ретраится; ИСКЛЮЧЕНИЕ из `parse` наружу — это
+    «ответ пришёл, но схема не наша»: ретрай не поможет, и решение ловит вызывающий (ats.py).
+
+    `log_context` (например «arbeitnow page=3») различает в debug-строке, ЧТО не разобралось:
+    на ~20k запросов прогона одна общая строка была бы бесполезной.
+    """
+    async def _try() -> Any | None:
+        out = await fetch_bytes(url, headers=headers, proxy=proxy, max_time=max_time)
+        if not out:
+            return None
+        try:
+            payload = json.loads(out.decode("utf-8", "replace"))
+        except json.JSONDecodeError as e:
+            log.debug("{}: битый JSON ({})", log_context or url, e)
+            return None
+        return parse(payload) if parse is not None else payload
+
+    return await _retry(_try, policy)
 
 
 def _http_status(err: bytes) -> int | None:

@@ -37,7 +37,7 @@ def test_grounded_accepts_pure_reorder(source, candidate, lang):
 
 
 def test_grounded_accepts_identical():
-    assert R._grounded("Английский B1 (средний).", "Английский B1 (средний).", "ru") is True
+    assert R._grounded("Английский B2 (выше среднего).", "Английский B2 (выше среднего).", "ru") is True
 
 
 @pytest.mark.parametrize("candidate", ["", "   ", "\n\t"])
@@ -89,7 +89,7 @@ def test_grounded_over_length_rejected():
 
 @pytest.mark.parametrize("source,candidate,lang", [
     ("На Python — 3 года.", "3 years of Python.", "ru"),         # RU-ответ, латиница -> False
-    ("Yes, B1 level.", "Да, уровень B1.", "en"),                 # EN-ответ, кириллица -> False
+    ("Yes, B2 level.", "Да, уровень B2.", "en"),                 # EN-ответ, кириллица -> False
 ])
 def test_grounded_language_drift_rejected(source, candidate, lang):
     assert R._grounded(source, candidate, lang) is False

@@ -103,7 +103,8 @@ GET /api/marks
 
 ### POST /api/marks
 
-**Назначение.** Полная перезапись отметок. Лента шлёт весь словарь с debounce 400 мс.
+**Назначение.** Перезапись отметок набором ленты с сохранением «откликнулись» с диска.
+Лента шлёт весь словарь с debounce 400 мс.
 
 **Request**
 
@@ -127,12 +128,16 @@ Content-Type: application/json
 **Edge cases**
 
 - Тело не объект (список, строка) -> `400`, файл не трогается
-- Пустое тело -> трактуется как `{}` -> **отметки будут стёрты**
+- Пустое тело -> трактуется как `{}` -> **стёрты все отметки, кроме `applied`**
 - Значения фильтруются по allowlist при записи: чужой статус на диск не попадёт
+- Отметка `applied`, которой нет в теле, сохраняется с диска (RFC-004): её мог записать крон,
+  синк или другой аккаунт после загрузки ленты. Значение из тела побеждает, поэтому снять
+  «откликнулись» этим запросом нельзя — отклик к этому моменту уже был
 
-**Почему так.** Полная перезапись, а не патч: словарь мал (единицы КБ), а инкрементальные
-обновления потребовали бы разрешения конфликтов между вкладками. Запись атомарная и под
-`threading.Lock` — сервер многопоточный.
+**Почему так.** Перезапись, а не патч: словарь мал (единицы КБ), а инкрементальные
+обновления потребовали бы разрешения конфликтов между вкладками. Запись атомарная, под
+`threading.Lock` (сервер многопоточный) и межпроцессной блокировкой `marks.json.lock` — в тот же
+файл пишут кроны откликов и синк (`storage.md`).
 
 ---
 
@@ -188,18 +193,21 @@ GET /api/statuses
 
 ```json
 {
-  "134662537": "RESPONSE",
-  "133629751": "DISCARD"
+  "134662537": { "main": "RESPONSE" },
+  "133629751": { "main": "DISCARD", "acc2": "RESPONSE" }
 }
 ```
 
-Значение — код `currentApplicantState` от HH. Подписи — `chat.STATE_LABELS`
-(`RESPONSE` -> «Отклик», `DISCARD` / `DISCARD_BY_EMPLOYER` -> «Отказ», `INVITATION` ->
-«Приглашение»). Незнакомый код показывается как есть.
+**ПО АККАУНТАМ** (RFC-004): `{vacancyId: {account: state}}`. У вакансии с откликом от обоих
+профилей статусы разные — фронт берёт статус профиля из фильтра (`model.js::effectiveStatus`),
+иначе под фильтром acc2 светилась бы метка основного. Значение — код `currentApplicantState`
+от HH. Подписи — `chat.STATE_LABELS` (`RESPONSE` -> «Отклик», `DISCARD` /
+`DISCARD_BY_EMPLOYER` -> «Отказ», `INVITATION` -> «Приглашение»). Незнакомый код — как есть.
 
 **Status Codes.** `200`
 
-**Implementation.** `_Handler._statuses_get` -> `store.statuses()`
+**Implementation.** `_Handler._statuses_get` -> `crm.statuses()` (объединяет `response_status.json`
+всех аккаунтов)
 
 **Edge cases**
 
@@ -264,22 +272,29 @@ GET /api/chats
 ```json
 {
   "134020511": {
-    "kind": "other",
-    "label": "💬 сообщение",
-    "needs_reply": true,
-    "manual_only": false,
-    "sender": "human",
-    "can_write": true,
-    "preview": "Здравствуйте, Антон, Компания Ozon Tech рассмотрит Ваше резюме…",
-    "ts": "2026-07-14T09:12:03"
+    "main": {
+      "kind": "other",
+      "label": "💬 сообщение",
+      "needs_reply": true,
+      "manual_only": false,
+      "sender": "human",
+      "can_write": true,
+      "preview": "Здравствуйте, Иван, Компания Пример рассмотрит Ваше резюме…",
+      "ts": "2026-07-14T09:12:03"
+    }
   }
 }
 ```
 
-**Поля**
+**ПО АККАУНТАМ** (RFC-004): `{vacancyId: {account: {…свёртка…}}}`. У вакансии с откликом от
+обоих профилей чат И ДАТА (`ts`) разные — фронт берёт чат профиля из фильтра
+(`model.js::effectiveChat`), иначе на бейдже отказа под фильтром acc2 светилась бы дата
+основного. Индекс шаблонов строится по корпусу ВСЕХ аккаунтов.
+
+**Поля** (внутри каждого `account`)
 
 - `kind` — `question` | `screening` | `invite` | `reject` | `other`
-  (`none` отфильтровывается и в ответ не попадает)
+  (`none` отфильтровывается и в ответ не попадает; аккаунт без пройденного чата в ответе не появится)
 - `label` — готовая подпись с эмодзи для бейджа
 - `needs_reply` — `false` только для `reject`
 - `manual_only` — вопрос про деньги или переезд, отвечать должен человек
@@ -363,8 +378,14 @@ Content-Type: application/json
 {"status": "queued", "position": 2, "letter": false}
 ```
 
-`status` — доменный исход `applied` | `already` | `form` | `skip` (`ApplyOutcome`) либо
-транспортное состояние `queued` | `busy` | `no-session` | `error`.
+**Response** `200` — вакансию уже взял другой аккаунт hh.ru (RFC-004)
+
+```json
+{"status": "taken", "owner": "acc2", "letter": false}
+```
+
+`status` — доменный исход `applied` | `already` | `form` | `skip` | `captcha` (`ApplyOutcome`) либо
+транспортное состояние `queued` | `busy` | `no-session` | `taken` | `error`.
 
 **Status Codes**
 
@@ -373,8 +394,9 @@ Content-Type: application/json
 - `413` — тело больше 1 МБ
 - `500` — `{"status": "error", "error": "TypeError: …"}`, трейс в лог сервера
 
-**Implementation.** `_Handler._apply_post` -> `get_apply_worker().submit()` ->
-`ApplyWorker` -> `autoclick.apply_vacancy`
+**Implementation.** `_Handler._apply_post` -> `worker.get_apply_worker().submit()` ->
+`ApplyWorker._run` -> `autoclick._apply_one_vacancy` (`worker.py` вынесен из `autoclick.py`:
+задача воркера — держать тёплый браузер и очередь кликов, а не селекторы отклика)
 
 **Edge cases**
 
@@ -382,7 +404,10 @@ Content-Type: application/json
   дожмёт очередь в конце своего прогона. Это не ошибка. `employer` кладётся в запись
   очереди (`store.enqueue`) и доживает до дренажа — иначе отложенный отклик терял бы
   компанию ровно там, где она нужнее всего
-- **Протухла сессия** -> `no-session`, нужен `hh.py autoclick --login`
+- **Вакансия в журнале или очереди ожидания другого аккаунта** -> `taken` + код владельца
+  (`taken.py::taken_by_others`) — до браузера и до очереди ожидания. С одним аккаунтом не бывает
+- **Протухла сессия или в сессии чужой пользователь HH** -> `no-session`, нужен
+  `hh.py autoclick --login`
 - **Вакансия-опросник** -> `form`, попадает в форм-очередь
 - **Уже откликались** -> `already`
 - **Параллельные POST** -> один воркер-синглтон (double-checked locking); два Chromium
@@ -468,7 +493,7 @@ GET /api/search?q=python&city=Москва&sal=150000&limit=20&offset=0
       "id": "134809303",
       "source": "hh",
       "name": "Python Developer",
-      "employer": "Ozon Tech",
+      "employer": "Пример",
       "city": "Москва",
       "sal_mid": 250000,
       "age_days": 10,
@@ -526,11 +551,16 @@ GET /api/search?q=python&city=Москва&sal=150000&limit=20&offset=0
 
 **Назначение.** Страница поиска.
 
-**Response** `200` — `text/html; charset=utf-8`, содержимое `src/search.html`.
+**Response** `200` — `text/html; charset=utf-8`, содержимое `src/search.html` с подставленными
+опциями `<select id="source">`. Опции рендерит сервер из `config.SOURCES` (подпись — домен из
+`config.PORTAL_SITES`, неизвестный портал отдаёт свой код), в файле на их месте стоит маркер
+`<!-- SOURCE_OPTIONS -->`. Раньше список был захардкожен четырьмя порталами из двенадцати,
+и пять источников с вакансиями в выдаче нельзя было отфильтровать через UI, хотя API их
+поддерживал (аудит dwh_demo 2026-08-09, F62).
 
 **Status Codes.** `200` · `404` — файл отсутствует
 
-**Implementation.** `_Handler._search_page`
+**Implementation.** `_Handler._search_page` -> `_source_options()` (`config.SOURCES`)
 
 **Особенность.** Отдаётся из `src/`, а не из `data/` — это исходник, не артефакт сборки.
 

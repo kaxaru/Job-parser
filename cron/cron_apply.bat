@@ -4,9 +4,16 @@ rem браузерном прогоне. Раздельные задачи (hh_a
 rem дрались за autoclick.lock, поэтому слиты — флага --apply-only больше нет.
 rem Поднятие гейтится кулдауном (bump_state.json, лимит HH раз в 4ч): на слотах, где ещё
 rem рано, тяжёлая /applicant/resumes не грузится вовсе.
-rem Окно 10:00-23:30, каждые 90 мин = 10 прогонов x 20 = ровно 200/день (лимит HH),
-rem дневной потолок дополнительно enforced в apply_quota.json.
-rem Логи — logs\cron_apply.log. Отключить: schtasks /Delete /TN hh_apply /F
+rem Окно 10:00-23:30, каждые 90 мин. Дневной потолок enforced в apply_quota.json.
+rem
+rem ПАУЗА 21.09.2026 (решение владельца): отклики идут ТОЛЬКО со второго аккаунта, основной
+rem приостановлен. `--daily-cap 0` гасит ОБА пути отклика — батч (`eff = min(limit, дневной
+rem остаток)`) и дренаж очереди ленты (`while applied_today() < daily_cap`) — но НЕ трогает
+rem поднятие резюме (bump_resumes по кулдауну 4ч) и синк статусов: резюме остаётся в поиске,
+rem работодатель может позвать сам. Откат паузы — убрать флаг.
+rem Чего пауза НЕ закрывает: кнопку «Откликнуться в фоне» в ленте (`POST /api/apply` квоту
+rem не проверяет, `server.py`) — это ручной путь владельца, и он по-прежнему от main.
+rem Логи — logs\cron_apply.log. Отключить задачу целиком: schtasks /Delete /TN hh_apply /F
 rem FORMS_LLM=1 включён ОСОЗНАННО (28.07), вопреки исходному «не в кроне» из RFC-003: без него
 rem КАЖДАЯ вакансия с опросником уходила в форм-очередь нетронутой, и та росла быстрее, чем её
 rem вычерпывали (за ночь 59 -> 60 при 21 снятом). Со словарём form_answers на 141 запись движок
@@ -16,4 +23,4 @@ cd /d "%~dp0.."
 set "REPO=%CD%"
 set "PY=%REPO%\..\.venv3\Scripts\python.exe"
 set "FORMS_LLM=1"
-"%PY%" hh.py autoclick --apply-limit 20 >> logs\cron_apply.log 2>&1
+"%PY%" hh.py autoclick --apply-limit 20 --daily-cap 0 >> logs\cron_apply.log 2>&1

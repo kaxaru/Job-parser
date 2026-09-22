@@ -18,6 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from hrwork.config import ACCOUNT  # noqa: E402
+
+if not ACCOUNT.is_main:     # пути ниже захардкожены на data/ основного аккаунта (RFC-004)
+    raise SystemExit(f"Аккаунт {ACCOUNT.code}: scripts/chat_review.py только для основного аккаунта")
+
 from hrwork.application.apply import chat_class  # noqa: E402
 
 REPLIES = ROOT / "data" / "chat_replies.jsonl"

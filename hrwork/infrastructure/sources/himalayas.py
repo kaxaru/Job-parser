@@ -18,13 +18,11 @@
 работодателя по `applicationLink`.
 """
 import asyncio
-import datetime
 import json
 from dataclasses import dataclass
 from typing import Any
 
 from hrwork.config import (
-    GLOBAL_SOURCES_IT_ONLY,
     HIMALAYAS_BATCH_PAUSE,
     HIMALAYAS_MAX_PAGES,
     HIMALAYAS_PAGE_CONCURRENCY,
@@ -38,8 +36,9 @@ from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.net.http import fetch_bytes
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import Source, get_page_with_empty_retry, is_it_only_survivor, normalize_each, register_source
 from .hh import BROWSER_UA
+from .text import ts_to_iso
 
 SITE = "https://himalayas.app"
 API = f"{SITE}/jobs/api"
@@ -52,23 +51,12 @@ class HimalayasCfg:
     page_size: int = PAGE_SIZE
     max_pages: int = HIMALAYAS_MAX_PAGES
     page_conc: int = HIMALAYAS_PAGE_CONCURRENCY
-    # Перепроверка пустой страницы — см. _get_page. Три попытки с 2/4/8 с: троттлинг
-    # отпускает за секунды, а конец выдачи от ожидания не изменится.
-    empty_retries: int = 3
-    empty_retry_delay: float = 2.0
-    empty_retry_max: float = 8.0
     batch_pause: float = HIMALAYAS_BATCH_PAUSE
+    # Перепроверки пустой страницы тут больше нет: политика общая (base.EMPTY_PAGE_RETRY),
+    # а сам цикл — в base.get_page_with_empty_retry.
 
 
 CFG = HimalayasCfg()
-
-
-def _iso(ts: Any) -> str | None:
-    """pubDate приходит unix-секундами -> ISO-UTC."""
-    try:
-        return datetime.datetime.fromtimestamp(int(ts), tz=datetime.timezone.utc).isoformat()
-    except (TypeError, ValueError, OSError):
-        return None
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -125,7 +113,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
     desc = str(it.get("description") or "")
     excerpt = str(it.get("excerpt") or "")
     cats = " ".join(str(c) for c in (it.get("categories") or []))
-    pub = _iso(it.get("pubDate"))
+    pub = ts_to_iso(it.get("pubDate"))
     vac = build_vacancy(
         vid=_vid(it),
         name=name,
@@ -170,29 +158,16 @@ class HimalayasSource(Source):
             return []
 
     async def _get_page(self, offset: int) -> list[dict[str, Any]]:
-        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа.
+        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — общая `base.get_page_with_empty_retry`.
 
         Портал притормаживает после ~1900 запросов подряд и начинает отдавать пустой список,
         внешне неотличимый от «выдача кончилась». Обход выходил по первой пустой странице и
-        молча обрывался на 40 % (замер 07.08.2026: встал на offset 38 900, тогда как
-        одиночные пробы сразу после этого отдавали данные вплоть до 95 000, и только
-        97 400 был честно пуст). Отчитывался при этом как об успехе.
-
-        Поэтому пустой ответ — не приговор: ждём и повторяем. Пришли данные — это был
-        троттлинг; пусто и после всех попыток — конец выдачи."""
-        jobs = await self._fetch_once(offset)
-        if jobs:
-            return jobs
-        delay = CFG.empty_retry_delay
-        for attempt in range(CFG.empty_retries):
-            await asyncio.sleep(delay)
-            jobs = await self._fetch_once(offset)
-            if jobs:
-                log.debug("himalayas offset={}: пусто было троттлингом, ответ с попытки {}",
-                          offset, attempt + 2)
-                return jobs
-            delay = min(delay * 2, CFG.empty_retry_max)
-        return []
+        молча обрывался на 40 % (замер 07.08.2026: встал на offset 38 900, тогда как одиночные
+        пробы сразу после этого отдавали данные вплоть до 95 000, и только 97 400 был честно
+        пуст). Отчитывался при этом как об успехе.
+        """
+        return await get_page_with_empty_retry(
+            lambda: self._fetch_once(offset), f"offset={offset}", source="himalayas")
 
     async def collect(self) -> list[VacancyRecord]:
         first = await self._get_page(0)
@@ -220,7 +195,7 @@ class HimalayasSource(Source):
                 return None
             seen.add(vid)
             rec = _normalize(it)
-            if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
+            if not is_it_only_survivor(rec):
                 dropped += 1
                 return None
             return rec

@@ -12,6 +12,8 @@
 Здесь же контрольные тесты «ручка действительно работает»: без них страж стерёг бы
 несуществующий риск и был бы зелёным при любой поломке механизма.
 """
+import os
+
 import pytest
 
 from hrwork import config
@@ -36,13 +38,27 @@ def test_profile_fallback_precedes_config_import(config_imported_at_configure):
     assert config_imported_at_configure is False
 
 
+def test_account_variable_is_cleared_before_config_import():
+    """Регрессия RFC-004: прогон тестов из консоли второго аккаунта (`HR_ACCOUNT=acc2`)
+    испёк бы пути и профиль этого аккаунта и читал бы его реальные данные. Корневой
+    `pytest_configure` снимает переменную раньше первого `import hrwork.config`."""
+    assert os.environ.get("HR_ACCOUNT") is None
+
+
+def test_developer_employer_blocklist_does_not_reach_tests():
+    """RFC-004: блок-лист работодателей живёт в `.env` разработчика и печётся на импорте.
+    Тесты вне фикстуры `apply_defaults` (формы, сервер) иначе видели бы чужих работодателей."""
+    from hrwork import config
+    assert config.APPLY_EMPLOYER_BLOCKLIST == []
+
+
 @pytest.mark.parametrize("key, expected", [
     ("APPLY_BLACKLISTS", {}),
     ("RESUME_COVER_TEMPLATE", ""),
     ("RESUME_CORE", ["Python", "FastAPI"]),
     ("RESUME_EXP_IDS", ["noExperience", "between1And3"]),
     ("APPLY_CORE_WIDE", {"Django", "Flask", "PostgreSQL", "MySQL", "Redis", "Kafka"}),
-    ("APPLY_OFFICE_CITIES", {"Москва", "Санкт-Петербург", "Тольятти", "Самара"}),
+    ("APPLY_OFFICE_CITIES", {"Москва", "Санкт-Петербург"}),
     ("APPLY_EXTRA_EXP_IDS", ["between3And6"]),
 ])
 def test_pinned_profile_defaults_are_the_documented_ones(key, expected, pinned_profile_defaults):

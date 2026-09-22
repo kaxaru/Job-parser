@@ -14,7 +14,8 @@ from typing import Any
 
 from hrwork.application.apply.outcome import ApplyChannel, VacancyMark
 from hrwork.application.apply.runtime import bump_state, quota
-from hrwork.infrastructure.storage import followup, load_marks, save_marks
+from hrwork.infrastructure.storage import followup, load_marks, update_marks
+from hrwork.infrastructure.storage.followup import JournalRow
 
 
 class ApplicationStore:
@@ -27,13 +28,22 @@ class ApplicationStore:
 
     @staticmethod
     def set_marks(full: dict[str, Any]) -> None:
-        """Полностью заменить карту отметок (лента шлёт свой актуальный набор)."""
-        save_marks(full)
+        """Заменить карту отметок набором ленты, НЕ теряя «откликнулись» с диска (RFC-004).
+
+        Лента шлёт ВСЮ карту, загруженную когда-то раньше. Отметку «откликнулись», которую за это
+        время записал крон, синк или другой аккаунт, лента не знает, и полная замена её стирала —
+        а отбор снова видел вакансию свободной. Отклик необратим, поэтому такая отметка с диска
+        подмешивается, если ленты про вакансию нечего сказать; своё значение ленты побеждает.
+        Цена: снять «откликнулись» из ленты нельзя — ставила её либо автоматика по факту
+        отклика, либо человек, и в обоих случаях отклик уже был."""
+        applied = VacancyMark.APPLIED.code
+        update_marks(lambda current: {**{k: v for k, v in current.items() if v == applied},
+                                      **full})
 
     @staticmethod
     def merge_marks(updates: dict[str, Any]) -> None:
-        """Домержить отметки в текущие (не теряя чужих записей)."""
-        save_marks({**load_marks(), **updates})
+        """Домержить отметки в текущие (не теряя чужих записей, в том числе других процессов)."""
+        update_marks(lambda current: {**current, **updates})
 
     @classmethod
     def mark_applied(cls, vid: str) -> None:
@@ -75,10 +85,43 @@ class ApplicationStore:
 
     # ── Журнал откликов (applied_log.jsonl, append-only) ──
     @staticmethod
-    def log_applied(vid: str, name: str, url: str, via: ApplyChannel,
-                    status: str = "applied", ts: str = "", employer: str = "") -> None:
-        followup.append_applied(vid, name, url, via=via.code, status=status, ts=ts,
-                                employer=employer)
+    def log_applied(row: JournalRow) -> None:
+        """Дозаписать строку журнала. VO вместо восьми параметров (аудит 22.09.2026, §5):
+        набор и порядок полей записи задаёт сама строка, а не порядок аргументов вызова."""
+        followup.append_applied(row)
+
+    # ── Единая точка фиксации УШЕДШЕГО отклика (аудит 22.09.2026, §1) ──
+    def commit_applied(self, vid: str, *, name: str, url: str, employer: str,
+                       via: ApplyChannel, ab: bool | None = None,
+                       drop_form: bool = False) -> int:
+        """Отметка -> квота -> журнал: одна последовательность для ВСЕХ путей отклика.
+
+        До 22.09.2026 эта тройка была написана трижды (`autoclick::_apply_batch`,
+        `autoclick::_apply_one_vacancy`, `forms::run`) и уже разошлась: feed-путь не писал
+        `ab`, а порядок и состав полей приходилось сверять глазами. Класс инцидентов
+        18.07/28.07 («отклик ушёл, а учёт не дошёл»): правку порядка или новое поле забывают
+        в одной из копий — недосчитанная квота (упор в лимит HH), строка журнала без владельца
+        доли (ломает наблюдаемость RFC-004) или потерянная отметка (повторный отклик).
+
+        ПОРЯДОК ЗАПИСИ — как в крон-батче: отметка, затем квота, затем журнал. Он значим:
+        квота и отметка дешевле журнала, а отметка обязана лежать на диске раньше всего —
+        именно её отсутствие 18.07 дало повторные отклики после kill посреди прогона.
+
+        `drop_form=True` — только форм-путь: анкета снимается с очереди ДО отметки, иначе
+        убитый посреди прогона процесс вернёт уже отправленную анкету в оборот.
+
+        `ab` — была ли вакансия в общей части A/B-сплита; None = неизвестно (лента и очереди
+        не знают сплита). Поле всегда доезжает до `log_applied` одним и тем же набором
+        параметров; сам журнал `None` не пишет (см. `followup.append_applied`).
+
+        Возвращает `applied_today()` — значение счётчика ПОСЛЕ инкремента (как `bump_quota`)."""
+        if drop_form:
+            self.remove_form(str(vid))
+        self.mark_applied(str(vid))
+        total = self.bump_quota(1)
+        self.log_applied(JournalRow(vid=str(vid), name=name, url=url, via=via.code,
+                                    employer=employer, ab=ab))
+        return total
 
     @staticmethod
     def applied_log() -> list[dict[str, Any]]:

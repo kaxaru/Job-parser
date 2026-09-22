@@ -39,12 +39,6 @@ def has_remote(text: str) -> bool:
     return any(m in t for m in REMOTE_MARKERS)
 
 
-def _salary_mid(sal: dict[str, Any] | None) -> tuple[int | None, int | None, int | None]:
-    """(from, to, mid) — уже net (gross→net внутри Salary VO)."""
-    s = Salary.from_raw(sal)
-    return s.net_triple() if s else (None, None, None)
-
-
 def _prescreen_literal(alt: str) -> str:
     """Гарантированная ведущая литеральная подстрока одной альтернативы regex.
     Если её нет в тексте — альтернатива заведомо не сматчит (необходимое условие)."""

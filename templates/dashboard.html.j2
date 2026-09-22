@@ -4,8 +4,7 @@
 <meta charset="utf-8">
 <title>HR Market Dashboard — Программисты РФ</title>
 <link rel="stylesheet" href="dashboard.css">
-<!-- Тема до отрисовки, чтобы страница не мигнула тёмной; ключ общий с лентой -->
-<script>try{if(localStorage.getItem('feed.theme')==='light'){document.documentElement.dataset.theme='light';}}catch(e){}</script>
+{% include "theme-init.html.j2" %}
 {# plotly.js: сперва ЛОКАЛЬНАЯ копия рядом с дашбордом (замер: CDN стоил 7.9 с из 8.0 с
    до первого графика), CDN — только фолбэк, если файл не скачался при сборке.
    defer: блокирующий <script> держал пустую страницу до загрузки библиотеки. #}
@@ -57,7 +56,9 @@
   {% for s in sources %}
   {% for k in keys %}
   {% if variants[s][k] %}
-  <div class="tab-pane" id="pane-{{ s }}-{{ k }}" data-src="{{ s }}" data-key="{{ k }}">
+  {# Панель ищется по id (`dashboard.js::_paneFor`): data-src/data-key никто не читал
+     (аудит 2026-09-22, §4). #}
+  <div class="tab-pane" id="pane-{{ s }}-{{ k }}">
     <div class="fig-loading"><span class="spinner"></span>Строю график…</div>
     <div class="fig" id="fig_{{ s }}_{{ k }}"></div>
     {# Данные фигуры лежат инертным JSON: браузер их НЕ исполняет, пока график не понадобится #}

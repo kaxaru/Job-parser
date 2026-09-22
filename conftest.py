@@ -14,6 +14,7 @@ conftest'ы стартовых путей (`testpaths = tests/backend`) груз
 
 Живой профиль разработчика не трогается и не читается — только проверяется его наличие.
 """
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -37,6 +38,14 @@ def pytest_configure(config: pytest.Config) -> None:
     23.07.2026)."""
     global _fallback_installed, _config_imported_at_configure
     _config_imported_at_configure = "hrwork.config" in sys.modules
+    # Аккаунт выбирается переменной окружения ДО импорта config (RFC-004). Прогон тестов,
+    # запущенный из консоли второго аккаунта, иначе испёк бы пути и профиль ЭТОГО аккаунта
+    # и читал бы его реальные data/accounts/<code>/ — тесты обязаны жить на основном.
+    os.environ.pop("HR_ACCOUNT", None)
+    # Блок-лист работодателей живёт в .env разработчика и печётся на импорте. Пустое значение
+    # ДО импорта: load_dotenv не перекрывает уже заданные переменные, и тесты вне
+    # `apply_defaults` (forms, server) не видят чужих работодателей.
+    os.environ["APPLY_EMPLOYER_BLOCKLIST"] = ""
     if _REAL.exists() or not _EXAMPLE.exists():
         return                       # профиль есть (или подложить нечего) — ничего не делаем
     shutil.copyfile(_EXAMPLE, _REAL)

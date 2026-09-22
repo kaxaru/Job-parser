@@ -4,8 +4,27 @@ from types import SimpleNamespace
 
 import pytest
 
+from hrwork.application.apply import browser
 from hrwork.application.apply.forms import forms
 from hrwork.application.apply.forms.form_read import FieldType, FormExtract, FormField
+from hrwork.application.apply.runtime import lock
+from hrwork.config import log
+
+# Ожидаемые селекторы — ДАННЫЕ ТЕСТА из спеки (data-qa формы отклика HH), а не ссылки на
+# константы реализации (аудит 22.09.2026, §6): тест со ссылкой повторит реализацию и разрешит
+# любое переименование селектора, хотя именно от него зависит, уйдёт отклик или нет.
+RESPONSE_SUBMIT = ('[data-qa="vacancy-response-letter-submit"], '
+                   '[data-qa="vacancy-response-submit-popup"]')
+RESPONSE_LETTER = '[data-qa="vacancy-response-popup-form-letter-input"]'
+LETTER_TOGGLE = '[data-qa="vacancy-response-letter-toggle"]'
+
+
+@pytest.fixture(autouse=True)
+def _no_real_vacancy_cache(monkeypatch):
+    """Растяжка: контекст вакансий пуст, пока тест не подложил свой. `run` берёт работодателя
+    из кеша вакансий ещё до открытия страницы (блок-лист, RFC-004), и без подмены полез бы
+    в реальный vacancies_raw.json — медленно, и результат зависел бы от машины."""
+    monkeypatch.setattr(forms, "_VAC_CTX", {})
 
 
 def _fld(ftype=FieldType.TEXTAREA, options=(), opt_values=(), prompt="Опыт?"):
@@ -19,9 +38,16 @@ def _extract(fields, missed=0):
 
 
 class _RecPage:
-    """Мок Playwright-страницы: пишет, какие селекторы кликнули (проверяем submit)."""
-    def __init__(self):
+    """Мок Playwright-страницы: пишет, какие селекторы кликнули (проверяем submit) и отдаёт
+    маркер подтверждения отклика, который опрашивает `selectors.wait_response_confirmed`.
+
+    `confirm_after` — через сколько опросов маркер появится (0 — сразу, None — не появится):
+    так поллинг инцидента 134804227 проверяется на НАСТОЯЩЕЙ функции ожидания, без реального
+    сна (мок `wait_for_timeout` мгновенный)."""
+    def __init__(self, confirm_after: int | None = 0):
         self.clicks: list[str] = []
+        self.confirm_after = confirm_after
+        self.polls = 0
 
     def locator(self, sel):
         page = self
@@ -30,6 +56,9 @@ class _RecPage:
             @property
             def first(self):
                 return self
+            def count(self):
+                page.polls += 1
+                return int(page.confirm_after is not None and page.polls > page.confirm_after)
             def click(self, **_):
                 page.clicks.append(sel)
             def check(self):
@@ -38,8 +67,13 @@ class _RecPage:
                 pass
             def select_option(self, **_):
                 pass
+            def wait_for(self, **_):
+                pass
 
         return _Loc()
+
+    def get_by_text(self, _text):
+        return self.locator("<text>")
 
     def wait_for_timeout(self, _ms):
         pass
@@ -153,7 +187,7 @@ def test_resolve_freetext_salary_writes_amount(monkeypatch):
 # ── письмо: textarea спрятан за тоглом «Добавить» (инцидент 134804227, 2026-07-22:
 # _fill_cover молча промахивался — поля нет в DOM, пока тогл не кликнут) ──
 class _LetterPage(_RecPage):
-    """До клика по _LETTER_TOGGLE поле _LETTER отсутствует; после — появляется."""
+    """До клика по тоглу «Добавить» поле письма отсутствует; после — появляется."""
     def __init__(self, toggled=False):
         super().__init__()
         self.toggled = toggled
@@ -167,10 +201,10 @@ class _LetterPage(_RecPage):
             def first(self):
                 return self
             def count(self):
-                return int(page.toggled) if sel == forms._LETTER else 1
+                return int(page.toggled) if sel == RESPONSE_LETTER else 1
             def click(self, **_):
                 page.clicks.append(sel)
-                if sel == forms._LETTER_TOGGLE:
+                if sel == LETTER_TOGGLE:
                     page.toggled = True
             def fill(self, v):
                 page.filled.append((sel, v))
@@ -183,8 +217,8 @@ def test_fill_cover_opens_toggle_then_fills(monkeypatch):
     monkeypatch.setattr(forms.cover, "build_cover", lambda cand, mode: "текст письма")
     page = _LetterPage()
     forms._fill_cover(page, "1", {"name": "X"}, "template")
-    assert forms._LETTER_TOGGLE in page.clicks
-    assert (forms._LETTER, "текст письма") in page.filled
+    assert LETTER_TOGGLE in page.clicks
+    assert (RESPONSE_LETTER, "текст письма") in page.filled
 
 
 def test_fill_cover_visible_field_needs_no_toggle(monkeypatch):
@@ -192,8 +226,8 @@ def test_fill_cover_visible_field_needs_no_toggle(monkeypatch):
     monkeypatch.setattr(forms.cover, "build_cover", lambda cand, mode: "текст письма")
     page = _LetterPage(toggled=True)
     forms._fill_cover(page, "1", {"name": "X"}, "template")
-    assert forms._LETTER_TOGGLE not in page.clicks
-    assert (forms._LETTER, "текст письма") in page.filled
+    assert LETTER_TOGGLE not in page.clicks
+    assert (RESPONSE_LETTER, "текст письма") in page.filled
 
 
 # ДЕФЕКТ 08.08.2026: под общим suppress лежала и НАША сборка письма. AttributeError в
@@ -237,10 +271,9 @@ def test_try_autofill_complete_submits(monkeypatch):
     monkeypatch.setattr(forms.form_read, "extract_form",
                         _extract([_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))]))
     monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
-    monkeypatch.setattr(forms, "_submitted", lambda page: True)   # HH подтвердил отклик
-    page = _RecPage()
+    page = _RecPage()                                         # маркер подтверждения на месте
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is True
-    assert forms._SUBMIT in page.clicks                       # «Откликнуться» нажат
+    assert RESPONSE_SUBMIT in page.clicks                     # «Откликнуться» нажат
 
 
 def test_try_autofill_unconfirmed_is_not_applied(monkeypatch):
@@ -250,8 +283,9 @@ def test_try_autofill_unconfirmed_is_not_applied(monkeypatch):
     monkeypatch.setattr(forms.form_read, "extract_form",
                         _extract([_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))]))
     monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
-    monkeypatch.setattr(forms, "_submitted", lambda page: False)  # HH НЕ подтвердил
-    assert forms.try_autofill(_RecPage(), SimpleNamespace(id="1", name="X")) is False
+    # HH НЕ подтвердил: маркер не появляется ни на одном опросе общего ожидания
+    assert forms.try_autofill(_RecPage(confirm_after=None),
+                              SimpleNamespace(id="1", name="X")) is False
 
 
 def test_try_autofill_polls_for_late_confirmation(monkeypatch):
@@ -262,9 +296,9 @@ def test_try_autofill_polls_for_late_confirmation(monkeypatch):
     monkeypatch.setattr(forms.form_read, "extract_form",
                         _extract([_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))]))
     monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
-    polls = iter([False, False, True])
-    monkeypatch.setattr(forms, "_submitted", lambda page: next(polls))
-    assert forms.try_autofill(_RecPage(), SimpleNamespace(id="1", name="X")) is True
+    # подтверждение появляется только на третьем опросе общего ожидания (`polls`), а не мгновенно
+    assert forms.try_autofill(_RecPage(confirm_after=2),
+                              SimpleNamespace(id="1", name="X")) is True
 
 
 def test_try_autofill_gap_never_submits(monkeypatch):
@@ -274,7 +308,7 @@ def test_try_autofill_gap_never_submits(monkeypatch):
     monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": (None, None))
     page = _RecPage()
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is False
-    assert forms._SUBMIT not in page.clicks                   # пробел -> вакансия в очередь, НЕ шлём
+    assert RESPONSE_SUBMIT not in page.clicks                 # пробел -> вакансия в очередь, НЕ шлём
 
 
 def test_try_autofill_empty_extraction_never_submits(monkeypatch):
@@ -294,7 +328,6 @@ def test_incompletely_read_form_never_submits(monkeypatch):
     monkeypatch.setattr(forms.form_read, "extract_form",
                         _extract([_fld(FieldType.RADIO, ("Да", "Нет"), ("y", "n"))], missed=1))
     monkeypatch.setattr(forms, "_resolve", lambda f, ctx, sal=None, vac="": ("Нет", None))
-    monkeypatch.setattr(forms, "_submitted", lambda page: True)
     page = _RecPage()
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is False
     assert page.clicks == []                     # ни одного клика: даже заполнять не начинаем
@@ -355,6 +388,13 @@ def test_clean_queue_removes_dead_and_applied(monkeypatch):
     assert set(removed) == {"2", "3", "4"}                    # мёртвые (2,3) + откликнутая (4)
     assert r == {"removed": 3, "dead": 2, "applied": 1,       # осталась только живая «1»
                  "out_of_scope": 0, "left": 1}
+
+
+@pytest.fixture
+def blocklist(monkeypatch):
+    """Блок-лист из вымышленных работодателей (репозиторий публичный)."""
+    from hrwork.application.apply import candidates
+    monkeypatch.setattr(candidates, "APPLY_EMPLOYER_BLOCK", candidates._employer_rx(["K7"]))
 
 
 # Очередь чистится ТЕМИ ЖЕ правилами, что и отбор кандидатов (candidates.out_of_scope):
@@ -460,16 +500,14 @@ def test_fill_field_own_variant_fills_paired_textarea():
 def _stub_browser(monkeypatch, autofill_result: bool):
     import contextlib as _ctx
 
-    from hrwork.application.apply import autoclick
-
     monkeypatch.setattr(forms, "FORMS_ENABLED", True)
     monkeypatch.setattr(forms.time, "sleep", lambda *_a: None)      # FORM_PAUSE не ждём
-    monkeypatch.setattr(autoclick, "_single_instance", _ctx.nullcontext)
-    monkeypatch.setattr(autoclick, "_launch", lambda *a, **k: object())
-    monkeypatch.setattr(autoclick, "_page", lambda *a, **k: _RunPage())
-    monkeypatch.setattr(autoclick, "_logged_in", lambda *_a: True)
-    monkeypatch.setattr(autoclick, "_goto", lambda *_a: True)
-    monkeypatch.setattr(autoclick, "is_captcha", lambda *_a: False)
+    monkeypatch.setattr(lock, "_single_instance", _ctx.nullcontext)
+    monkeypatch.setattr(browser, "_launch", lambda *a, **k: object())
+    monkeypatch.setattr(browser, "_page", lambda *a, **k: _RunPage())
+    monkeypatch.setattr(browser, "_session_state", lambda *_a: browser.LoginState.LOGGED_IN)
+    monkeypatch.setattr(browser, "_goto", lambda *_a: True)
+    monkeypatch.setattr(browser, "is_captcha", lambda *_a: False)
     monkeypatch.setattr(forms, "_open_form", lambda *_a: None)
     monkeypatch.setattr(forms, "try_autofill", lambda *a, **k: autofill_result)
     monkeypatch.setattr(forms, "sync_playwright", _ctx.nullcontext, raising=False)
@@ -496,7 +534,7 @@ def drain_env(monkeypatch):
     # Контекст вакансий — заглушкой: в очереди лежат только {name, url, ts}, работодателя
     # дренаж берёт отсюда. Без подмены _load_vac_ctx() полез бы в реальный vacancies_raw.json.
     monkeypatch.setattr(forms, "_VAC_CTX",
-                        {"111": ("Константинов Семен Павлович", "", "Backend разработчик",
+                        {"111": ("ООО Пример", "", "Backend разработчик",
                                  None, "between1And3")})
     monkeypatch.setattr(forms.store, "applied_ids", set)
     monkeypatch.setattr(forms.store, "marks", dict)
@@ -508,9 +546,9 @@ def drain_env(monkeypatch):
     monkeypatch.setattr(forms.store, "mark_applied", lambda v: seen["marked"].append(v))
     monkeypatch.setattr(forms.store, "bump_quota",
                         lambda n: seen.__setitem__("quota", seen["quota"] + n))
-    def _log(vid, name, url, via, **k):
-        seen["journal"].append((vid, via.code))
-        seen["employers"].append(k.get("employer", ""))
+    def _log(row):
+        seen["journal"].append((row.vid, row.via))
+        seen["employers"].append(row.employer)
     monkeypatch.setattr(forms.store, "log_applied", _log)
     return seen
 
@@ -539,7 +577,7 @@ def test_drained_form_writes_employer_to_journal(monkeypatch, drain_env):
     sys.modules["playwright.sync_api"].sync_playwright = _ctx.nullcontext
     _stub_browser(monkeypatch, autofill_result=True)
     forms.run()
-    assert drain_env["employers"] == ["Константинов Семен Павлович"]
+    assert drain_env["employers"] == ["ООО Пример"]
 
 
 # ДЕФЕКТ 08.08.2026: квота только ИНКРЕМЕНТИЛАСЬ. Гейта не было ни одного — ограничивал лишь
@@ -586,6 +624,26 @@ def test_dry_preview_ignores_the_daily_cap(monkeypatch, drain_env):
     assert previewed == ["111"]
 
 
+# RFC-004 R9: дренаж форм — отдельный путь отклика мимо `pick_candidates`. Анкета, легшая в
+# очередь до пополнения блок-листа, не отправляется и снимается из очереди до открытия страницы.
+def test_form_drain_drops_blocked_employer_without_opening_it(monkeypatch, drain_env, blocklist):
+    import sys
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", type(sys)("playwright.sync_api"))
+    import contextlib as _ctx
+    sys.modules["playwright.sync_api"].sync_playwright = _ctx.nullcontext
+    _stub_browser(monkeypatch, autofill_result=True)
+    monkeypatch.setattr(forms, "_VAC_CTX",
+                        {"111": ("K7, Управляющая компания", "", "Backend разработчик", None, None)})
+    opened = []
+    monkeypatch.setattr(browser, "_goto", lambda page, url: opened.append(url) or True)
+    assert forms.run() == {"forms": 1, "submitted": 0}
+    assert opened == []
+    assert drain_env["quota"] == 0
+    assert drain_env["journal"] == []
+    assert drain_env["marked"] == []
+    assert drain_env["removed"] == ["111"]
+
+
 def test_unsent_form_leaves_quota_untouched(monkeypatch, drain_env):
     # пробел/неподтверждённая отправка -> вакансия остаётся в очереди, счётчики не трогаем
     import sys
@@ -614,7 +672,6 @@ def _autofill_env(monkeypatch, fill_ok):
     monkeypatch.setattr(forms, "_resolve", lambda *a, **k: ("Да", None))
     monkeypatch.setattr(forms, "_fill_field", lambda *a, **k: fill_ok)
     monkeypatch.setattr(forms, "_fill_cover", lambda *a, **k: None)
-    monkeypatch.setattr(forms, "_wait_submitted", lambda *a, **k: True)
 
 
 def test_unfilled_field_blocks_submit(monkeypatch):
@@ -628,7 +685,7 @@ def test_filled_field_allows_submit(monkeypatch):
     page = _RecPage()
     _autofill_env(monkeypatch, fill_ok=True)
     assert forms.try_autofill(page, SimpleNamespace(id="1", name="X")) is True
-    assert page.clicks == [forms._SUBMIT]
+    assert page.clicks == [RESPONSE_SUBMIT]
 
 
 # ── метки CRM: тип вместо магических строк ──
@@ -637,3 +694,61 @@ def test_settled_marks_are_applied_and_rejected():
     assert VacancyMark.APPLIED.code == "applied"
     assert VacancyMark.REJECTED.code == "rejected"
     assert sorted(SETTLED_MARKS) == ["applied", "rejected"]
+
+
+# ═══ Контекст вакансий анкет: отказ загрузки НЕ кэшируется навсегда (аудит 22.09.2026, §1) ═══
+# `_VAC_CTX = {}` выставлялся ДО попытки загрузки: и отказ, и обрыв на середине 580-МБ реестра
+# запоминались навсегда и молча, и весь процесс заполнял анкеты без работодателя и вилки —
+# в журнал уходил пустой employer (инцидент 01.08.2026, «карточка-призрак»).
+
+@pytest.fixture
+def log_lines():
+    """Отформатированные строки лога за тест (loguru не пишет в `caplog`)."""
+    lines: list[str] = []
+    sink = log.add(lambda m: lines.append(str(m).rstrip("\n")), format="{message}", level="DEBUG")
+    yield lines
+    log.remove(sink)
+
+
+def test_failed_vacancy_context_load_warns_and_retries(monkeypatch, log_lines):
+    monkeypatch.setattr(forms, "_VAC_CTX", None)
+    attempts: list[str] = []
+
+    def broken():
+        attempts.append("load")
+        raise OSError("registry unreadable")
+
+    monkeypatch.setattr(forms, "_read_vac_ctx", broken)
+    assert forms._load_vac_ctx() == {}
+    assert attempts == ["load", "load"]            # отказ + РОВНО одна повторная попытка
+    assert log_lines == [
+        "Контекст вакансий не загружен (OSError: registry unreadable) — попытка 1/2; "
+        "анкеты пойдут без работодателя и вилки",
+        "Контекст вакансий не загружен (OSError: registry unreadable) — попытка 2/2; "
+        "анкеты пойдут без работодателя и вилки",
+    ]
+
+
+def test_failed_vacancy_context_load_is_not_cached_forever(monkeypatch):
+    monkeypatch.setattr(forms, "_VAC_CTX", None)
+
+    def broken():
+        raise OSError("registry unreadable")
+
+    monkeypatch.setattr(forms, "_read_vac_ctx", broken)
+    assert forms._load_vac_ctx() == {}
+    assert forms._VAC_CTX is None                  # отказ НЕ запомнен -> следующий вызов повторит
+    loaded = {"1": ("Ромашка", "описание", "N", 100, "between1And3")}
+    monkeypatch.setattr(forms, "_read_vac_ctx", lambda: loaded)
+    assert forms._load_vac_ctx() == loaded
+    assert loaded == forms._VAC_CTX
+
+
+def test_loaded_but_empty_registry_is_remembered(monkeypatch):
+    """«Загружено и пусто» — НЕ «не загружено»: иначе каждая анкета перечитывала бы 580-МБ реестр."""
+    monkeypatch.setattr(forms, "_VAC_CTX", None)
+    loads: list[str] = []
+    monkeypatch.setattr(forms, "_read_vac_ctx", lambda: loads.append("load") or {})
+    assert forms._load_vac_ctx() == {}
+    assert forms._load_vac_ctx() == {}
+    assert loads == ["load"]

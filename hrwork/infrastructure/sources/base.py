@@ -4,12 +4,18 @@
 парсится портал (HH: DDoS-Guard/curl/2 стадии/прокси; hirify: JSON-API) — инкапсулировано
 в конкретном классе. Новый портал = новый `Source`-подкласс с `@register_source(...)` +
 имя в `config.SOURCES`; коллектор не меняется (закрыт для модификации).
+
+Здесь же — общая механика, которая до аудита 22.09.2026 лежала копиями по адаптерам:
+перепроверка пустой страницы (`get_page_with_empty_retry`), диагностика дыры в пачке
+(`warn_if_hole`) и IT-фильтр общих бордов (`it_only`/`is_it_only_survivor`).
 """
+import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
-from hrwork.config import log
+from hrwork.config import GLOBAL_SOURCES_IT_ONLY, log
 from hrwork.infrastructure.storage import VacancyRecord
 
 from .hh import HHHtmlClient
@@ -114,6 +120,99 @@ def normalize_each(items: Iterable[Any], normalize: Callable[[Any], T | None], *
     if failed:
         log.warning("{}: кривых карточек {} из {} — пропущены", source, failed, total)
     return out
+
+
+@dataclass(frozen=True)
+class EmptyPageRetry:
+    """Политика перепроверки ПУСТОЙ страницы (см. `get_page_with_empty_retry`).
+
+    Значения подобраны на инциденте 07.08.2026: троттлинг отпускает за секунды, а честный
+    конец выдачи от ожидания не изменится — поэтому 2/4/8 с и не больше.
+    """
+
+    probes: int = 3
+    delay: float = 2.0
+    delay_max: float = 8.0
+
+
+#: Единственный экземпляр политики на все порталы: значения одинаковы у всех трёх
+#: (arbeitnow/himalayas/themuse), и раньше это были три копии полей CFG.
+EMPTY_PAGE_RETRY = EmptyPageRetry()
+
+
+async def get_page_with_empty_retry(fetch: Callable[[], Awaitable[list[T]]], key: str, *,
+                                    source: str,
+                                    cfg: EmptyPageRetry = EMPTY_PAGE_RETRY) -> list[T]:
+    """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — одна реализация на все порталы.
+
+    Портал под троттлингом отдаёт HTTP 200 с ПУСТЫМ списком, внешне неотличимый от «выдача
+    кончилась», и ретраи транспорта на это не срабатывают — ответ-то пришёл. Обход выходил по
+    первой такой странице и отчитывался успехом: 07.08.2026 у himalayas в кеш под видом
+    полного среза легли 12 043 вакансии из 26 216. Пришли данные со второй-четвёртой попытки —
+    это был троттлинг; пусто после всех — честный конец выдачи.
+
+    Лечение обязано жить в ОДНОМ месте: пока копий было три, урок инцидента применялся к
+    himalayas и не применялся к arbeitnow/themuse с той же схемой обхода (аудит 22.09.2026).
+
+    На вход идёт ЗАМЫКАНИЕ, а не номер страницы: у arbeitnow и himalayas ключ — страница
+    (`page`/`offset`), у themuse к нему добавляется комбинация фильтров, и что именно
+    перепросить, знает только адаптер. `key` идёт в debug-строку («пусто было троттлингом,
+    ответ с попытки N») и в решении не участвует.
+    """
+    data = await fetch()
+    if data:
+        return data
+    delay = cfg.delay
+    for attempt in range(cfg.probes):
+        await asyncio.sleep(delay)
+        data = await fetch()
+        if data:
+            log.debug("{} {}: пусто было троттлингом, ответ с попытки {}",
+                      source, key, attempt + 2)
+            return data
+        delay = min(delay * 2, cfg.delay_max)
+    return []
+
+
+def warn_if_hole(pages: list[int], chunks: list[list[dict[str, Any]]], *,
+                 source: str, query: str | None = None) -> None:
+    """Обход прерывается на первой пустой странице. Если ПОСЛЕ неё в той же пачке страница
+    отдала данные, пустая была ДЫРОЙ, а не концом выдачи: список не кончился, а обход всё
+    равно остановлен, и хвост за пачкой не собран. Молчать про это нельзя — именно молчание
+    превратило троттлинг himalayas в «успешный» сбор 40 % портала (07.08.2026).
+
+    Это ЕДИНСТВЕННЫЙ сигнал недособранного хвоста у адаптеров с пачечным обходом, поэтому
+    условие живёт в одном месте: правка в копии оставляла бы вторую копию молчащей.
+
+    `query` — комбинация фильтров themuse: без неё по логу не понять, в какой из девяти
+    выдач оборвался обход.
+    """
+    empty = [p for p, c in zip(pages, chunks) if not c]
+    last_full = max((p for p, c in zip(pages, chunks) if c), default=0)
+    if empty and empty[0] < last_full:
+        log.warning("{}: обход оборван на ПУСТОЙ странице {}, но страница {} той же "
+                    "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана",
+                    f"{source} [{query}]" if query else source, empty[0], last_full)
+
+
+def it_only(recs: list[VacancyRecord]) -> list[VacancyRecord]:
+    """IT-фильтр общих бордов: у общероссийских/мировых порталов IT — доля выдачи.
+
+    `GLOBAL_SOURCES_IT_ONLY=False` отключает фильтр целиком (см. config: там причина и
+    способ выключить). Проверка обязана быть одна на адаптер: пока она была копией в шести
+    `collect`, «фильтр забыли в новом адаптере» виделось только глазами по счётчику
+    `не-IT отсеяно`, который у каждого свой (аудит 22.09.2026).
+    """
+    return [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+
+
+def is_it_only_survivor(rec: VacancyRecord) -> bool:
+    """Прошла ли ОДНА запись IT-фильтр — поштучный вариант `it_only`.
+
+    Так отсеивают himalayas и themuse: карточка нормализуется сразу, и выбросить не-IT в тот
+    же момент дешевле, чем копить её полный HTML описания до конца обхода.
+    """
+    return rec.vacancy.role.is_it or not GLOBAL_SOURCES_IT_ONLY
 
 
 _REGISTRY: dict[str, Callable[..., Source]] = {}

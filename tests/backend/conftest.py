@@ -43,6 +43,11 @@ def _default_profile() -> dict[str, Any]:
         "APPLY_CORE_WIDE": set(config._CORE_WIDE_DEFAULT),
         "APPLY_OFFICE_CITIES": set(config._OFFICE_CITIES_DEFAULT),
         "APPLY_EXTRA_EXP_IDS": list(config._EXTRA_EXP_IDS_DEFAULT),
+        # Не ключ профиля, а .env (RFC-004), но печётся на импорте так же — и так же протекал
+        # бы в тесты с машины разработчика, где блок-лист заполнен.
+        "APPLY_EMPLOYER_BLOCKLIST": [],
+        "APPLY_ROLES": None,                    # белого списка ролей нет (RFC-004) — как у main
+        "APPLY_DEVELOPER_TITLE_WORDS": None,    # проверки слов в тайтле «Разработчика» нет (RFC-004)
     }
 
 
@@ -75,6 +80,31 @@ def _cached_defaults(module: ModuleType) -> dict[str, Any]:
     if module.__name__ not in _DEFAULTS_CACHE:
         _DEFAULTS_CACHE[module.__name__] = _module_constants(module)
     return _DEFAULTS_CACHE[module.__name__]
+
+
+@pytest.fixture(scope="session")
+def _account_isolation_dir(tmp_path_factory: pytest.TempPathFactory) -> Any:
+    """Один каталог на прогон: `tmp_path` на каждый из ~2800 тестов утраивал время на Windows.
+    Общий каталог безопасен — `hh_state.json` в нём нет, поэтому личность не сверяется и пин
+    не пишется; тесты самой сверки подкладывают свои пути."""
+    return tmp_path_factory.mktemp("account-isolation")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_account_session(_account_isolation_dir: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Растяжка RFC-004: сверка личности сессии читает `hh_state.json` и при первом входе
+    ПИШЕТ пин в `data/account_identity.json`. Тест, дошедший до браузерного прогона или синка
+    на заглушках, иначе закрепил бы в реальных данных личность из чужой сессии — и следующий
+    боевой прогон остановился бы на «не тот пользователь». Импорт внутри фикстуры: см.
+    докстринг модуля."""
+    from hrwork.application.apply import account_session, session, taken
+    root = _account_isolation_dir
+    # журналы и очереди других аккаунтов (taken.py) — тоже не из реального data/accounts/
+    monkeypatch.setattr(taken, "DATA_ROOT", root)
+    monkeypatch.setattr(session, "STATE_FILE", root / "hh_state.json")
+    monkeypatch.setattr(account_session, "IDENTITY_FILE", root / account_session.IDENTITY_FILE_NAME)
+    monkeypatch.setattr(account_session, "SESSION_STATUS_FILE", root / "session_status.json")
+    monkeypatch.setattr(account_session, "DATA_ROOT", root)
 
 
 @pytest.fixture(scope="session")

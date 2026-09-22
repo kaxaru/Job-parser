@@ -31,7 +31,7 @@ supabase. Замер 13.08.2026: 2440 вакансий с 21 борда, из н
 from functools import partial
 from typing import Any
 
-from hrwork.config import ASHBY_BOARDS, GLOBAL_SOURCES_IT_ONLY, log
+from hrwork.config import ASHBY_BOARDS, log
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
@@ -39,28 +39,20 @@ from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .ats import collect_boards, pretty_company
-from .base import Source, normalize_each, register_source
+from .ats import board_jobs, collect_boards, pretty_company
+from .base import Source, it_only, normalize_each, register_source
 
 SITE = "https://jobs.ashbyhq.com"
 API = "https://api.ashbyhq.com/posting-api/job-board"
 
-# `workplaceType` портала -> доменный формат. Совпадение полное, поэтому это словарь,
-# а не эвристика по подстроке, как пришлось делать в greenhouse.
-_WORKPLACE = {
-    "Remote": Schedule.REMOTE,
-    "Hybrid": Schedule.HYBRID,
-    "OnSite": Schedule.OFFICE,
-}
+# Таблицы `workplaceType` -> Schedule здесь БОЛЬШЕ НЕТ: она переехала в домен
+# (`Schedule.from_ashby`). Причина та же, что была у таблиц talanto/грейдов: адаптерная
+# копия доменной таблицы тихо расходится с оригиналом (аудит 22.09.2026, §3.1).
 
 
 def board_url(org: str) -> str:
     """URL борда. `includeCompensation=true` добавляет вилку — без флага её нет вовсе."""
     return f"{API}/{org}?includeCompensation=true"
-
-
-def _jobs(payload: Any) -> list[dict[str, Any]]:
-    return list((payload or {}).get("jobs") or [])
 
 
 def _schedule(it: dict[str, Any]) -> Schedule:
@@ -71,7 +63,7 @@ def _schedule(it: dict[str, Any]) -> Schedule:
     и та же карточка — isRemote=true, workplaceType=Hybrid, location «New York, NY (HQ)»).
     Поверить флагу значило бы записать гибрид в удалёнку, а это ровно тот фильтр, по
     которому лента отбирает вакансии, куда можно откликаться из другой страны."""
-    return _WORKPLACE.get(str(it.get("workplaceType") or ""), Schedule.OFFICE)
+    return Schedule.from_ashby(it.get("workplaceType"))
 
 
 def _experience(it: dict[str, Any]) -> Experience | None:
@@ -175,7 +167,7 @@ class AshbySource(Source):
         pass
 
     async def collect(self) -> list[VacancyRecord]:
-        alive = await collect_boards(ASHBY_BOARDS, board_url, _jobs, source="ashby")
+        alive = await collect_boards(ASHBY_BOARDS, board_url, board_jobs, source="ashby")
         if not alive:
             return []
 
@@ -190,7 +182,7 @@ class AshbySource(Source):
                      if it.get("id") is not None and str(it["id"]) not in seen]
             seen.update(str(it["id"]) for it in fresh)
             recs += normalize_each(fresh, partial(_normalize, org=org), source="ashby")
-        out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out = it_only(recs)
         log.info("ashby: собрано {} (бордов {} из {}, карточек {}, дублей {}, "
                  "не-IT отсеяно {})", len(out), len(alive), len(ASHBY_BOARDS),
                  total, total - len(seen), len(recs) - len(out))

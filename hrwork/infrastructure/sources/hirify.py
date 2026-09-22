@@ -8,7 +8,6 @@ raw-схему (как html_client._normalize_search_item), чтобы parse_vac
 """
 import asyncio
 import html
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +24,7 @@ from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_PATIENT, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
 from .base import Source, check_list_complete, normalize_each, register_source
@@ -37,9 +36,9 @@ from .hh import BROWSER_UA
 class HirifyCfg:
     api_url: str = "https://api.hirify.me/api/vacancies"
     max_pages: int = 2000                          # страховка от кривого last_page (~1200 стр.)
-    retry_attempts: int = 4                        # публичный JSON-API легче HH -> меньше попыток
-    backoff_start: float = 1.0
-    backoff_max: float = 10.0                      # ниже потолок паузы, чем у HH
+    # Политика ретраев транспорта — единственный источник значения (net/http.py). У hirify
+    # четыре попытки и потолок паузы 10 с: публичный JSON-API легче HH, но прогон длинный.
+    retry: RetryPolicy = RETRY_PATIENT
     page_conc: int = HIRIFY_PAGE_CONCURRENCY       # параллельных страниц списка (env)
     enrich_conc: int = HIRIFY_ENRICH_CONCURRENCY   # параллельных /slug (env)
     enrich_max: int = HIRIFY_ENRICH_MAX            # порог полного enrich vs tldr-заглушка (env)
@@ -169,20 +168,11 @@ class HirifySource(Source):
         pass                                    # прокси/сессия не нужны — публичный API
 
     async def _curl_json(self, url: str) -> dict[str, Any] | None:
-        """GET url -> распарсенный JSON или None после ретраев с бэкоффом."""
+        """GET url -> распарсенный JSON или None после ретраев с бэкоффом (net/http.py)."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    return payload
-                except json.JSONDecodeError as e:
-                    log.debug("hirify {}: {}", url, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return None
+        payload: dict[str, Any] | None = await fetch_json_retry(
+            url, headers=headers, policy=CFG.retry, log_context=f"hirify {url}")
+        return payload
 
     async def _get_page(self, page: int) -> dict[str, Any] | None:
         return await self._curl_json(f"{CFG.api_url}?{HIRIFY_PARAMS}&page={page}")

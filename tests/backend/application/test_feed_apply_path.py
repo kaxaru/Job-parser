@@ -30,8 +30,7 @@ def journal(monkeypatch):
     monkeypatch.setattr(autoclick.store, "mark_applied", lambda vid: None)
     monkeypatch.setattr(autoclick.store, "bump_quota", lambda n: n)
     monkeypatch.setattr(autoclick.store, "log_applied",
-                        lambda vid, name, url, **kw: rows.append((vid, name, url,
-                                                                  kw.get("employer", ""))))
+                        lambda row: rows.append((row.vid, row.name, row.url, row.employer)))
     monkeypatch.setattr(autoclick, "_send_cover_via_chat", lambda *a, **k: True)
     monkeypatch.setattr(autoclick, "_VACANCY_META", {})
     return rows
@@ -61,6 +60,33 @@ def test_feed_apply_prefers_the_cached_name_over_the_id_fallback(journal, monkey
     monkeypatch.setattr(autoclick, "_VACANCY_META", {"777": ("Data Engineer", "Ozon")})
     autoclick._apply_one_vacancy(None, "777", VACANCY_URL, "", name="")
     assert journal == [("777", "Data Engineer", VACANCY_URL, "Ozon")]
+
+
+# ── Блок-лист работодателей (RFC-004 R9) ───────────────────────────────────────────────
+# Лента и очередь ожидания идут мимо `pick_candidates`: блок-лист, стоящий только на отборе,
+# пропустил бы ручной клик и всё, что легло в очередь до пополнения блок-листа.
+@pytest.fixture
+def blocklist(monkeypatch):
+    """Блок-лист из вымышленного работодателя (репозиторий публичный)."""
+    from hrwork.application.apply import candidates
+    monkeypatch.setattr(candidates, "APPLY_EMPLOYER_BLOCK", candidates._employer_rx(["K7"]))
+
+
+@pytest.mark.parametrize("cached_employer, explicit_employer", [
+    ("K7 Tech", ""),                    # работодатель из кеша вакансий
+    ("", "К7 Медиа"),              # явный, с кириллической «К»
+])
+def test_feed_apply_never_clicks_a_blocked_employer(journal, blocklist, monkeypatch,
+                                                    cached_employer, explicit_employer):
+    clicks: list[str] = []
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda page, cand, **k: clicks.append(cand.id) or ApplyOutcome.APPLIED)
+    monkeypatch.setattr(autoclick, "_VACANCY_META", {"777": ("Python-разработчик", cached_employer)})
+    result = autoclick._apply_one_vacancy(None, "777", VACANCY_URL, "", name="Python-разработчик",
+                                          employer=explicit_employer)
+    assert result == {"status": "skip", "letter": False}
+    assert clicks == []
+    assert journal == []
 
 
 # ── Дренаж очереди ожидания ────────────────────────────────────────────────────────────
@@ -179,3 +205,17 @@ def test_drain_passes_employer_from_the_queue_record(queue, monkeypatch):
     monkeypatch.setattr(autoclick, "_apply_one_vacancy", one)
     autoclick._drain_pending(page=None, daily_cap=200)
     assert got == ["ООО Ромашка"]
+
+
+def test_drain_drops_a_blocked_employer_without_clicking(queue, journal, blocklist, monkeypatch):
+    # запись легла в очередь до пополнения блок-листа: не кликаем и не возвращаем в очередь,
+    # иначе она пробовалась бы каждый прогон
+    queue.requeue_pending({"id": "1", "url": "u1", "name": "n1", "cover": "c1",
+                           "employer": "K7, Управляющая компания"})
+    clicks: list[str] = []
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda page, cand, **k: clicks.append(cand.id) or ApplyOutcome.APPLIED)
+    assert autoclick._drain_pending(page=None, daily_cap=200) == 0
+    assert clicks == []
+    assert journal == []
+    assert queue.load_pending() == []

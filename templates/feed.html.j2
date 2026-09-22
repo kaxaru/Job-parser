@@ -5,10 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Лента вакансий</title>
 <link rel="stylesheet" href="feed.css">
-<!-- Тема применяется ДО отрисовки. Бандл ленты грузится после feed-data.js (~50 МБ), и если
-     ставить атрибут там, светлая тема секунду-другую показывалась бы тёмной. Ключ общий
-     с дашбордом — тема одна на оба экрана. -->
-<script>try{if(localStorage.getItem('feed.theme')==='light'){document.documentElement.dataset.theme='light';}}catch(e){}</script>
+{% include "theme-init.html.j2" %}
 </head>
 <body>
 
@@ -31,6 +28,12 @@
     <label class="hdr-btn" title="Загрузить marks.json">📂 Импорт<input id="marks-import" type="file" accept="application/json" hidden></label>
   </span>
 </header>
+
+<!-- Возраст среза. Разметка стоит здесь, а не создаётся из JS, чтобы место в потоке было
+     зарезервировано: баннер зажигается через 5-минутный тик, и вставка узла на живой
+     странице сдвигала бы уже прокрученную выдачу. Заполняет view.js::setStale по
+     model.js::staleNow; пока срез свежий — узел скрыт и ничего не занимает. -->
+<div id="stale-banner" class="stale-banner" role="status" hidden></div>
 
 <!-- Липкой остаётся только эта полоса: поиск (инжектится сюда из main.js), счётчик выдачи
      и переключатель панели фильтров. Сама панель ниже — нелипкая и сворачиваемая. -->
@@ -64,7 +67,7 @@
       <label class="lang-label" for="role-{{ loop.index }}">{{ role }}</label>
       {% endfor %}
     </div>
-    <button class="sched-btn nonit-btn" id="nonit-toggle"
+    <button class="sched-btn" id="nonit-toggle"
             title="Показать вакансии без IT-роли (продажи, инженеры-конструкторы и т.п.)">+ не-IT ({{ nonit }})</button>
   </div>
 
@@ -165,7 +168,7 @@
   <div class="filter-group">
     <span class="filter-label">Под меня</span>
     <div class="sched-btns">
-      <button class="sched-btn resume-btn" id="resume-toggle"
+      <button class="sched-btn" id="resume-toggle"
               title="Python-стек + опыт до 3 лет + удалёнка (по тегу или тексту)">🎯 По резюме</button>
     </div>
   </div>
@@ -181,7 +184,7 @@
       <button class="sched-btn" data-sort="reply_new" title="Сверху вакансии, где HR ответил позже всех (автоответы не считаются)">💬 Ответы HR</button>
       <button class="sched-btn" data-sort="date_old">👻 Старые</button>
     </div>
-    <button class="sched-btn match-toggle" id="match-toggle"
+    <button class="sched-btn" id="match-toggle"
             title="Сортировать по % совпадения (основной ключ; зарплата ↑/↓ — вторичный)">★ Совпадение</button>
   </div>
 

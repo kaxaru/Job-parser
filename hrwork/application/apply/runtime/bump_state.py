@@ -9,10 +9,10 @@ HH разрешает бесплатное поднятие раз в 4 часа
 """
 import datetime
 
-from hrwork.config import DATA_DIR
+from hrwork.config import ACCOUNT_DIR
 from hrwork.infrastructure.storage import atomic_write_json, read_json_or
 
-BUMP_FILE = DATA_DIR / "bump_state.json"     # {"last_ok": "ISO-8601"}
+BUMP_FILE = ACCOUNT_DIR / "bump_state.json"  # {"last_ok": "ISO-8601"}; кулдаун — у каждого резюме свой
 BUMP_COOLDOWN_H = 4                          # лимит HH: бесплатное поднятие раз в 4 часа
 
 

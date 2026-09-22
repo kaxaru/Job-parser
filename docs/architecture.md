@@ -30,10 +30,15 @@ hrwork/
   presentation/    сервер, HTML-лента, дашборд, CSV-отчёты.
 ```
 
-Пакет `application/apply/` разбит по контурам (а не плоской свалкой): ядро отклика
-(`autoclick`, `candidates`, `cover`, `outcome`, `session`) в корне, а подпакеты —
-`chat/` (переписка), `forms/` (анкеты-опросники), `runtime/` (`store`, `lock`, `quota`,
-`bump_state` — общее состояние/инфраструктура отклика).
+Пакет `application/apply/` разбит по контурам (а не плоской свалкой): в корне — САМ ОТКЛИК
+(`autoclick` — `apply_one`/батч/дренаж/`run`, `candidates` — отбор, `cover`, `outcome` — VO,
+`session` — куки без браузера) и его отдельные когти: `browser` (браузер, вход, поднятие
+резюме), `selectors` (селекторы отклика + бюджет подтверждения, один источник на оба пути),
+`hh_sync` (синк чатов без браузера), `worker` (тёплый воркер сервера), `ab_split`/`dry_pool`/
+`taken`/`sms`/`account_session`. Подпакеты — `chat/` (переписка), `forms/` (анкеты-опросники),
+`runtime/` (`store`, `lock`, `quota`, `bump_state`, `watchdog` — общее состояние и
+инфраструктура отклика). Разнесено 23.09.2026 (аудит `2026-09-22-quality.md`, §5): был
+god-модуль `autoclick.py` на 1486 строк и шесть независимых ответственностей.
 
 Практическое следствие: `domain/` импортирует только `config`. Если доменному модулю
 понадобилась сеть или файл — это ошибка проектирования, а не повод добавить импорт.
@@ -116,10 +121,14 @@ greenhouse · ashby       ─┘                                                
 `sources/base.py` держит не только контракт, но и то общее, что иначе расползается по всем
 адаптерам: `normalize_each` (изоляция сбоя НА КАРТОЧКЕ — кривая запись не роняет портал
 целиком), исключение `ListIncomplete` и сверку собранного списка с заявленным порталом
-`total` — `base.py::check_list_complete`. Второй такой же общий модуль — `sources/ats.py`:
-обход реестра бордов работодателей, счётчик протухших слагов и восстановление имени компании
-из слага; он общий для greenhouse и ashby ровно по той же причине, по какой `ListIncomplete`
-живёт в `base.py`. У адаптера остаётся ровно то, что у него своё:
+`total` — `base.py::check_list_complete`; `base.py::get_page_with_empty_retry` — перепроверка
+пустой страницы (была скопирована в arbeitnow/himalayas/themuse, теперь одна); `base.py::warn_if_hole`
+— единый сигнал «обход оборван на пустой странице»; `base.py::it_only`/`is_it_only_survivor` —
+IT-фильтр общих бордов (был размножен по шести адаптерам инлайн). Второй такой же общий модуль —
+`sources/ats.py`: обход реестра бордов работодателей, `ats.py::board_jobs` (разбор поля
+`jobs` борда — дословная копия у ashby/greenhouse), счётчик протухших слагов и восстановление
+имени компании из слага; он общий для greenhouse и ashby ровно по той же причине, по какой
+`ListIncomplete` живёт в `base.py`. У адаптера остаётся ровно то, что у него своё:
 порог `CFG.list_loss_max_ratio` с обоснованием замера (hirify 2 %, talanto 2 %, getmatch
 25 % — портал маленький, одна страница это 13 %) и вид идентификатора сбойной страницы
 (`страницы` у hirify, `offset'ы` у talanto и getmatch). Копии класса и функции прожили
@@ -129,7 +138,10 @@ greenhouse · ashby       ─┘                                                
 Рядом — `sources/text.py::strip_html` (теги -> пробелы, пробелы схлопнуты). Отдельный
 модуль, а не приватная функция в `hh.py`: тот же стриппер понадобился getmatch, а импорт
 `hh._strip_html` соседним адаптером связал бы два источника ради одной регулярки (так уже
-вышло с `BROWSER_UA`).
+вышло с `BROWSER_UA`). Там же `sources/text.py::ts_to_iso` (unix -> ISO) и `::iso_to_iso`
+(ISO -> ISO) поверх доменного `freshness.parse_dt`: пять копий правила конвертации дат сведены
+в два хелпера. А карты формата работы уехали в домен — `Schedule.from_ashby`/`from_devitjobs`
+рядом с `from_talanto`/`from_getmatch`/`from_hirify_wf` (адаптеры больше не держат свои `_WORKPLACE`).
 
 ## Ограниченные контексты
 
@@ -233,7 +245,7 @@ watchdog против зависаний.
 
 Единственное исключение — `applied_log.jsonl`, append-only через обычный `open("a")`.
 Писателей у него ТРИ, и общим lock'ом они не разведены: крон-батч (`via='cron'`) и лента
-(`via='feed'`) ходят под `autoclick.lock`, а `autoclick.py::sync_statuses` пишет без него
+(`via='feed'`) ходят под `autoclick.lock`, а `hh_sync.py::sync_statuses` пишет без него
 намеренно — иначе синк снова встанет в очередь за откликами и статусы замрут на недели.
 Целостность держится не на lock'е, а на ФОРМЕ записи: одна короткая строка (~200 байт)
 уходит одним `write`, такие дозаписи ОС сериализует; несколько потоков сервера ленты
@@ -244,13 +256,14 @@ watchdog против зависаний.
 ## Мост Python -> JS
 
 Лента — статические файлы, но часть констант обязана совпадать с Python. Чтобы они не
-разошлись молча, `feed.py::build_feed` инжектит в `feed-data.js` **22 глобала**: данные
-(`VACANCIES`, `SAL_MAX`, `SAVED_MARKS`), курсы (`FX_RATES`, `FX_ALIAS`) и семнадцать
+разошлись молча, `feed.py::build_feed` инжектит в `feed-data.js` **25 глобалов**: данные
+(`VACANCIES`, `SAL_MAX`, `SAVED_MARKS`), курсы (`FX_RATES`, `FX_ALIAS`) и двадцать
 мостовых констант с суффиксом `_PY` — `STATE_LABELS_PY`, `RESUME_CORE_PY`,
 `RESUME_TIERS_PY`, `RESUME_ROLE_FIT_PY`, `RESUME_CORE_SAT_PY`, `LANG_KEYS_PY`,
-`RESUME_LANGS_PY`, `RESUME_LANG_FIT_PY`, `MARK_VALUES_PY`, `SCHED_LABELS_PY`,
+`RESUME_LANGS_PY`, `RESUME_LANG_FIT_PY`, `MARK_VALUES_PY`, `APPLY_LABELS_PY`, `SCHED_LABELS_PY`,
 `REMOTE_LIKE_PY`, `EMP_LABELS_PY`, `CHAT_FROZEN_PY`, `PORTAL_SITES_PY`,
-`DISCARD_STATES_PY`, `INVITED_STATES_PY`, `FEED_COVER_TEMPLATES_PY`.
+`DISCARD_STATES_PY`, `INVITED_STATES_PY`, `FEED_COVER_TEMPLATES_PY`,
+`COLLECTED_AT_PY`, `STALE_HOURS_PY`.
 
 Что стоит за менее очевидными: `PORTAL_SITES_PY` — подпись портала в карточке
 (`config.PORTAL_SITES`; с девятью источниками хардкод домена в JS разъехался бы первым);
@@ -259,6 +272,12 @@ watchdog против зависаний.
 вместе с фиксом расхождения «офис или удалёнка»; `EMP_LABELS_PY` — подписи форм
 оформления (`employment.py::Employment.label`), заведён 10.08.2026: карточка везёт только
 коды форм, и без моста подпись пришлось бы дублировать в JS либо гнать в 74 МБ данных.
+
+`COLLECTED_AT_PY` и `STALE_HOURS_PY` (20.08.2026) — метка последнего удачного сбора
+(`cache_meta.json::collected_at`) и порог `config.STALE_CACHE_HOURS`; из них лента считает
+возраст среза и зажигает баннер «данные устарели». Едет именно МЕТКА, а не готовый возраст:
+запечённое при сборке число врало бы ровно в том сценарии, ради которого баннер заведён —
+вкладку ленты держат открытой сутками, а сбор к тому моменту уже мог встать.
 
 Шесть констант скоринга (`RESUME_TIERS_PY`, `RESUME_ROLE_FIT_PY`, `RESUME_CORE_SAT_PY`,
 `LANG_KEYS_PY`, `RESUME_LANGS_PY`, `RESUME_LANG_FIT_PY`) заведены 14.08.2026 вместе с

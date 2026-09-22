@@ -21,13 +21,10 @@ entry/mid/senior) — у arbeitnow и web3 его нет вовсе, и там `
 Автоотклик неприменим: заявка уходит на сайт работодателя (`refs.landing_page`).
 """
 import asyncio
-import datetime
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from hrwork.config import (
-    GLOBAL_SOURCES_IT_ONLY,
     THEMUSE_MAX_AGE_DAYS,
     THEMUSE_MAX_PAGES,
     THEMUSE_PAGE_CONCURRENCY,
@@ -39,11 +36,19 @@ from hrwork.domain.experience import Experience
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_STANDARD, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import (
+    Source,
+    get_page_with_empty_retry,
+    is_it_only_survivor,
+    normalize_each,
+    register_source,
+    warn_if_hole,
+)
 from .hh import BROWSER_UA
+from .text import iso_to_iso
 
 SITE = "https://www.themuse.com"
 API = f"{SITE}/api/public/jobs"
@@ -58,26 +63,16 @@ class ThemuseCfg:
     max_pages: int = THEMUSE_MAX_PAGES
     page_conc: int = THEMUSE_PAGE_CONCURRENCY
     max_age_days: int = THEMUSE_MAX_AGE_DAYS
-    retry_attempts: int = 3
-    backoff_start: float = 1.0
-    backoff_max: float = 8.0
-    # Перепроверка пустой страницы — семантика himalayas.py::_get_page, см. _get_page ниже.
-    empty_retries: int = 3
-    empty_retry_delay: float = 2.0
-    empty_retry_max: float = 8.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_STANDARD
+    # Перепроверки пустой страницы тут больше нет: политика общая (base.EMPTY_PAGE_RETRY),
+    # а сам цикл — в base.get_page_with_empty_retry. Цена ожидания осталась своя: каждая
+    # честно пустая страница стоит 2+4+8 = 14 с, и такая встречается в конце каждой из
+    # девяти комбинаций THEMUSE_QUERIES — плюс ~2 минуты к прогону. Дешевле подождать,
+    # чем недособрать половину портала.
 
 
 CFG = ThemuseCfg()
-
-
-def _iso(ts: Any) -> str | None:
-    raw = str(ts or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
-    except ValueError:
-        return None
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -103,19 +98,6 @@ def _is_remote(it: dict[str, Any]) -> bool:
                for x in (it.get("locations") or []))
 
 
-def _warn_if_hole(query: str, pages: list[int], chunks: list[list[dict[str, Any]]]) -> None:
-    """Обход комбинации прерывается на первой пустой странице. Если ПОСЛЕ неё в той же пачке
-    страница отдала данные, пустая была ДЫРОЙ, а не концом выдачи: комбинация не исчерпана,
-    а обход всё равно остановлен, и хвост за пачкой не собран. Молчать про это нельзя —
-    именно молчание превратило троттлинг himalayas в «успешный» сбор 40 % портала."""
-    empty = [p for p, c in zip(pages, chunks) if not c]
-    last_full = max((p for p, c in zip(pages, chunks) if c), default=0)
-    if empty and empty[0] < last_full:
-        log.warning("themuse [{}]: обход оборван на ПУСТОЙ странице {}, но страница {} той же "
-                    "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана",
-                    query, empty[0], last_full)
-
-
 def _normalize(it: dict[str, Any]) -> VacancyRecord:
     """Карточка themuse -> VacancyRecord (ACL: внешняя схема живёт только здесь)."""
     name = str(it.get("name") or "")
@@ -123,7 +105,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
     cats = " ".join(str(c.get("name") or "") for c in (it.get("categories") or []))
     tags = " ".join(str(t.get("name") or "") for t in (it.get("tags") or []))
     company = it.get("company") or {}
-    when = _iso(it.get("publication_date"))
+    when = iso_to_iso(it.get("publication_date"))
     landing = str((it.get("refs") or {}).get("landing_page") or "")
     vac = build_vacancy(
         vid=f"themuse_{it.get('id')}",           # неймспейс — не сталкивается с другими порталами
@@ -161,46 +143,21 @@ class ThemuseSource(Source):
         url = f"{CFG.api_url}?page={page}"
         if query:
             url += "&" + query
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    results: list[dict[str, Any]] = payload.get("results") or []
-                    return results
-                except json.JSONDecodeError as e:
-                    log.debug("themuse {} page={}: {}", query, page, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return []
+        results = await fetch_json_retry(
+            url, headers=headers, policy=CFG.retry,
+            parse=lambda p: p.get("results") or [],
+            log_context=f"themuse {query} page={page}")
+        return results or []
 
     async def _get_page(self, query: str, page: int) -> list[dict[str, Any]]:
-        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — та же семантика, что в
-        `himalayas.py::_get_page` (3 попытки с паузами 2/4/8 с).
+        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — общая `base.get_page_with_empty_retry`
+        (семантика и урок инцидента 07.08.2026 живут там, одна копия на три адаптера).
 
-        Урок инцидента 07.08.2026 (himalayas: 12 043 из 26 216 легли в кеш под видом полного
-        среза): портал под троттлингом отдаёт HTTP 200 с пустым списком, внешне неотличимый
-        от «выдача кончилась», и ретраи транспорта на это не срабатывают — ответ-то пришёл.
-        Пришли данные со второй-четвёртой попытки — это был троттлинг; пусто после всех —
-        выдача комбинации фильтров действительно кончилась.
-
-        ЦЕНА ОСОЗНАННАЯ: каждая честно пустая страница теперь стоит 2+4+8 = 14 с, и такая
-        встречается в конце каждой комбинации `THEMUSE_QUERIES` (их 9) — плюс ~2 минуты к
-        прогону. Дешевле подождать, чем недособрать половину портала."""
-        results = await self._fetch_once(query, page)
-        if results:
-            return results
-        delay = CFG.empty_retry_delay
-        for attempt in range(CFG.empty_retries):
-            await asyncio.sleep(delay)
-            results = await self._fetch_once(query, page)
-            if results:
-                log.debug("themuse {} page={}: пусто было троттлингом, ответ с попытки {}",
-                          query, page, attempt + 2)
-                return results
-            delay = min(delay * 2, CFG.empty_retry_max)
-        return []
+        ЦЕНА ОСОЗНАННАЯ (см. CFG): каждая честно пустая страница стоит 14 с ожидания, и такая
+        встречается в конце каждой комбинации фильтров — плюс ~2 минуты к прогону. Дешевле
+        подождать, чем недособрать половину портала."""
+        return await get_page_with_empty_retry(
+            lambda: self._fetch_once(query, page), f"{query} page={page}", source="themuse")
 
     async def collect(self) -> list[VacancyRecord]:
         if not THEMUSE_QUERIES:
@@ -231,7 +188,7 @@ class ThemuseSource(Source):
                 stale += 1                   # сортировки по дате нет — режем у себя
                 return None
             rec = _normalize(it)
-            if GLOBAL_SOURCES_IT_ONLY and not rec.vacancy.role.is_it:
+            if not is_it_only_survivor(rec):
                 dropped += 1
                 return None
             return rec
@@ -258,7 +215,7 @@ class ThemuseSource(Source):
                 for c in chunks:
                     _take(c)
                 if any(not c for c in chunks):   # пусто ПОСЛЕ перепроверок — фильтр исчерпан
-                    _warn_if_hole(query, pages, chunks)
+                    warn_if_hole(pages, chunks, source="themuse", query=query)
                     break
                 page = pages[-1] + 1
 

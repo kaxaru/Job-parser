@@ -115,7 +115,7 @@ def test_repo_defaults_for_search_are_intact():
 
 @pytest.mark.parametrize("actual, expected", [
     ("_CORE_WIDE_DEFAULT", ["Django", "Flask", "PostgreSQL", "MySQL", "Redis", "Kafka"]),
-    ("_OFFICE_CITIES_DEFAULT", ["Москва", "Санкт-Петербург", "Тольятти", "Самара"]),
+    ("_OFFICE_CITIES_DEFAULT", ["Москва", "Санкт-Петербург"]),
     ("_EXTRA_EXP_IDS_DEFAULT", ["between3And6"]),
 ])
 def test_tier_defaults_unchanged(actual, expected):
@@ -145,6 +145,7 @@ def test_every_example_key_is_actually_read():
         "cover_template",               # cover.py (крон-отклики)
         "feed_cover_templates",         # feed.py -> FEED_COVER_TEMPLATES_PY -> cover.js
         "core_wide", "office_cities",   # config: тиры отбора 2 и 3
+        "first_name",                   # config: USER_FIRST_NAME (снятие обращения в чатах)
         "extra_exp_ids",                # config: APPLY_EXTRA_EXP_IDS
         "search_queries", "cities",     # config: что и где собираем на hh
     }
@@ -174,6 +175,8 @@ _DEFAULT_RULE = {                       # правило -> имя дефолт�
     "analyst": "APPLY_ANALYST_BLACKLIST",
     "ml": "APPLY_ML_BLACKLIST",
     "devops": "APPLY_DEVOPS_BLACKLIST",
+    "security": "APPLY_SECURITY_BLACKLIST",
+    "gamedev": "APPLY_GAMEDEV_BLACKLIST",
     "other_lang": "APPLY_LANG_BLACKLIST",
     "target_engineering": "APPLY_TARGET_ENGINEERING",
 }
@@ -259,6 +262,20 @@ _CANON_TITLES = [
     ("devops", "Сисадмин"),
     ("devops", "Sysadmin (Linux)"),
     ("devops", "Инженер инфраструктуры"),
+    # 15.09.2026: отклики основного на AppSec, Unity, «Проектный менеджер» и ЦУП —
+    # офисный тир, роль из техов описания (разбор журнала: 117 откликов в ИБ, 15 в геймдев)
+    ("security", "Application Security / AppSec"),
+    ("security", "Специалист по информационной безопасности"),
+    ("security", "Инженер по кибербезопасности"),
+    ("security", "Penetration Tester"),
+    ("security", "Пентестер"),
+    ("gamedev", "Middle Unity-разработчик"),
+    ("gamedev", "Unreal Engine Developer"),
+    ("gamedev", "Game Developer"),
+    ("gamedev", "Разработчик игр"),
+    ("management", "Проектный менеджер клиентского сервиса"),
+    ("management", "Менеджер проектов"),
+    ("operations", "Инженер центра управления полётами (ЦУП)"),
     ("other_lang", "Java-разработчик"),
     ("other_lang", "C# Developer"),
     ("other_lang", "C++ Engineer"),

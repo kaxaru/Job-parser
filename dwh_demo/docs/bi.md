@@ -4,6 +4,8 @@
 
 **Модули:** `bi/` — `client.py`, `config.py`, `cli.py`, `registry.py`, `dashboards/`
 **UI:** `http://localhost:3000` (`demo@hh.local` / `DwhDemo2026!`)
+**Вне крона Metabase остановлен** вместе с ClickHouse и MSSQL — поднять перед просмотром:
+`docker compose up -d --wait clickhouse mssql metabase` (почему — [`deployment.md`](deployment.md)).
 
 Дашборды не собираются кликами: они описаны кодом и провижатся идемпотентно. Повторный
 запуск архивирует старые карточки и пересобирает — без дублей.

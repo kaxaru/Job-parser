@@ -17,6 +17,11 @@ from hrwork.config import DATA_DIR, log
 # правка владельца http.py, здесь важнее не разводить копию.
 from hrwork.infrastructure.net.http import _STATUS_FMT, _http_status
 
+# Атомарная запись — только через примитив (CLAUDE.md); прецедент импорта jsonio из другого
+# подпакета infrastructure — `sources/hh_api.py`. Пакет целиком (`storage`) не тянем: нужен
+# один модуль, а его `__init__` собирает весь слой хранения.
+from hrwork.infrastructure.storage.jsonio import atomic_write_json
+
 FX_CACHE_FILE = DATA_DIR / "fx_rates.json"
 FX_TTL_HOURS = 24
 FX_API = "https://open.er-api.com/v6/latest/USD"
@@ -104,11 +109,10 @@ def get_rates() -> dict[str, float]:
     rates = _fetch()
     if rates:
         rates.setdefault("USD", 1.0)
-        DATA_DIR.mkdir(parents=True, exist_ok=True)
-        tmp = FX_CACHE_FILE.with_name(FX_CACHE_FILE.name + ".tmp")
-        tmp.write_text(json.dumps({"fetched_at": time.time(), "rates": rates}, ensure_ascii=False),
-                       encoding="utf-8")
-        tmp.replace(FX_CACHE_FILE)
+        # Единственный разрешённый способ атомарной записи (CLAUDE.md): своя копия tmp+replace
+        # была седьмым экземпляром одного инварианта и уже расходилась с примитивом — без mkdir
+        # родителя. Родителя создаёт он же, поведение файла (fetched_at/rates) прежнее.
+        atomic_write_json(FX_CACHE_FILE, {"fetched_at": time.time(), "rates": rates})
         log.info("FX-курсы обновлены: {} валют", len(rates))
         return rates
 

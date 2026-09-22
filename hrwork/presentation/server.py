@@ -19,16 +19,19 @@ import mimetypes
 import os
 import re
 from functools import partial
+from html import escape
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
 from typing import Any, NamedTuple
 from urllib.parse import parse_qs, urlparse, urlsplit
 
+from hrwork.application.apply import crm
 from hrwork.application.apply.chat import chat_class
 from hrwork.application.apply.forms.form_status import FormSweepStatus
+from hrwork.application.apply.outcome import TransportStatus
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import DATA_DIR, SERVE_PORT, log
+from hrwork.config import DATA_DIR, PORTAL_SITES, SERVE_PORT, SOURCES, log
 
 _API = "/api/marks"
 _API_SEARCH = "/api/search"
@@ -37,7 +40,10 @@ _API_FORMS = "/api/forms"          # вакансии-опросники (нуж
 _API_STATUSES = "/api/statuses"    # статусы откликов с HH (currentApplicantState)
 _API_APPLIED = "/api/applied"      # журнал откликов (крон+лента) с таймстампами
 _API_CHATS = "/api/chats"          # переписка: что ответил работодатель и ждёт ли он ответа
+_API_ACCOUNTS = "/api/accounts"    # аккаунты hh.ru: код, метка, состояние входа, число откликов (RFC-004)
 _SRC_DIR = DATA_DIR.parent / "src"          # фронт-исходники (страница поиска)
+# Маркер в src/search.html, который `_search_page` заменяет опциями порталов из config.SOURCES.
+_SOURCE_OPTIONS_MARK = "<!-- SOURCE_OPTIONS -->"
 _GZIP_EXT = {".html", ".js", ".css", ".json", ".svg", ".txt"}   # текст -> жмём
 _MAX_BODY = 1 << 20                          # 1 МБ — потолок тела POST (marks.json мал)
 _MAX_EMPLOYER = 200                          # потолок работодателя (см. _clean_line)
@@ -122,6 +128,22 @@ def _clean_line(raw: Any, limit: int) -> str:
     return " ".join(_CTRL_RX.sub(" ", s).split())[:limit]
 
 
+def _source_options() -> str:
+    """Опции `<select id="source">` страницы поиска из `config.SOURCES`.
+
+    Единый список с лентой (чипы порталов) и с белым списком API (`search.py::SOURCES` =
+    `tuple(config.SOURCES)`). Подпись — домен портала (`config.PORTAL_SITES`); портал без
+    записи отдаёт свой код как есть.
+
+    До 23.09.2026 список был ЗАХАРДКОЖЕН четырьмя порталами из двенадцати (аудит dwh_demo
+    2026-08-09, F62): himalayas/web3/arbeitnow/themuse/jobicy фильтровались API, но не UI, то
+    есть пользователь искал по четырём порталам, думая, что по всем."""
+    out = ['<option value="">Все источники</option>']
+    out += [f'<option value="{escape(s, quote=True)}">{escape(PORTAL_SITES.get(s, s))}</option>'
+            for s in SOURCES]
+    return "\n      ".join(out)
+
+
 class _Handler(SimpleHTTPRequestHandler):
     # ───────────────────────── маршрутизация ─────────────────────────
     def do_GET(self) -> None:
@@ -193,26 +215,37 @@ class _Handler(SimpleHTTPRequestHandler):
         return _json(200, out)
 
     def _statuses_get(self) -> Resp:
-        """Статусы откликов с HH — фронт освежает CRM-бейджи без пересборки ленты."""
-        return _json(200, store.statuses())
+        """Статусы откликов с HH по ВСЕМ аккаунтам — фронт освежает CRM-бейджи без пересборки."""
+        return _json(200, crm.statuses())
+
+    def _accounts_get(self) -> Resp:
+        """Аккаунты hh.ru (RFC-004): код, метка, состояние входа, число откликов — для баннера,
+        фильтра по профилю и метки на карточке. Всегда есть хотя бы основной."""
+        return _json(200, crm.accounts())
 
     def _chats_get(self) -> Resp:
-        """Свёртка переписки: {vacancyId: {kind, sender, needs_reply, can_write, preview, …}}.
-        Индекс шаблонов строим по ВСЕМУ корпусу — иначе рассылку от имени живого рекрутера
-        не отличить от личного письма. Наполняет sync_statuses; лента берёт без пересборки."""
-        chats = store.chat_messages()
-        templates = chat_class.build_template_index(chats)
-        out = {vid: chat_class.analyze(d.get("messages") or [], templates, d.get("write"))
-               for vid, d in chats.items()}
-        # kind=none (последнее слово за нами) отсекаем, НО чат с контактом отдаём всегда:
-        # телефон/телеграм рекрутёра не протухает после нашего ответа (инцидент 2026-07-22:
-        # телефонный контакт пропал из фильтра «С контактами» после синка переписки)
-        return _json(200, {vid: a for vid, a in out.items()
-                           if a.get("kind") != "none" or a.get("contact")})
+        """Свёртка переписки ПО АККАУНТАМ: {vacancyId: {account: {kind, sender, needs_reply, …}}}.
+        Индекс шаблонов строим по ВСЕМУ корпусу всех аккаунтов — иначе рассылку от имени живого
+        рекрутера не отличить от личного письма. Не плоско (RFC-004): у вакансии с откликом от
+        обоих чат и ДАТА разные, и фронт берёт чат профиля из фильтра (`model.js::effectiveChat`) —
+        иначе под фильтром acc2 светились бы чат и дата основного. Лента берёт без пересборки."""
+        chats = crm.chat_messages()                          # {vid: {account: {messages, write?}}}
+        corpus = {f"{vid}:{acc}": d for vid, per in chats.items() for acc, d in per.items()}
+        templates = chat_class.build_template_index(corpus)
+        out: dict[str, dict[str, Any]] = {}
+        for vid, per in chats.items():
+            for acc, d in per.items():
+                a = chat_class.analyze(d.get("messages") or [], templates, d.get("write"))
+                # kind=none (последнее слово за нами) отсекаем, НО чат с контактом отдаём всегда:
+                # телефон/телеграм рекрутёра не протухает после ответа (инцидент 2026-07-22).
+                if a.get("kind") != "none" or a.get("contact"):
+                    out.setdefault(vid, {})[acc] = a
+        return _json(200, out)
 
     def _applied_get(self) -> Resp:
-        """Журнал откликов (id/name/url/ts/via/status) — для календарного вида «мои отклики»."""
-        return _json(200, store.applied_log())
+        """Журнал откликов ВСЕХ аккаунтов (id/name/url/ts/via/status/account) — календарь «мои
+        отклики» и метка профиля на карточке (RFC-004)."""
+        return _json(200, crm.applied())
 
     def _marks_post(self) -> Resp:
         try:
@@ -232,7 +265,10 @@ class _Handler(SimpleHTTPRequestHandler):
 
     def _apply_post(self) -> Resp:
         """POST /api/apply {id, url, cover, name, employer} -> отклик в фоне через Playwright.
-        Тело: JSON. Ответ: {status: applied|already|form|skip|busy|no-session|error, letter}.
+        Тело: JSON. Ответ: {status, letter}, где `status` — код `ApplyOutcome` (applied|already|
+        form|skip|captcha) от воркера ИЛИ `TransportStatus` (queued|busy|no-session|taken|error).
+        Оба типа живут в `apply/outcome.py`, подписи для ленты — `outcome.APPLY_LABELS`
+        (инжектятся в `feed-data.js`). Значения wire не меняются: их читает `src/feed`.
         Отклик реальный и небыстрый (браузер + DDoS-Guard) — клиент ждёт."""
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -247,10 +283,15 @@ class _Handler(SimpleHTTPRequestHandler):
         vid = str(body.get("id") or "").strip()
         if not vid:
             return _json(400, {"error": "no id"})
+        from hrwork.application.apply import taken
+        if (owner := taken.taken_by_others().get(vid)) is not None:
+            # RFC-004: на вакансию уже откликнулся другой аккаунт (или она в его очереди) —
+            # до браузера и до очереди ожидания, чтобы клик не лёг туда «до лучших времён».
+            return _json(200, {"status": TransportStatus.TAKEN.code, "owner": owner, "letter": False})
         try:
             # тёплый воркер: один браузер переиспользуется между кликами, закрывается
             # по простою (не поднимаем Playwright заново на каждый отклик).
-            from hrwork.application.apply.autoclick import get_apply_worker
+            from hrwork.application.apply.worker import get_apply_worker
             url, cover, name = body.get("url", ""), body.get("cover", ""), body.get("name", "")
             # Работодатель фиксируется В МОМЕНТ КЛИКА и уезжает в журнал: к дренажу очереди
             # вакансия уходит из выдачи, и карточка-призрак ленты (`model.js::syntheticCard`)
@@ -260,14 +301,16 @@ class _Handler(SimpleHTTPRequestHandler):
             # поведение существующих полей, менять его в правке про employer не стали.
             employer = _clean_line(body.get("employer"), _MAX_EMPLOYER)
             res = get_apply_worker().submit(vid, url, cover, name, employer)
-            if res.get("status") == "busy":
+            if res.get("status") == TransportStatus.BUSY.code:
                 # браузер занят кроном -> кладём в очередь ожидания, крон дожмёт (26+)
                 pos = store.enqueue(vid, url, name, cover, employer)
-                return _json(200, {"status": "queued", "position": pos, "letter": False})
+                return _json(200, {"status": TransportStatus.QUEUED.code, "position": pos,
+                                   "letter": False})
             return _json(200, res)
         except Exception as e:
             log.exception("apply failed")
-            return _json(500, {"status": "error", "error": f"{type(e).__name__}: {e}"})
+            return _json(500, {"status": TransportStatus.ERROR.code,
+                               "error": f"{type(e).__name__}: {e}"})
 
     def _search(self) -> Resp:
         """/api/search?q=&city=&sal=&fresh=&limit=&offset= -> ранжированный JSON (PG tsvector).
@@ -295,7 +338,10 @@ class _Handler(SimpleHTTPRequestHandler):
         fpath = _SRC_DIR / "search.html"
         if not fpath.is_file():
             return Resp(404)
-        return Resp(200, fpath.read_bytes(), "text/html; charset=utf-8")
+        # Опции портала рендерятся из config.SOURCES, а не перечислены в файле руками
+        # (аудит dwh_demo F62): список источников один на ленту, UI и API.
+        page = fpath.read_text(encoding="utf-8").replace(_SOURCE_OPTIONS_MARK, _source_options())
+        return Resp(200, page.encode("utf-8"), "text/html; charset=utf-8")
 
     # ──────────── статика data/: gzip+ETag, иначе стрим через super() ────────────
     def _serve_static(self) -> None:
@@ -364,6 +410,7 @@ _GET_ROUTES = {
     _API_STATUSES:  _Handler._statuses_get,
     _API_APPLIED:   _Handler._applied_get,
     _API_CHATS:     _Handler._chats_get,
+    _API_ACCOUNTS:  _Handler._accounts_get,
     _API_SEARCH:    _Handler._search,
     "/search":      _Handler._search_page,
     "/search.html": _Handler._search_page,

@@ -17,7 +17,6 @@
 Playwright сюда неприменимы: карточка открывается прямой ссылкой.
 """
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,7 +33,7 @@ from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.salary import Salary
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_PATIENT, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.sources.text import strip_html
 from hrwork.infrastructure.storage import VacancyRecord
 
@@ -49,9 +48,8 @@ class GetmatchCfg:
     api_url: str = f"{SITE}/api/offers"
     page_size: int = GETMATCH_PAGE_SIZE
     max_pages: int = 200                           # страховка: 200 × 100 = 20k, портал в разы меньше
-    retry_attempts: int = 4
-    backoff_start: float = 1.0
-    backoff_max: float = 10.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_PATIENT
     page_conc: int = GETMATCH_PAGE_CONCURRENCY
     enrich_conc: int = GETMATCH_ENRICH_CONCURRENCY
     enrich_max: int = GETMATCH_ENRICH_MAX
@@ -214,18 +212,9 @@ class GetmatchSource(Source):
     async def _get_json(self, url: str) -> dict[str, Any] | None:
         headers = {"User-Agent": BROWSER_UA, "Accept": "*/*",
                    "x-client-platform": "web", "Referer": f"{SITE}/vacancies"}
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    return payload
-                except json.JSONDecodeError as e:
-                    log.debug("getmatch {}: {}", url, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return None
+        payload: dict[str, Any] | None = await fetch_json_retry(
+            url, headers=headers, policy=CFG.retry, log_context=f"getmatch {url}")
+        return payload
 
     async def _get_page(self, offset: int) -> dict[str, Any] | None:
         return await self._get_json(

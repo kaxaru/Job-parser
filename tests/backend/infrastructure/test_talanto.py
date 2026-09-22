@@ -254,14 +254,9 @@ def test_collect_refuses_a_truncated_list_instead_of_returning_it(monkeypatch):
         asyncio.run(src.collect())
 
 
-def test_one_broken_card_does_not_kill_the_source(monkeypatch):
-    """АУДИТ 08.08.2026: исключение из `_normalize` пробивало до `hh.py::_run_source`, тот
-    отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов."""
-    broken = {**ITEM, "id": "broken", "title": {"ru": "дрейф схемы: объект вместо строки"}}
-    pages = {0: {"items": [ITEM, broken], "total": 2}}
-    src = _src(monkeypatch, pages)
-    out = asyncio.run(src.collect())
-    assert [r.vacancy.id for r in out] == ["talanto_8bbcfc26-f6d7-47de-b6ee-ccc89d4dd875"]
+# Изоляция кривой карточки когда-то проверялась и здесь (`test_one_broken_card_does_not_kill_
+# the_source`). Сценарий — свойство общей функции `base.normalize_each`, а не схемы портала,
+# поэтому его единственное место — `test_source_item_isolation.py` (аудит 22.09.2026, §6).
 
 
 # ── Протухший кеш вместо пустого описания, когда бюджет enrich исчерпан ─────────────────
@@ -270,6 +265,12 @@ def test_one_broken_card_does_not_kill_the_source(monkeypatch):
 # У talanto это дороже, чем у hirify: ~40k вакансий при TALANTO_ENRICH_MAX=600 и жизни
 # записи 14 дней дают потолок покрытия 8 400 = 21 %, то есть экспирация съедает бюджет
 # целиком и никогда-не-обогащённый хвост не доходит до /jobs/{id} никогда.
+#
+# Сам механизм бюджета (протухшее описание переживает прогон, никогда-не-обогащённая карточка
+# идёт в бюджет первой, чужая версия не переиспользуется) проверяется В ОДНОМ месте —
+# `test_hirify.py`: это одна и та же схема `reuse/todo/stale/tail`, скопированная в talanto
+# (аудит 22.09.2026, §6 «дубли сценариев между файлами адаптеров»). Здесь остаётся то, чего
+# у hirify нет: путь не-IT тайтла, который карточку не тянет, но из выдачи исчезать не должен.
 
 #: мета-шапка карточки без первоисточника: только грейд и портал. Эмодзи записаны escape'ами
 #: намеренно: консоль проекта в cp1251, и упавший тест иначе печатается ошибкой кодека.
@@ -310,51 +311,6 @@ def _collect(monkeypatch, items, cache, enrich_max):
     monkeypatch.setattr(storage, "load_desc_cache", lambda: dict(cache))
     out = asyncio.run(src.collect())
     return {r.vacancy.id: r for r in out}, fetched
-
-
-def test_stale_description_survives_when_the_enrich_budget_is_spent(monkeypatch):
-    old = _old_at()
-    by, fetched = _collect(
-        monkeypatch,
-        items=[_card("a"), _card("b", published="2026-07-02T00:00:00Z")],
-        cache={"talanto_a": _stale_hit("<p>old A</p>", old),
-               "talanto_b": _stale_hit("<p>old B</p>", old)},
-        enrich_max=1)
-
-    assert fetched == ["b"]                                   # бюджет 1 -> свежайшей
-    assert by["talanto_b"].description_html == BARE_HEADER + "<p>fresh b</p>"
-    assert by["talanto_a"].description_html == "<p>old A</p>"   # НЕ одна мета-шапка
-    assert by["talanto_a"].enriched is True
-    assert by["talanto_a"].enriched_at == old                 # метка не обнуляется: обновим позже
-
-
-def test_never_enriched_card_gets_the_budget_before_the_stale_one(monkeypatch):
-    # У протухшей описание переживает прогон (fallback выше), у никогда-не-обогащённой
-    # альтернатива — пустая карточка. Порядок бюджета решает, кто из них останется без текста.
-    by, fetched = _collect(
-        monkeypatch,
-        items=[_card("stale", published="2026-07-09T00:00:00Z"),      # СВЕЖЕЕ
-               _card("new", published="2026-07-01T00:00:00Z")],       # старее
-        cache={"talanto_stale": _stale_hit("<p>old stale</p>", _old_at())},
-        enrich_max=1)
-
-    assert fetched == ["new"]
-    assert by["talanto_new"].description_html == BARE_HEADER + "<p>fresh new</p>"
-    assert by["talanto_stale"].description_html == "<p>old stale</p>"
-
-
-def test_changed_vacancy_never_reuses_the_description_of_the_old_version(monkeypatch):
-    # sig другой -> вакансию переписали. Старое описание относится к другой версии и как
-    # fallback не годится: показать его было бы враньём, пустая карточка честнее.
-    by, fetched = _collect(
-        monkeypatch,
-        items=[_card("a", sig="2026-07-30T00:00:00Z")],
-        cache={"talanto_a": _stale_hit("<p>old A</p>", _old_at())},
-        enrich_max=0)
-
-    assert fetched == []
-    assert by["talanto_a"].description_html == BARE_HEADER
-    assert by["talanto_a"].enriched is False
 
 
 def test_non_it_vacancy_keeps_its_cached_description_instead_of_vanishing(monkeypatch):

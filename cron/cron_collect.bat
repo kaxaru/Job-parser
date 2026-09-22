@@ -35,11 +35,18 @@ rem -1) Лента (data\feed-data.js) — ПЕРВОЙ, до Docker-блока:
 rem    а шаги 0/1/3 ниже занимают минуты (--wait до 240с, MSSQL-заливка ~10 мин) и могут
 rem    упасть на выключенном Docker. Без этого шага лента застывала на дате РУЧНОГО прогона
 rem    `hh.py feed`: 01.08.2026 в ней не было 5331 собранной вакансии и 68 вакансий с живыми
-rem    чатами (инцидент: чат «Константинов Семен Павлович» на QA не находился ни по одному
+rem    чатами (инцидент: чат «работодатель без названия» на QA не находился ни по одному
 rem    фильтру). Оверлей serve чинит только status/forms/chats, но не СОСТАВ ленты,
 rem    поэтому одним оверлеем не обойтись.
 rem    Браузер и autoclick.lock не трогает — с откликами не конфликтует.
 "%PY%" hh.py feed >> logs\cron_collect.log 2>&1
+rem Освежить пул acc2 (eligible.json) браузерно-независимо (RFC-004): основной вычитает его
+rem целиком и должен отступать даже когда сессия acc2 в дауне. setlocal изолирует HR_ACCOUNT
+rem от остальных шагов сбора (иначе dashboard/etl упали бы как «режим только для основного»).
+setlocal
+set "HR_ACCOUNT=acc2"
+"%PY%" hh.py autoclick --dry-pool --write-eligible >> logs\cron_collect.log 2>&1
+endlocal
 
 rem 0) Автоподъём Docker-стека, от которого зависят шаги 1 и 3 (search-индекс + DWH). Поднимаем
 rem    ТОЛЬКО данные+BI (postgres/clickhouse/mssql/metabase), без Airflow/Loki/Grafana. --wait
@@ -77,3 +84,19 @@ copy /y "%REPO%\data\vacancies_raw.json" "%REPO%\data\export\vacancies_raw.json.
 if exist "%REPO%\data\export\vacancies_raw.json.tmp" move /y "%REPO%\data\export\vacancies_raw.json.tmp" "%REPO%\data\export\vacancies_raw.json" >nul
 copy /y "%REPO%\data\fx_rates.json" "%REPO%\data\export\fx_rates.json.tmp" >nul 2>&1
 if exist "%REPO%\data\export\fx_rates.json.tmp" move /y "%REPO%\data\export\fx_rates.json.tmp" "%REPO%\data\export\fx_rates.json" >nul
+
+rem 4) Погасить BI-часть стенда. MSSQL, ClickHouse и Metabase нужны только шагам 0-3 и просмотру
+rem    витрин, а круглосуточно держали ~4,6 ГБ памяти WSL ради часа работы в сутки (замер
+rem    10.09.2026: mssql 2,06, metabase 1,44, clickhouse 1,15 ГБ). hh-postgres ОСТАВЛЯЕМ: на нём
+rem    живёт /search в ленте (hrwork/infrastructure/search.py). Именно stop, а не down: контейнеры
+rem    и тома целы, завтрашний шаг 0 поднимет их тем же up --wait, а unless-stopped сам их не
+rem    вернёт. Ключ -t 60 вместо дефолтных 10 с - запас ClickHouse, которому сразу после заливки
+rem    нужно время на чистую остановку. MSSQL им не спасти: PID 1 в его образе - launch_sqlservr.sh,
+rem    который запускает sqlservr фоном без проброса SIGTERM, поэтому по таймауту всегда SIGKILL
+rem    (так он гасился и раньше при каждом рестарте Docker). База поднимается штатным
+rem    восстановлением за 4-9 с (логи 29.08 и 09.09.2026), а данные в ней - реплика, которую шаг 3
+rem    перезаливает целиком. Витрины нужны вне крона - поднять руками из dwh_demo:
+rem    docker compose up -d --wait clickhouse mssql metabase
+cd /d "%REPO%\dwh_demo"
+docker compose stop -t 60 clickhouse mssql metabase >> ..\logs\cron_collect.log 2>&1
+cd /d "%REPO%"

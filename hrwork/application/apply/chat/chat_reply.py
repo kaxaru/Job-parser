@@ -22,9 +22,9 @@ from typing import Any
 from hrwork.application.apply.chat import chat, chat_answer, chat_class
 from hrwork.application.apply.chat.chat_answer import VacancyContext
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import DATA_DIR, body, log
+from hrwork.config import ACCOUNT_DIR, body, log
 
-REPLIES_LOG = DATA_DIR / "chat_replies.jsonl"
+REPLIES_LOG = ACCOUNT_DIR / "chat_replies.jsonl"
 SEND_PAUSE = (2.0, 4.0)          # сек между отправками — не строчить как автомат
 # Правила ответа, которые НИКОГДА не уходят автоматически — только под [y/N], как деньги/место.
 # confirm («Используем эти ответы?»): бот подтверждает утверждения, которые проставил САМ

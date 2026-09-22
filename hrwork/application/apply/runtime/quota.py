@@ -6,10 +6,10 @@ import datetime
 from threading import Lock
 from typing import Any
 
-from hrwork.config import DATA_DIR, HH_DAILY_APPLY_CAP
+from hrwork.config import ACCOUNT_DIR, HH_DAILY_APPLY_CAP
 from hrwork.infrastructure.storage import atomic_write_json, read_json_or
 
-QUOTA_FILE = DATA_DIR / "apply_quota.json"       # {"date": "YYYY-MM-DD", "count": N}
+QUOTA_FILE = ACCOUNT_DIR / "apply_quota.json"    # {"date": "YYYY-MM-DD", "count": N}; лимит HH — на аккаунт
 DAILY_CAP_DEFAULT = HH_DAILY_APPLY_CAP           # потолок откликов в сутки (лимит HH, config)
 _WRITE_LOCK = Lock()   # read-modify-write не рвётся между потоками одного процесса
 

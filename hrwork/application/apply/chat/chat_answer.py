@@ -15,12 +15,18 @@
 """
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from hrwork.application.apply.chat.chat_class import PLACE_Q, SALARY_Q
-from hrwork.config import BASE_DIR
+from hrwork.config import BASE_DIR, USER_FIRST_NAME
 from hrwork.domain.grade import Grade
 from hrwork.infrastructure.storage import read_json_or
+
+if TYPE_CHECKING:
+    # Только для аннотаций: `IntentResult` — выход LLM-классификатора (chat_intent), и его
+    # знает этот модуль лишь как «метка + технологии»; рантайм-импорт тянет за собой
+    # infrastructure.llm в граф импорта движка ответов, которому сеть не нужна.
+    from hrwork.application.apply.chat.chat_intent import IntentResult
 
 PROFILE_FILE = BASE_DIR / "resume_profile.json"
 
@@ -49,25 +55,37 @@ _HAS_EXP = re.compile(
 # Шаблонная обвязка вопроса: убираем её и упомянутые технологии — что осталось, то и есть
 # СУТЬ вопроса. Если остаток непустой, спрашивают про конкретную практику («автоматизация
 # тестирования ML-сервисов на Python»), а не про технологию — подтверждать нельзя.
-_BOILERPLATE = re.compile(
-    r"\b(?:есть|ли|у|вас|вы|ваш\w*|был[аои]?|было|имеется|опыт\w*|работ\w*|с|со|в|во|на|и|или"
-    r"|использов\w*|владеете|приходилось|занимались|знаком\w*|коммерческ\w*|практическ\w*"
-    r"|пожалуйста|расскажите|уточните|скажите|какой|какие|каким|каких|а|же|уже|ещё|еще"
-    # вежливая обвязка письма: не может быть сутью технического вопроса, но без неё
-    # «Спасибо за отклик. Есть ли опыт с Docker?» давало остаток «спасибо отклик»
-    # и движок молчал на простом вопросе (найдено тестом 20.07)
-    r"|здравствуйте|доброе|добрый|утро|день|вечер|привет|антон|спасибо|благодар\w*"
-    r"|отклик\w*|интерес\w*|ваканси\w*|компани\w*|резюме|кандидат\w*|позици\w*"
-    r"|меня|зовут|нас|наш\w*|мы|нам|это|очень|рады"
-    # реплики бота-интервьюера между вопросами: «Понял, спасибо за подробный ответ.
-    # Следующий вопрос: …», «…в проектах, над которыми работали». Тоже обвязка —
-    # без неё цепочка вопросов от ИИ-помощника HH вся уходила в молчание (20.07)
-    r"|понял|понятно|отлично|хорошо|подробн\w*|ответ\w*|следующ\w*|вопрос\w*"
-    r"|проект\w*|котор\w*|\bнад\b|также|ещ[её]"
-    # английская обвязка
-    r"|you|your|have|has|had|any|the|and|or|with|for|about|please|could|would|tell|know"
-    r"|experience|experienced|familiar|worked|working|work|hands|hello|hi|dear|thanks"
-    r"|commercial|professional|production)\b", re.I)
+#
+# Обращение по имени владельца — тоже обвязка, но имя ЗАВИСИТ от пользователя: оно приходит из
+# `config.USER_FIRST_NAME` (профиль, в .gitignore). До 25.09.2026 стояло литералом — личные
+# данные в исходнике. Ключа в профиле нет -> альтернатива не добавляется, «<Имя>, здравствуйте»
+# даст непустой остаток и движок промолчит: обращение снимет `chat_class.norm_text` только там,
+# где оно мешает сравнению шаблонов, а не разбору вопроса.
+def boilerplate(name: str) -> re.Pattern[str]:
+    """Regex шаблонной обвязки для заданного имени владельца (пустое — без имени)."""
+    name_alt = f"|{re.escape(name.strip().lower())}" if name.strip() else ""
+    return re.compile(
+        r"\b(?:есть|ли|у|вас|вы|ваш\w*|был[аои]?|было|имеется|опыт\w*|работ\w*|с|со|в|во|на|и|или"
+        r"|использов\w*|владеете|приходилось|занимались|знаком\w*|коммерческ\w*|практическ\w*"
+        r"|пожалуйста|расскажите|уточните|скажите|какой|какие|каким|каких|а|же|уже|ещё|еще"
+        # вежливая обвязка письма: не может быть сутью технического вопроса, но без неё
+        # «Спасибо за отклик. Есть ли опыт с Docker?» давало остаток «спасибо отклик»
+        # и движок молчал на простом вопросе (найдено тестом 20.07)
+        r"|здравствуйте|доброе|добрый|утро|день|вечер|привет" + name_alt + r"|спасибо|благодар\w*"
+        r"|отклик\w*|интерес\w*|ваканси\w*|компани\w*|резюме|кандидат\w*|позици\w*"
+        r"|меня|зовут|нас|наш\w*|мы|нам|это|очень|рады"
+        # реплики бота-интервьюера между вопросами: «Понял, спасибо за подробный ответ.
+        # Следующий вопрос: …», «…в проектах, над которыми работали». Тоже обвязка —
+        # без неё цепочка вопросов от ИИ-помощника HH вся уходила в молчание (20.07)
+        r"|понял|понятно|отлично|хорошо|подробн\w*|ответ\w*|следующ\w*|вопрос\w*"
+        r"|проект\w*|котор\w*|\bнад\b|также|ещ[её]"
+        # английская обвязка
+        r"|you|your|have|has|had|any|the|and|or|with|for|about|please|could|would|tell|know"
+        r"|experience|experienced|familiar|worked|working|work|hands|hello|hi|dear|thanks"
+        r"|commercial|professional|production)\b", re.I)
+
+
+_BOILERPLATE = boilerplate(USER_FIRST_NAME)
 _PUNCT = re.compile(r"[?!.,:;()\[\]«»\"'’—–\-/]+")
 # ОТКРЫТЫЙ вопрос «с чем работали» — перечисляем стек. Домен между «с какими» и предметом
 # должен быть ПУСТ: «с какими ML-фреймворками» — узкий вопрос, и перечисление всего стека
@@ -475,8 +493,8 @@ def _negative_allowed(rest: list[str], known: list[str],
 _INTENT_CLUSTER = frozenset({"has_exp", "years", "years_tech", "depth"})
 
 
-def _route_cluster(intent: Any, q: str, ans: dict[str, Any], stack: list[str], past: list[str],
-                   lang: str) -> dict[str, Any] | None:
+def _route_cluster(intent: "IntentResult", q: str, ans: dict[str, Any], stack: list[str],
+                   past: list[str], lang: str) -> dict[str, Any] | None:
     """Маршрутизация проблемного кластера по метке LLM к ЛОКАЛЬНОМУ факту.
     Инвариант: нет выделенного факта -> None (человек), не выдумываем."""
     label = intent.label
@@ -505,7 +523,7 @@ def _route_cluster(intent: Any, q: str, ans: dict[str, Any], stack: list[str], p
 
 def suggest(question: str, profile: dict[str, Any] | None = None,
             ctx: VacancyContext | None = None,
-            intent: Any = None) -> dict[str, Any] | None:
+            intent: "IntentResult | None" = None) -> dict[str, Any] | None:
     """Предложить ответ на вопрос бота (ru или en — по языку вопроса).
 
     ctx — контекст вакансии (тайтл/опыт/город): без него вопросы про деньги и место

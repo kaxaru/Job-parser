@@ -122,7 +122,7 @@ def test_httpx_backend_agrees_with_curl_on_status(monkeypatch, status, expected)
 def test_url_goes_after_option_separator(monkeypatch):
     """url приезжает из выдачи портала (getmatch.py::_normalize), а не только из констант:
     без `--` значение вида `-o C:\\...\\file` стало бы опцией curl, а не адресом."""
-    evil = "-oC:\\Users\\khide\\pwned.txt"
+    evil = "-oC:\\Users\\user\\pwned.txt"
     curl = _FakeCurl()
     _fetch(monkeypatch, curl, url=evil)
     assert curl.args[-2:] == ["--", evil]
@@ -154,3 +154,114 @@ def test_proxy_config_escapes_curl_syntax(raw, expected):
     # внутри кавычек curl-конфига значимы обратный слеш и кавычка — иначе прокси
     # молча не применится, и запросы уйдут с домашнего IP
     assert H._proxy_config(raw) == expected
+
+
+# ── Ретрай-цикл: единственная реализация на весь сбор (аудит 22.09.2026, §3.1) ──────────
+# До правки цикл был скопирован девять раз по адаптерам, и политику, поправленную в одном,
+# остальные восемь продолжали работать по старой. Здесь закреплён САМ цикл: сколько попыток,
+# какие паузы, что считается сбоем и что — успехом.
+
+POLICY = H.RetryPolicy(attempts=3, backoff_start=2.0, backoff_max=8.0)
+DOC = b'{"items": [1, 2, 3]}'
+
+
+def _retry_env(monkeypatch: pytest.MonkeyPatch, bodies: list[bytes | None]) -> tuple[list[str], list[float]]:
+    """Транспорт отвечает телами по очереди (последнее залипает); паузы записываются."""
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    async def fake_fetch(url: str, **_kw: Any) -> bytes | None:
+        calls.append(url)
+        return bodies[min(len(calls) - 1, len(bodies) - 1)]
+
+    async def fake_sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr(H, "fetch_bytes", fake_fetch)
+    monkeypatch.setattr(H.asyncio, "sleep", fake_sleep)
+    return calls, sleeps
+
+
+def test_failed_attempt_is_retried_and_data_of_a_later_attempt_is_taken(monkeypatch):
+    calls, sleeps = _retry_env(monkeypatch, [None, None, DOC])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=POLICY)) == {"items": [1, 2, 3]}
+    assert len(calls) == 3
+    # после ПОСЛЕДНЕЙ попытки паузы нет: ждать после того, как попытки кончились, нечего
+    assert sleeps == [2.0, 4.0]
+
+
+def test_attempts_and_pauses_come_from_the_policy(monkeypatch):
+    calls, sleeps = _retry_env(monkeypatch, [None])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=H.RetryPolicy(
+        attempts=4, backoff_start=2.0, backoff_max=8.0))) is None
+    assert len(calls) == 4
+    assert sleeps == [2.0, 4.0, 8.0]
+
+
+def test_backoff_is_capped_at_the_policy_ceiling(monkeypatch):
+    """Потолок важен и по делу: без него паузы уходят в минуты и прогон не заканчивается."""
+    _, sleeps = _retry_env(monkeypatch, [None])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=H.RetryPolicy(
+        attempts=5, backoff_start=2.0, backoff_max=8.0))) is None
+    assert sleeps == [2.0, 4.0, 8.0, 8.0]
+
+
+def test_malformed_json_is_retried_like_a_transport_failure(monkeypatch):
+    """Тело под троттлингом — это сбой ДОСТАВКИ, а не «выдача кончилась»: под curl 429/503
+    с телом уже один раз доехали до адаптера как данные (аудит 08.08.2026)."""
+    calls, sleeps = _retry_env(monkeypatch, [b"<html>maintenance</html>", DOC])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=POLICY)) == {"items": [1, 2, 3]}
+    assert len(calls) == 2
+    assert sleeps == [2.0]
+
+
+def test_empty_json_list_is_success_not_a_failure(monkeypatch):
+    """Пустая выдача портала — УСПЕХ цикла: отличать троттлинг от конца списка обязан
+    вызывающий (`base.py::get_page_with_empty_retry`), а не повторы транспорта."""
+    calls, sleeps = _retry_env(monkeypatch, [b'{"items": []}', DOC])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=POLICY,
+                                          parse=lambda p: p.get("items") or [])) == []
+    assert (len(calls), sleeps) == (1, [])
+
+
+def test_parse_returning_none_counts_as_a_failure_and_is_retried(monkeypatch):
+    """web3.career отдаёт `[заголовок, справка, [вакансии]]`: пока форма не та, попытки
+    продолжаются — иначе троттлинг записался бы как «по тегу ничего нет»."""
+    calls, _ = _retry_env(monkeypatch, [DOC])
+    assert asyncio.run(H.fetch_json_retry(URL, policy=POLICY, parse=lambda p: None)) is None
+    assert len(calls) == 3
+
+
+def test_schema_error_from_parse_stops_retrying_at_once(monkeypatch):
+    """Ответ пришёл, но схема не наша — ретрай не поможет, поэтому исключение уходит наружу
+    (так его ловит `ats.py::fetch_board` и считает борд мёртвым ровно один раз)."""
+    calls, sleeps = _retry_env(monkeypatch, [DOC])
+
+    def _bad_schema(_payload: Any) -> Any:
+        raise AttributeError("нет поля jobs")
+
+    with pytest.raises(AttributeError):
+        asyncio.run(H.fetch_json_retry(URL, policy=POLICY, parse=_bad_schema))
+    assert (len(calls), sleeps) == (1, [])
+
+
+def test_bytes_retry_hands_over_any_non_empty_body_without_parsing_it(monkeypatch):
+    """`fetch_bytes_retry` нужен тем, кто разбирает тело сам: devitjobs считает битый JSON
+    ошибкой схемы, а не поводом ретраить (иначе 4 попытки по 30 с на HTML вместо данных)."""
+    calls, sleeps = _retry_env(monkeypatch, [b"<html>maintenance</html>", DOC])
+    assert asyncio.run(H.fetch_bytes_retry(URL, policy=POLICY)) == b"<html>maintenance</html>"
+    assert (len(calls), sleeps) == (1, [])
+
+
+def test_empty_attempt_hook_reports_the_number_and_the_duration(monkeypatch):
+    """Ради этого хука devitjobs различает таймаут под нагрузкой (около лимита) и мгновенный
+    HTTP-отказ: `fetch_bytes` причину сбоя не отдаёт."""
+    _, sleeps = _retry_env(monkeypatch, [None])
+    durations = [0.0, 90.0] * 2          # started -> elapsed для каждой попытки
+    monkeypatch.setattr(H, "monotonic", lambda: durations.pop(0))
+    seen: list[tuple[int, float]] = []
+    assert asyncio.run(H.fetch_bytes_retry(URL, policy=H.RetryPolicy(
+        attempts=2, backoff_start=30.0, backoff_max=120.0),
+        on_empty=lambda n, e: seen.append((n, e)))) is None
+    assert seen == [(1, 90.0), (2, 90.0)]
+    assert sleeps == [30.0]

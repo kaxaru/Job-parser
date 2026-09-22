@@ -215,7 +215,7 @@ _PRIVATE_PROFILE = {"answers": {
     "years_text": "6 лет коммерческой разработки.",            # единственный allowlist-ключ
     "salary_by_grade": {"middle": "150 000 — 170 000"},        # вилка
     "citizenship_text": "РФ и Сербия, работаю по трудовому договору.",
-    "office_city": "Тольятти",
+    "office_city": "Саратов",
 }}
 
 
@@ -289,7 +289,7 @@ def test_resume_md_reaches_the_provider_without_pii(fake_resume_md):
 @pytest.mark.parametrize("line", [
     "Мужчина, 35 лет, родился 12 мая 1990",
     "Проживает: Санкт-Петербург, м. Автово",
-    "Город проживания — Тольятти",
+    "Город проживания — Саратов",
     "Дата рождения: 12.05.1990",
     "Гражданство: Россия",
     "Телефон: +7 (900) 000-00-00",
@@ -297,7 +297,7 @@ def test_resume_md_reaches_the_provider_without_pii(fake_resume_md):
     "Telegram: @ivanov",
     "Возраст: 35 полных лет",
     "Желаемая зарплата: 250 000 руб. на руки",
-    "Работаю удалённо из города Тольятти (Россия).",
+    "Работаю удалённо из города Саратов (Россия).",
 ])
 def test_personal_line_of_a_cv_is_cut_before_the_prompt(line):
     assert F._scrub_pii(line) == ""
@@ -345,10 +345,10 @@ def test_pii_written_into_an_allowlist_field_is_scrubbed_too(monkeypatch):
     # ДЕФЕКТ 08.08.2026: allowlist-поля профиля (years_text, education_text…) шли в промпт
     # вообще без скраба — «живу в городе X», вписанное человеком в years_text, утекало as is
     monkeypatch.setattr(F, "load_profile", lambda: {"answers": {
-        "years_text": "6 лет разработки, живу в городе Тольятти.",
-        "english_text": "Английский — B1 (средний)."}})
+        "years_text": "6 лет разработки, живу в городе Саратов.",
+        "english_text": "Английский — B2 (выше среднего)."}})
     monkeypatch.setattr(F, "_RESUME_MD", pathlib.Path("nonexistent.md"))
-    assert F.build_resume_ctx() == "Английский — B1 (средний)."
+    assert F.build_resume_ctx() == "Английский — B2 (выше среднего)."
 
 
 def test_provider_payload_carries_only_the_allowlisted_facts(monkeypatch,
@@ -377,7 +377,7 @@ def test_only_explicitly_non_pii_answers_reach_the_provider(monkeypatch):
 
 def test_answer_without_a_pii_flag_is_withheld_from_the_provider(monkeypatch):
     monkeypatch.setattr(F, "load_profile", lambda: {"answers": {}, "form_answers": [
-        {"q": "город", "a": "Работаю удалённо из города Тольятти.", "_note": "откуда работаешь"},
+        {"q": "город", "a": "Работаю удалённо из города Саратов.", "_note": "откуда работаешь"},
     ]})
     monkeypatch.setattr(F, "_RESUME_MD", pathlib.Path("nonexistent.md"))
     assert F.build_resume_ctx() == ""
@@ -406,9 +406,9 @@ def test_substituted_age_never_reaches_the_provider(monkeypatch):
 def test_pii_flag_does_not_disable_the_dictionary_answer(monkeypatch):
     # флаг управляет ТОЛЬКО контекстом LLM: работодателю словарь отвечает как обычно
     monkeypatch.setattr(F, "form_answers", lambda: [
-        {"q": r"город", "a": "Работаю удалённо из города Тольятти.", "pii": True}])
+        {"q": r"город", "a": "Работаю удалённо из города Саратов.", "pii": True}])
     assert F.match_answer("В каком городе вы живёте?", ()) == (
-        "Работаю удалённо из города Тольятти.", None)
+        "Работаю удалённо из города Саратов.", None)
 
 
 # ── match_answer: словарь ответов (данные, не хардкод) ──
@@ -580,6 +580,13 @@ def test_non_salary_question_not_detected(prompt):
 
 
 @pytest.mark.parametrize("prompt", [
+    # ЖИВОЙ КЕЙС 20.08.2026 (форм-очередь, вакансия 135791263): «вознаграждение» не было
+    # в детекторе вовсе, и вопрос про деньги ушёл бы к LLM-провайдеру — ровно то, что
+    # детектор обязан предотвращать (зарплату считает код, наружу она не уходит)
+    "Поделись своими ожиданиями по вознаграждению на старте",
+    "Какие у вас ожидания по вознаграждению?",
+    "Укажите размер вознаграждения, на который рассчитываете",
+    "Какое вознаграждение вы ожидаете на испытательный срок?",
     # ЖИВОЙ КЕЙС 27.07: про сумму, но без слова «зарплата» — уходило человеку
     "Какие Ваши финансовые пожелания?",
     "Ваши финансовые ожидания?",

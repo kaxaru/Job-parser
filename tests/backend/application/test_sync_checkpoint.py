@@ -1,6 +1,6 @@
 """Синк статусов из чатов: чекпойнты и дата отклика (без сети и без браузера).
 
-АУДИТ 08.08.2026. `autoclick.py::sync_statuses` держал всё в памяти до конца прогона:
+АУДИТ 08.08.2026. `hh_sync.py::sync_statuses` держал всё в памяти до конца прогона:
 `save_statuses` / `save_chat_messages` стояли ПОСЛЕ цикла по ~1300 чатам (десятки минут,
 watchdog на этот путь не распространяется — Chromium тут не поднимается). Kill на 800-м из
 1300 терял ВСЮ скачанную переписку.
@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from hrwork.application.apply import autoclick
+from hrwork.application.apply import hh_sync
 
 REAL_RESPONSE_TS = "2026-08-01T10:00:00+03:00"
 
@@ -45,35 +45,35 @@ def _chat_data(ts: str = REAL_RESPONSE_TS) -> dict[str, Any]:
 def sync_env(monkeypatch):
     """Все внешние границы синка — заглушками; собираем всё, что он писал на диск."""
     saved: dict[str, list[Any]] = {"statuses": [], "msgs": [], "journal": []}
-    monkeypatch.setattr(autoclick.session, "open_client", lambda: (_Req(), "xsrf"))
-    monkeypatch.setattr(autoclick, "vacancy_repository",
+    monkeypatch.setattr(hh_sync.session, "open_client", lambda: (_Req(), "xsrf"))
+    monkeypatch.setattr(hh_sync, "vacancy_repository",
                         lambda: type("R", (), {"load": staticmethod(list)})())
-    monkeypatch.setattr(autoclick.store, "applied_ids", set)
-    monkeypatch.setattr(autoclick.store, "chat_messages", dict)
-    monkeypatch.setattr(autoclick.store, "statuses", dict)
-    monkeypatch.setattr(autoclick.store, "marks", dict)
-    monkeypatch.setattr(autoclick.store, "merge_marks", lambda m: None)
-    monkeypatch.setattr(autoclick.store, "applied_log", list)
-    monkeypatch.setattr(autoclick.store, "applied_today", lambda: 0)
-    monkeypatch.setattr(autoclick.store, "save_statuses",
+    monkeypatch.setattr(hh_sync.store, "applied_ids", set)
+    monkeypatch.setattr(hh_sync.store, "chat_messages", dict)
+    monkeypatch.setattr(hh_sync.store, "statuses", dict)
+    monkeypatch.setattr(hh_sync.store, "marks", dict)
+    monkeypatch.setattr(hh_sync.store, "merge_marks", lambda m: None)
+    monkeypatch.setattr(hh_sync.store, "applied_log", list)
+    monkeypatch.setattr(hh_sync.store, "applied_today", lambda: 0)
+    monkeypatch.setattr(hh_sync.store, "save_statuses",
                         lambda s: saved["statuses"].append(dict(s)))
-    monkeypatch.setattr(autoclick.store, "save_chat_messages",
+    monkeypatch.setattr(hh_sync.store, "save_chat_messages",
                         lambda m: saved["msgs"].append(dict(m)))
-    monkeypatch.setattr(autoclick.store, "log_applied",
-                        lambda vid, name, url, **kw: saved["journal"].append((vid, kw.get("ts"))))
-    monkeypatch.setattr(autoclick.time, "sleep", lambda s: None)
-    monkeypatch.setattr(autoclick.random, "uniform", lambda a, b: 0)
+    monkeypatch.setattr(hh_sync.store, "log_applied",
+                        lambda row: saved["journal"].append((row.vid, row.ts)))
+    monkeypatch.setattr(hh_sync.time, "sleep", lambda s: None)
+    monkeypatch.setattr(hh_sync.random, "uniform", lambda a, b: 0)
     return saved
 
 
 def test_progress_is_checkpointed_before_the_run_ends(sync_env, monkeypatch):
     """250 чатов при чекпойнте раз в 100 -> два промежуточных сброса плюс финальный,
     и первый уже содержит 100 переписок."""
-    monkeypatch.setattr(autoclick, "SYNC_CHECKPOINT_EVERY", 100)
-    monkeypatch.setattr(autoclick.chat, "list_chats",
+    monkeypatch.setattr(hh_sync, "SYNC_CHECKPOINT_EVERY", 100)
+    monkeypatch.setattr(hh_sync.chat, "list_chats",
                         lambda *a, **k: [_chat(i) for i in range(1, 251)])
-    monkeypatch.setattr(autoclick.chat, "chat_data", lambda *a, **k: _chat_data())
-    autoclick.sync_statuses()
+    monkeypatch.setattr(hh_sync.chat, "chat_data", lambda *a, **k: _chat_data())
+    hh_sync.sync_statuses()
     assert len(sync_env["msgs"]) == 3
     assert len(sync_env["msgs"][0]) == 100
     assert len(sync_env["msgs"][2]) == 250
@@ -81,8 +81,8 @@ def test_progress_is_checkpointed_before_the_run_ends(sync_env, monkeypatch):
 
 def test_kill_between_checkpoints_keeps_the_downloaded_chats(sync_env, monkeypatch):
     """Прогон умирает на 150-м чате: скачанное до чекпойнта на диске, а не в памяти трупа."""
-    monkeypatch.setattr(autoclick, "SYNC_CHECKPOINT_EVERY", 100)
-    monkeypatch.setattr(autoclick.chat, "list_chats",
+    monkeypatch.setattr(hh_sync, "SYNC_CHECKPOINT_EVERY", 100)
+    monkeypatch.setattr(hh_sync.chat, "list_chats",
                         lambda *a, **k: [_chat(i) for i in range(1, 301)])
     calls = {"n": 0}
 
@@ -92,33 +92,71 @@ def test_kill_between_checkpoints_keeps_the_downloaded_chats(sync_env, monkeypat
             raise KeyboardInterrupt("watchdog/taskkill")
         return _chat_data()
 
-    monkeypatch.setattr(autoclick.chat, "chat_data", dying)
+    monkeypatch.setattr(hh_sync.chat, "chat_data", dying)
     with pytest.raises(KeyboardInterrupt):
-        autoclick.sync_statuses()
+        hh_sync.sync_statuses()
     assert len(sync_env["msgs"]) == 1
     assert len(sync_env["msgs"][0]) == 100
 
 
 def test_chat_without_messages_is_not_journalled_with_todays_date(sync_env, monkeypatch):
-    monkeypatch.setattr(autoclick.chat, "list_chats", lambda *a, **k: [_chat(1)])
-    monkeypatch.setattr(autoclick.chat, "chat_data", lambda *a, **k: _chat_data(ts=""))
-    autoclick.sync_statuses()
+    monkeypatch.setattr(hh_sync.chat, "list_chats", lambda *a, **k: [_chat(1)])
+    monkeypatch.setattr(hh_sync.chat, "chat_data", lambda *a, **k: _chat_data(ts=""))
+    hh_sync.sync_statuses()
     assert sync_env["journal"] == []
 
 
 def test_chat_with_messages_is_journalled_with_the_real_response_date(sync_env, monkeypatch):
-    monkeypatch.setattr(autoclick.chat, "list_chats", lambda *a, **k: [_chat(1)])
-    monkeypatch.setattr(autoclick.chat, "chat_data", lambda *a, **k: _chat_data())
-    autoclick.sync_statuses()
+    monkeypatch.setattr(hh_sync.chat, "list_chats", lambda *a, **k: [_chat(1)])
+    monkeypatch.setattr(hh_sync.chat, "chat_data", lambda *a, **k: _chat_data())
+    hh_sync.sync_statuses()
     assert sync_env["journal"] == [("1", REAL_RESPONSE_TS)]
 
 
 def test_sync_reconciles_the_daily_quota_after_journalling(sync_env, monkeypatch):
     """Синк — единственный путь, который узнаёт об отклике, не дошедшем до счётчика."""
     got: list[int] = []
-    monkeypatch.setattr(autoclick.chat, "list_chats", lambda *a, **k: [_chat(1)])
-    monkeypatch.setattr(autoclick.chat, "chat_data", lambda *a, **k: _chat_data())
-    monkeypatch.setattr(autoclick, "_journal_applied_today", lambda: 103)
-    monkeypatch.setattr(autoclick.store, "reconcile_quota", lambda n: got.append(n) or n)
-    autoclick.sync_statuses()
+    monkeypatch.setattr(hh_sync.chat, "list_chats", lambda *a, **k: [_chat(1)])
+    monkeypatch.setattr(hh_sync.chat, "chat_data", lambda *a, **k: _chat_data())
+    monkeypatch.setattr(hh_sync, "_journal_applied_today", lambda: 103)
+    monkeypatch.setattr(hh_sync.store, "reconcile_quota", lambda n: got.append(n) or n)
+    hh_sync.sync_statuses()
     assert got == [103]
+
+
+class _Log:
+    """Перехват строк лога: у loguru формат — str.format с позиционными аргументами."""
+
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
+    def warning(self, msg: str, *args: Any) -> None:
+        self.warnings.append(msg.format(*args))
+
+    def info(self, msg: str, *args: Any) -> None:
+        return None
+
+    def debug(self, msg: str, *args: Any) -> None:
+        return None
+
+    def error(self, msg: str, *args: Any) -> None:
+        return None
+
+    def success(self, msg: str, *args: Any) -> None:
+        return None
+
+
+def test_conflict_warning_counts_vacancies_not_chats(sync_env, monkeypatch):
+    """На одну вакансию бывает несколько чатов: «конфликт аккаунтов» считает ВАКАНСИИ.
+    Инцидент 21.09.2026: строка показывала 1200 при 72 реальных — один и тот же id
+    повторялся в списке по числу чатов, и сигнал о двойном отклике тонул в дублях."""
+    logs = _Log()
+    monkeypatch.setattr(hh_sync, "log", logs)
+    monkeypatch.setattr(hh_sync.taken, "taken_by_others", lambda: {"1": "main"})
+    chats = [_chat(1), {"chatId": 2, "vacancyId": "1", "applicantId": 7,
+                        "lastMessageTime": REAL_RESPONSE_TS}]
+    monkeypatch.setattr(hh_sync.chat, "list_chats", lambda *a, **k: chats)
+    monkeypatch.setattr(hh_sync.chat, "chat_data", lambda *a, **k: _chat_data())
+    hh_sync.sync_statuses()
+    assert logs.warnings == [
+        "Синк: конфликт аккаунтов — 1 вакансий с откликом и здесь, и у другого аккаунта: 1->main"]

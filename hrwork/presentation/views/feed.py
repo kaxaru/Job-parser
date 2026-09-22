@@ -17,12 +17,14 @@ from jinja2 import Environment, FileSystemLoader
 
 from hrwork.application.apply.chat import chat, chat_class
 from hrwork.application.apply.forms.form_status import FormSweepStatus
+from hrwork.application.apply.outcome import APPLY_LABELS
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import (
     ACCENT,
     BG,
     DATA_DIR,
     EXP_LABELS,
+    EXP_UNKNOWN_LABEL,
     FEED_COVER_TEMPLATES,
     FEED_OUT,
     GRID,
@@ -36,6 +38,7 @@ from hrwork.config import (
     RESUME_ROLE_FIT,
     RESUME_STACK_TIERS,
     ROLE_PATTERNS,
+    STALE_CACHE_HOURS,
     TEMPLATE_DIR,
     TEXT,
     log,
@@ -44,7 +47,7 @@ from hrwork.domain.employment import Employment
 from hrwork.domain.parsing import has_remote, langs_in_title
 from hrwork.domain.schedule import REMOTE_LIKE_CODES, Schedule
 from hrwork.infrastructure.net import rates
-from hrwork.infrastructure.storage import MARK_VALUES, vacancy_repository
+from hrwork.infrastructure.storage import MARK_VALUES, collected_at, vacancy_repository
 
 # ── Санитизация описаний ──────────────────────────────────────────────────────
 # description_html — чужой HTML (контент работодателя со страницы HH), и это
@@ -117,7 +120,10 @@ def sanitize_desc(src: str) -> str:
 #: Тот же принцип уже записан в `resume.js::resumeMatch`: грейда нет -> нейтральные 12
 #: баллов, «это качество данных портала, а не несоответствие резюме». Фильтр просто
 #: догнал скоринг, который решил этот вопрос раньше и правильно.
-EXP_UNKNOWN = ("", "Не указан")
+#:
+#: Подпись берётся из `config.EXP_UNKNOWN_LABEL` — то же состояние называет строка отчёта
+#: «6. Зарплата по опыту» (`analyzer.py::salary_by_experience`), и расходиться им нельзя.
+EXP_UNKNOWN = ("", EXP_UNKNOWN_LABEL)
 
 
 # ── Чипы формы оформления ─────────────────────────────────────────────────────
@@ -268,7 +274,10 @@ def build_feed() -> None:
     # Роли-чипы: только IT-роли, что реально встретились, в порядке ROLE_PATTERNS.
     present = {r["role"] for r in records}
     roles   = [role for role in ROLE_PATTERNS if role in present]
-    nonit   = sum(1 for r in records if r["role"] == "Не-IT")
+    # «Не-IT» спрашиваем У ДОМЕНА (`Role.is_it`), а не сравнением ярлыка-строки с литералом:
+    # раньше стояло `r["role"] == "Не-IT"`, и переименование члена enum обнулило бы счётчик,
+    # который видит человек (аудит 2026-09-22-quality.md, §3.2). Так же считает `analyzer.py`.
+    nonit   = sum(1 for rec in vacancies if not rec.vacancy.role.is_it)
     sources = sorted({r["source"] for r in records})   # порталы для чипов-фильтра
 
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
@@ -325,6 +334,12 @@ def build_feed() -> None:
         f"const RESUME_LANG_FIT_PY = "
         f"{json.dumps(RESUME_LANG_FIT, ensure_ascii=False)};\n"
         f"const MARK_VALUES_PY = {json.dumps(list(MARK_VALUES))};\n"     # словарь пометок (marks.py)
+        # Подписи кнопки «Откликнуться в фоне». До 23.09.2026 словарь жил ТОЛЬКО в JS
+        # (`main.js::APPLY_LABELS`), и дрейф уже случился: сервер отдавал `taken`, метки для
+        # которого в ленте не было (показывалось сырое `taken`), а `captcha` не был размечен
+        # вовсе. Ключи — коды `ApplyOutcome` И `TransportStatus`; источник —
+        # `apply/outcome.py::APPLY_LABELS` (полнота закрыта `test_outcome_labels.py`).
+        f"const APPLY_LABELS_PY = {json.dumps(APPLY_LABELS, ensure_ascii=False)};\n"
         # Формат работы: подписи и «что считается удалёнкой» — из домена (Schedule).
         # До 08.08.2026 моста не было вовсе: model.js держал свой SCHED_LABELS, где из трёх
         # кодов совпадал ОДИН (fullDay: «Полный день» против «Офис»), плюс мёртвые shift и
@@ -340,6 +355,12 @@ def build_feed() -> None:
         f"{json.dumps({e.code: e.label for e in Employment}, ensure_ascii=False)};\n"
         # тупиковые виды чата (chat_class.FROZEN_KINDS): бейдж, фильтр «Личные» и счётчик
         f"const CHAT_FROZEN_PY = {json.dumps(list(chat_class.FROZEN_CODES))};\n"
+        # Код «интервью с ботом» — единственный фриз, красящий карточку и бейдж ЖЁЛТЫМ (уводит
+        # во внешний мессенджер). Набор CHAT_FROZEN_PY отвечает лишь «тупик», а какой из кодов
+        # жёлтый — отдельный факт: литерал в JS пережил бы переименование в Python молча и жёлтый
+        # тон пропал бы, хотя страж набора прошёл бы (аудит 2026-09-22, §3.2).
+        f"const CHAT_BOT_INTERVIEW_PY = "
+        f"{json.dumps(chat_class.ChatKind.BOT_INTERVIEW.code)};\n"
         # подпись портала в карточке (config.PORTAL_SITES) — единый источник с Python
         f"const PORTAL_SITES_PY = {json.dumps(PORTAL_SITES, ensure_ascii=False)};\n"
         # Наборы состояний отклика (chat.DISCARD_STATES / INVITED_STATES). Раньше JS решал
@@ -354,6 +375,13 @@ def build_feed() -> None:
         # {role}/{company}/{stack}. Пусто -> cover.js берёт свои дефолты, поведение прежнее.
         f"const FEED_COVER_TEMPLATES_PY = "
         f"{json.dumps(FEED_COVER_TEMPLATES, ensure_ascii=False)};\n"
+        # Возраст среза. Едет МЕТКА сбора, а «сколько часов прошло» считает браузер от
+        # Date.now(): запекать готовое число нельзя — вкладка ленты живёт открытой сутками,
+        # и запечённое врало бы ровно в том сценарии, ради которого баннер и заводится
+        # (сбор молча перестал доезжать до кеша, а лента выглядит свежей). Метки нет ->
+        # null -> баннера нет: «не знаю возраст» не повод пугать.
+        f"const COLLECTED_AT_PY = {json.dumps(collected_at())};\n"
+        f"const STALE_HOURS_PY = {STALE_CACHE_HOURS};\n"
     )
     (DATA_DIR / "feed-data.js").write_text(data_js, encoding="utf-8")
     log.info("feed-data.js сохранён  ({:.1f} МБ)", len(data_js.encode("utf-8")) / 1e6)

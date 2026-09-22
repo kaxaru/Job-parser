@@ -1,6 +1,7 @@
 """Тесты классификации переписки: тип сообщения + КТО написал (бот/шаблон/человек)."""
 import pytest
 
+from hrwork.application.apply.chat import chat_class as C
 from hrwork.application.apply.chat.chat_class import (
     FROZEN_CODES,
     FROZEN_KINDS,
@@ -137,22 +138,32 @@ def test_sender_bot_by_api_flag():
 def test_sender_template_by_corpus_repeat():
     # шаблон от ИМЕНИ ЖИВОГО рекрутера: isBot=False, ловится только повтором текста
     tmpl = "Рассмотрим ваше резюме. Если подойдёт, свяжемся."
-    chats = {"1": {"messages": [_m(f"Антон, здравствуйте! {tmpl}")]},
-             "2": {"messages": [_m(f"Антон, здравствуйте! {tmpl}")]}}
+    chats = {"1": {"messages": [_m(f"Иван, здравствуйте! {tmpl}")]},
+             "2": {"messages": [_m(f"Иван, здравствуйте! {tmpl}")]}}
     idx = build_template_index(chats)
     a = analyze(chats["1"]["messages"], idx)
     assert a["sender"] == "template"
 
 
 def test_sender_human_when_unique_and_not_bot():
-    chats = {"1": {"messages": [_m("Антон, расскажите про ваш проект на Django")]}}
+    chats = {"1": {"messages": [_m("Иван, расскажите про ваш проект на Django")]}}
     a = analyze(chats["1"]["messages"], build_template_index(chats))
     assert a["sender"] == "human"
 
 
-def test_norm_strips_personalization():
-    # персонализация по имени не должна мешать находить одинаковые шаблоны
-    assert norm_text("Антон, здравствуйте! Спасибо") == norm_text("Здравствуйте! Спасибо")
+def test_norm_strips_personalization(monkeypatch):
+    # персонализация по имени не должна мешать находить одинаковые шаблоны.
+    # Имя приходит из профиля (`config.USER_FIRST_NAME`) — в исходнике его нет, поэтому тест
+    # подставляет своё и проверяет механику снятия, а не совпадение с именем владельца.
+    monkeypatch.setattr(C, "_NAME_PREFIX", C.name_prefix("Пётр"))
+    assert norm_text("Пётр, здравствуйте! Спасибо") == norm_text("Здравствуйте! Спасибо")
+
+
+def test_norm_keeps_personalization_when_name_is_not_configured(monkeypatch):
+    # ключа `first_name` в профиле нет -> обращение НЕ снимаем: чужое имя в тексте не должно
+    # исчезать, иначе два разных письма склеятся в один «шаблон»
+    monkeypatch.setattr(C, "_NAME_PREFIX", C.name_prefix(""))
+    assert norm_text("Пётр, здравствуйте!") == "пётр, здравствуйте!"
 
 
 def test_our_own_messages_not_counted_as_templates():

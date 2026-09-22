@@ -5,7 +5,7 @@ ANTHROPIC_API_KEY) пишет письмо по описанию — при лю
 чтобы отклик всё равно ушёл. Чистые функции (шаблон тестируется без сети).
 """
 import os
-from typing import Any
+from typing import Protocol
 
 from hrwork.config import RESUME_COVER_TEMPLATE, log
 
@@ -66,7 +66,18 @@ def llm_cover(name: str, employer: str, description: str) -> str | None:
         return None
 
 
-def build_cover(cand: Any, mode: str = "template") -> str:
+class CoverCandidate(Protocol):
+    """Минимум, который реально читает письмо: шаблон берёт name/employer, LLM-путь — ещё и desc.
+
+    Не `Candidate`: `forms.py::_fill_cover` передаёт `SimpleNamespace(id, name, employer, desc)`,
+    у которого нет ни `url`, ни тира. Честный тип здесь — структурный, а не доменный
+    (аудит 22.09.2026, §5: `Any` протёк в доменную логику)."""
+    name: str
+    employer: str
+    desc: str
+
+
+def build_cover(cand: CoverCandidate, mode: str = "template") -> str:
     """Текст письма для кандидата (Candidate). mode='llm' пробует Claude и падает на шаблон;
     'template' (по умолчанию) — сразу шаблон."""
     if mode == "llm":

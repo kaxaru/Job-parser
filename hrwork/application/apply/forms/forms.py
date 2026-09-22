@@ -28,17 +28,18 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlparse
 
-from hrwork.application.apply import cover
-from hrwork.application.apply.candidates import OutOfScope, out_of_scope
+from hrwork.application.apply import browser, cover, selectors
+from hrwork.application.apply.candidates import OutOfScope, employer_blocked, out_of_scope
 from hrwork.application.apply.chat import chat_answer
 from hrwork.application.apply.forms import form_fill, form_read
 from hrwork.application.apply.forms.form_status import FormSweepStatus
 from hrwork.application.apply.outcome import SETTLED_MARKS, ApplyChannel
+from hrwork.application.apply.runtime import lock
 from hrwork.application.apply.runtime.store import store
 from hrwork.config import FORMS_ENABLED, body, log
 
-_SUBMIT = '[data-qa="vacancy-response-submit-popup"]'          # «Откликнуться» (с ответами теста)
-_LETTER = 'textarea[data-qa="vacancy-response-popup-form-letter-input"]'
+# Селекторы отклика (submit/поле письма/маркер успеха) и бюджет подтверждения — ОДИН источник
+# на оба боевых пути, см. `selectors.py`. Здесь остаётся только тогл, специфичный для анкеты.
 _LETTER_TOGGLE = '[data-qa="vacancy-response-letter-toggle"]'  # «Сопроводительное письмо / Добавить»
 
 # Пауза между ОТПРАВЛЕННЫМИ откликами дренажа, сек. Своя, а не `APPLY_PAUSE` (4-9с): цикл по
@@ -57,26 +58,53 @@ def _is_hh(url: str) -> bool:
     return False
 
 
-# ленивый кеш {id: (employer, desc, name, salary_floor, experience_code)}
+# ленивый кеш {id: (employer, desc, name, salary_floor, experience_code)}.
+# None — «ЕЩЁ НЕ ЗАГРУЖЕНО», {} — «загружено и пусто»: это разные состояния (аудит 22.09.2026, §1).
 _VAC_CTX: dict[str, Any] | None = None
+_VAC_CTX_RETRIES = 1     # одна повторная попытка загрузки после отказа
+
+
+def _read_vac_ctx() -> dict[str, Any]:
+    """Прочитать реестр вакансий в кеш контекста. Исключение наружу — вызывающий его логирует."""
+    from hrwork.infrastructure.storage import vacancy_repository
+    fresh: dict[str, Any] = {}
+    for r in vacancy_repository().load():
+        sal = getattr(r.vacancy, "salary", None)
+        floor = None                       # пол вакансии (net RUB) для правила «если выше»
+        if sal and getattr(sal, "frm", None) and getattr(sal, "currency", None) in (None, "RUR", "RUB"):
+            floor = sal.frm
+        exp = getattr(r.vacancy, "experience", None)   # вилка опыта -> фолбэк грейда
+        fresh[r.vacancy.id] = (r.vacancy.employer or "",
+                               getattr(r, "requirement", "") or "", r.vacancy.name or "",
+                               floor, exp.hh_id if exp else None)
+    return fresh
 
 
 def _load_vac_ctx() -> dict[str, Any]:
+    """Контекст вакансий для анкет. Различает «не загружено» и «загружено и пусто».
+
+    До 22.09.2026 `_VAC_CTX = {}` выставлялся ДО попытки загрузки, поэтому и отказ, и
+    обрыв на середине (580-МБ реестр) запоминались НАВСЕГДА и молча: весь процесс заполнял
+    анкеты без контекста вакансии, мотивации и вилки, а в журнал уходил пустой `employer` —
+    та самая «карточка-призрак», которую не найти по компании (инцидент 01.08.2026).
+
+    Теперь: отказ логируется WARNING'ом, делается ОДНА повторная попытка, и частичный
+    результат полным НЕ считается (кеш выставляется только после успешного чтения целиком).
+    Если не удалось и со второго раза — отдаём пустое, НЕ запоминая: следующий вызов
+    попробует снова (процессы `hh.py forms/sweep` короткоживущие, а молчаливая деградация
+    дороже пары повторных чтений)."""
     global _VAC_CTX
-    if _VAC_CTX is None:
-        _VAC_CTX = {}
-        with contextlib.suppress(Exception):
-            from hrwork.infrastructure.storage import vacancy_repository
-            for r in vacancy_repository().load():
-                sal = getattr(r.vacancy, "salary", None)
-                floor = None                       # пол вакансии (net RUB) для правила «если выше»
-                if sal and getattr(sal, "frm", None) and getattr(sal, "currency", None) in (None, "RUR", "RUB"):
-                    floor = sal.frm
-                exp = getattr(r.vacancy, "experience", None)   # вилка опыта -> фолбэк грейда
-                _VAC_CTX[r.vacancy.id] = (r.vacancy.employer or "",
-                                          getattr(r, "requirement", "") or "", r.vacancy.name or "",
-                                          floor, exp.hh_id if exp else None)
-    return _VAC_CTX
+    if _VAC_CTX is not None:
+        return _VAC_CTX
+    for attempt in range(_VAC_CTX_RETRIES + 1):
+        try:
+            _VAC_CTX = _read_vac_ctx()
+            return _VAC_CTX
+        except Exception as e:
+            log.warning("Контекст вакансий не загружен ({}: {}) — попытка {}/{}; анкеты пойдут "
+                        "без работодателя и вилки", type(e).__name__, e,
+                        attempt + 1, _VAC_CTX_RETRIES + 1)
+    return {}
 
 
 def _vacancy_ctx(vid: str) -> tuple[str, str, str]:
@@ -163,31 +191,13 @@ def _fill_cover(page: Any, vid: str, rec: dict[str, Any], cover_mode: str) -> No
     # без письма. Гасим только DOM-вызовы ниже.
     text = cover.build_cover(cand, cover_mode)
     with contextlib.suppress(Exception):
-        if not page.locator(_LETTER).count():
+        if not page.locator(selectors.RESPONSE_LETTER).count():
             page.locator(_LETTER_TOGGLE).first.click(timeout=3_000)
             page.wait_for_timeout(500)
-        page.locator(_LETTER).first.fill(text)
+        page.locator(selectors.RESPONSE_LETTER).first.fill(text)
         log.info("[{}] сопроводительное вписано в поле формы", vid)
         return
     log.warning("[{}] письмо НЕ вписано (поле не найдено/fill упал) — отклик уйдёт без него", vid)
-
-
-def _submitted(page: Any) -> bool:
-    """Отклик реально ушёл: появился чат-топик или «Вы откликнулись» (иначе не метим applied)."""
-    with contextlib.suppress(Exception):
-        return bool(page.locator('[data-qa="vacancy-response-link-view-topic"]').count()
-                    or page.get_by_text("Вы откликнулись").count())
-    return False
-
-
-def _wait_submitted(page: Any, tries: int = 6) -> bool:
-    """Поллинг подтверждения до ~12с: HH перерисовывает карточку с лагом (инцидент 134804227,
-    2026-07-22 — отклик УШЁЛ, но за 2с подтверждение не успело, прогон счёл его неотправленным)."""
-    for _ in range(tries):
-        page.wait_for_timeout(2_000)
-        if _submitted(page):
-            return True
-    return False
 
 
 def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
@@ -253,11 +263,11 @@ def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
                  f" | свой вариант: {own[:200]}" if own else "")
     _fill_cover(page, str(cand.id), {"name": getattr(cand, "name", "")}, cover_mode)
     with contextlib.suppress(Exception):
-        page.locator(_SUBMIT).first.click(timeout=5_000)
-    if not _wait_submitted(page):                  # ВЕРИФИКАЦИЯ: отклик реально ушёл, не «нажали вслепую»
-        log.warning("[{}] АВТО-ОТКЛИК НЕ ПОДТВЕРЖДЁН («Вы откликнулись» не появилось за ~12с) — "
+        page.locator(selectors.RESPONSE_SUBMIT).first.click(timeout=5_000)
+    if not selectors.wait_response_confirmed(page):   # ВЕРИФИКАЦИЯ: отклик реально ушёл, не «нажали вслепую»
+        log.warning("[{}] АВТО-ОТКЛИК НЕ ПОДТВЕРЖДЁН («Вы откликнулись» не появилось за ~{}с) — "
                     "остаётся в очереди; ПРОВЕРЬ КАРТОЧКУ РУКАМИ перед повтором (мог уйти с лагом)",
-                    cand.id)
+                    cand.id, selectors.CONFIRM_BUDGET_S)
         return False
     log.success("[{}] АВТО-ОТКЛИК ОТПРАВЛЕН и ПОДТВЕРЖДЁН: {} полей", cand.id, len(fields))
     return True
@@ -265,7 +275,8 @@ def try_autofill(page: Any, cand: Any, cover_mode: str = "template") -> bool:
 
 def _open_form(page: Any) -> None:
     """С карточки вакансии перейти на форму отклика: клик «Откликнуться/пройти тест» + модалка
-    релокации. Клик ОТКРЫВАЕТ форму с вопросами — это НЕ отправка (submit — отдельная _SUBMIT).
+    релокации. Клик ОТКРЫВАЕТ форму с вопросами — это НЕ отправка (submit — отдельная
+    `selectors.RESPONSE_SUBMIT`).
     Нужен только `run()` (бэклог хранит URL карточки); в inline-пути apply_one клик уже сделан."""
     with contextlib.suppress(Exception):
         page.locator('[data-qa="vacancy-response-link-top"]').first.click(timeout=8_000)
@@ -313,23 +324,19 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict[
 
     from playwright.sync_api import sync_playwright
 
-    from hrwork.application.apply.autoclick import (
-        _goto,
-        _launch,
-        _logged_in,
-        _page,
-        _single_instance,
-        is_captcha,
-    )
     swept = 0
-    with _single_instance(), sync_playwright() as p:
-        ctx = _launch(p, headless)
-        page = _page(ctx)
+    with lock._single_instance(), sync_playwright() as p:
+        ctx = browser._launch(p, headless)
+        page = browser._page(ctx)
         with contextlib.suppress(Exception):           # кап навигации: медленная форма не стопорит свип
             page.set_default_navigation_timeout(25_000)
             page.set_default_timeout(20_000)
-        if not _logged_in(page):
-            log.error("Нет сессии HH — сначала: hh.py autoclick --login")
+        state = browser._session_state(page)
+        if state is not browser.LoginState.LOGGED_IN:
+            # UNKNOWN (страница не доехала) отличается от ANONYMOUS: причина в логе, без
+            # «нет сессии» по умолчанию (аудит 22.09.2026, §1)
+            log.error("Нет подтверждённой сессии HH ({}) — сначала: hh.py autoclick --login",
+                      state.value)
             return {"queue": len(queue), "swept": 0, "cached": len(cached)}
         for i, (vid, rec) in enumerate(todo.items(), 1):
             url = rec.get("url", "")
@@ -338,11 +345,11 @@ def sweep(only: str = "", headless: bool = True, refresh: bool = False) -> dict[
                 status = FormSweepStatus.ERROR
             else:
                 try:
-                    _goto(page, url)
+                    browser._goto(page, url)
                     # ОБЯЗАТЕЛЬНО до извлечения: на странице капчи полей нет, и свип записал бы
                     # ЖИВУЮ анкету как EMPTY -> `--clean` вычистил бы по этому признаку всю
                     # очередь. Один неудачный момент стоил бы всего бэклога.
-                    if is_captcha(page):
+                    if browser.is_captcha(page):
                         log.error("HH показал капчу (/account/captcha) — свип ОСТАНОВЛЕН на {}, "
                                   "кеш не тронут. Пройди проверку вручную и повтори", vid)
                         break
@@ -417,23 +424,18 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
 
     from playwright.sync_api import sync_playwright
 
-    from hrwork.application.apply.autoclick import (
-        _goto,
-        _launch,
-        _logged_in,
-        _page,
-        _single_instance,
-        is_captcha,
-    )
     submitted = 0
-    with _single_instance(), sync_playwright() as p:
-        ctx = _launch(p, headless)
-        page = _page(ctx)
+    with lock._single_instance(), sync_playwright() as p:
+        ctx = browser._launch(p, headless)
+        page = browser._page(ctx)
         with contextlib.suppress(Exception):           # кап навигации: медленная форма не стопорит
             page.set_default_navigation_timeout(25_000)
             page.set_default_timeout(20_000)
-        if not _logged_in(page):
-            log.error("Нет сессии HH — сначала: hh.py autoclick --login")
+        state = browser._session_state(page)
+        if state is not browser.LoginState.LOGGED_IN:
+            # UNKNOWN — «страница не доехала», а не «нет сессии» (аудит 22.09.2026, §1)
+            log.error("Нет подтверждённой сессии HH ({}) — сначала: hh.py autoclick --login",
+                      state.value)
             return {"forms": len(queue), "submitted": 0}
         cap = store.daily_cap()
         for vid, rec in queue.items():
@@ -452,13 +454,24 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
             if not dry and (vid in applied or marks.get(vid) in SETTLED_MARKS):
                 log.info("Пропуск {}: уже откликались/отказ — не шлём", vid)
                 continue
+            # RFC-004: блок-лист работодателей — здесь, а не в `clean_queue`. Анкета могла лечь в
+            # очередь до пополнения блок-листа (новые не лягут: их отбивает отбор и лента), а
+            # работодателя в очереди нет — он только в кеше вакансий, который чистка сознательно
+            # не поднимает (docs/apply.md). Выпавшую из кеша вакансию так не опознать —
+            # компромисс: она почти всегда уже в архиве.
+            if employer_blocked(employer := _vacancy_ctx(vid)[0]):
+                log.info("Пропуск {}: работодатель «{}» в блок-листе — не шлём{}", vid, employer,
+                         "" if dry else ", снята из очереди")
+                if not dry:
+                    store.remove_form(vid)             # иначе пробовалась бы каждый прогон
+                continue
             if not _is_hh(rec.get("url") or ""):
                 log.warning("Пропуск {}: URL не hh.ru ({})", vid, rec.get("url"))
                 continue
-            if not _goto(page, rec["url"]):
+            if not browser._goto(page, rec["url"]):
                 log.warning("Пропуск {}: страница не открылась", vid)
                 continue
-            if is_captcha(page):
+            if browser.is_captcha(page):
                 # без этого прогон принимал страницу капчи за анкету без полей и молотил
                 # очередь до конца, укрепляя бот-флаг (28.07: 21 отклик -> стена -> 50 пустых)
                 log.error("HH показал капчу (/account/captcha) — прогон ОСТАНОВЛЕН на {}. "
@@ -471,19 +484,17 @@ def run(dry: bool = False, only: str = "", headless: bool = False,
             cand = SimpleNamespace(id=vid, name=rec.get("name", ""))
             if try_autofill(page, cand, cover_mode):
                 page.wait_for_timeout(2_500)
-                store.remove_form(vid)
-                store.mark_applied(vid)
-                # Квота и журнал — как в apply-пути. Без этого дренаж был НЕВИДИМ для суточного
-                # потолка: 28.07 счётчик показывал 35 при реально отправленных ~103, поэтому
-                # HH_DAILY_APPLY_CAP не защитил и мы упёрлись в лимит HH. В журнал такие отклики
-                # попадали лишь позже — синком из чатов и с чужим каналом `hh`.
-                store.bump_quota(1)
+                # Единая точка фиксации (аудит 22.09.2026, §1): анкета снимается с очереди,
+                # затем отметка -> квота -> журнал — ровно тот же набор полей и порядок, что
+                # у крон-пути и ленты (до этого дренаж был НЕВИДИМ для суточного потолка:
+                # 28.07 счётчик показывал 35 при реально отправленных ~103).
                 # employer — из кеша вакансий, а не из rec: в форм-очереди лежат только
                 # {name, url, ts}. Без него запись журнала уходит с пустым работодателем, и
                 # когда вакансия выпадет из выдачи, её карточка-«призрак» в ленте не найдётся
                 # поиском по компании (01.08.2026, docs/errors.md).
-                store.log_applied(vid, rec.get("name", ""), rec.get("url", ""),
-                                  via=ApplyChannel.CRON, employer=_vacancy_ctx(vid)[0])
+                store.commit_applied(vid, name=rec.get("name", ""), url=rec.get("url", ""),
+                                     employer=_vacancy_ctx(vid)[0], via=ApplyChannel.CRON,
+                                     ab=None, drop_form=True)
                 submitted += 1
                 time.sleep(random.uniform(*FORM_PAUSE))    # см. FORM_PAUSE: темп важнее скорости
     log.info("Форм-очередь: {} обработано, {} откликов отправлено", len(queue), submitted)

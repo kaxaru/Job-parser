@@ -130,9 +130,25 @@ export const SCHED_LABELS = (typeof SCHED_LABELS_PY !== 'undefined' && SCHED_LAB
 /* Подписи форм оформления. Единый источник — Python (domain/employment.py::Employment.label),
    инжектится как EMP_LABELS_PY; хардкод ниже — ДОСЛОВНЫЙ фолбэк для офлайна/тестов
    (страж «фолбэк == инжект» — tests/backend/presentation/test_feed_bridge.py). */
-export const EMP_LABELS = (typeof EMP_LABELS_PY !== 'undefined' && EMP_LABELS_PY) || {
+const EMP_LABELS = (typeof EMP_LABELS_PY !== 'undefined' && EMP_LABELS_PY) || {
   labor_code: 'ТК РФ/РБ', self_employed: 'Самозанятый',
   sole_trader: 'ИП', civil_contract: 'ГПХ',
+};
+
+/* Подписи исхода отклика (кнопка «Откликнуться в фоне» в модалке). Единый источник — Python
+   (apply/outcome.py::APPLY_LABELS: коды `ApplyOutcome` + транспортные статусы), инжектится как
+   APPLY_LABELS_PY; хардкод ниже — ДОСЛОВНЫЙ фолбэк для офлайна/тестов (страж «фолбэк == инжект»
+   — tests/backend/presentation/test_feed_bridge.py; офлайн-литерал — tests/feed/model.test.js).
+   Раньше словарь жил в main.js без моста и уже разъехался: сервер отдавал `taken`
+   («вакансию взял другой аккаунт»), а метки для него не было — пользователь видел сырое
+   английское слово (аудит 2026-09-22, §3.2). `captcha` тоже не был размечен. */
+export const APPLY_LABELS = (typeof APPLY_LABELS_PY !== 'undefined' && APPLY_LABELS_PY) || {
+  applied: '✅ Отклик отправлен', already: 'уже откликались',
+  form: '📝 нужна форма — в очереди', skip: '✖ пропущено (внешний/архив/опросник)',
+  captcha: '⛔ капча HH — нужен вход руками', queued: '➕ в очереди крона',
+  busy: '⏳ занято — идёт крон-отклик, попробуйте через пару минут',
+  'no-session': '⚠ нет сессии — hh.py autoclick --login',
+  taken: '🚫 вакансию уже взял другой аккаунт', error: '⚠ ошибка',
 };
 
 /* Подпись формы для карточки: «ТК РФ/РБ · Самозанятый». Пусто, если форма в тексте
@@ -278,6 +294,17 @@ const FROZEN_CHAT_KINDS = new Set(
   (typeof CHAT_FROZEN_PY !== 'undefined' && CHAT_FROZEN_PY) || ['ack', 'bot_interview']);
 export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
 
+/* Код «интервью с ботом» — единственный фриз, который УВОДИТ во внешний мессенджер, и потому
+   единственный, что красится ЖЁЛТЫМ (остальной фриз — ледяной синий). Литерал, а не вывод из
+   набора: набор отвечает лишь «тупик», а какой из кодов жёлтый — отдельный факт. Единый
+   источник — Python (`chat_class.ChatKind.BOT_INTERVIEW`), инжектится как CHAT_BOT_INTERVIEW_PY;
+   хардкод — фолбэк для офлайна/тестов. Раньше код стоял литералом в `cardTone` и в
+   `view.js::chatBadge`: переименование в Python чинило набор (страж CHAT_FROZEN_PY проходил),
+   а жёлтый тон пропадал молча (аудит 2026-09-22, §3.2). */
+const BOT_INTERVIEW = (typeof CHAT_BOT_INTERVIEW_PY !== 'undefined' && CHAT_BOT_INTERVIEW_PY)
+  || 'bot_interview';
+export const isBotInterview = c => !!c && c.kind === BOT_INTERVIEW;
+
 /* Подпись портала в модалке. Единый источник — Python (config.PORTAL_SITES), инжектится
    как PORTAL_SITES_PY; хардкод ниже — фолбэк для офлайна/тестов.
    Раньше здесь стояло `v.source === 'hirify' ? 'hirify.me' : 'hh.ru'` — тернарник на два
@@ -316,6 +343,34 @@ const INVITED = new Set(
 export const isDiscard = s => DISCARD.has(s);
 export const isInvited = s => INVITED.has(s);
 
+/* ── Возраст среза ──────────────────────────────────────────────────────────────
+   Сбор умеет отказывать МОЛЧА: санити-гейт (`hh.py::_degraded_source`) отменяет запись
+   кеша целиком, если хоть один портал просел вдвое, — и это правильно, иначе блок одного
+   источника затирал бы полный срез огрызком. Но отменённая запись видна только строкой
+   ERROR в логе: лента и дашборд назавтра пересобираются из ЗАМОРОЖЕННОГО кеша и выглядят
+   живыми. 16-19.08.2026 так простояло трое суток (himalayas 1913 против 26148 в базе);
+   отклики встали на второй день, потому что пул кандидатов строится из того же кеша,
+   и заметили это только вручную, по остановившемуся applied_log.jsonl.
+
+   Возраст считается ЗДЕСЬ, от Date.now(), а не печётся при сборке: вкладка ленты живёт
+   открытой сутками, и запечённое число врало бы ровно в том сценарии, ради которого всё
+   затевается. Метка сбора и порог приезжают мостом из Python (COLLECTED_AT_PY —
+   cache_meta.json::collected_at, STALE_HOURS_PY — config.STALE_CACHE_HOURS). */
+const COLLECTED_AT = (typeof COLLECTED_AT_PY !== 'undefined') ? COLLECTED_AT_PY : null;
+const STALE_HOURS = (typeof STALE_HOURS_PY !== 'undefined' && STALE_HOURS_PY) || 36;
+
+/* Возраст среза, если он перевалил порог: {hours, at} — иначе null (баннера нет).
+   Метки нет -> null: «не знаю, когда собрано» не повод пугать, это норма для file://
+   без feed-data.js и для кеша от версии без метки. */
+export function staleAge(collectedAt, staleHours, nowMs = Date.now()) {
+  if (typeof collectedAt !== 'number' || !(collectedAt > 0)) return null;
+  const hours = (nowMs / 1000 - collectedAt) / 3600;
+  return hours >= staleHours ? { hours, at: new Date(collectedAt * 1000) } : null;
+}
+
+/* То же на инжектированных константах — точка вызова для main.js. */
+export const staleNow = (nowMs = Date.now()) => staleAge(COLLECTED_AT, STALE_HOURS, nowMs);
+
 /* Отклик попадает в календарный диапазон [from, to] (границы — 'YYYY-MM-DD', пустые =
    без границы). Сравниваем ISO-даты как строки — они лексикографически упорядочены. */
 export function appliedInRange(v, from, to) {
@@ -342,15 +397,97 @@ function tsMs(ts) {
    Неразбираемая метка не вытесняет разобранную — иначе мусор в журнале стал бы «первым». */
 export function journalById(applied) {
   const byId = {};
+  const accs = {};                               /* id -> Set(кодов аккаунтов, RFC-004) */
+  const perAcc = {};                             /* id -> {account: РАННЯЯ запись этого аккаунта} */
   for (const e of applied || []) {
     if (!e?.id) continue;
-    const prev = byId[e.id];
+    const acc = e.account || 'main';             /* легаси-строки без поля — основной аккаунт */
+    if (!accs[e.id]) accs[e.id] = new Set();
+    accs[e.id].add(acc);
+    const entry = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
+                    employer: e.employer, account: acc };
     const cur = tsMs(e.ts);
+    /* РАННЯЯ запись ПО КАЖДОМУ аккаунту (RFC-004): под фильтром профиля дата отклика и via —
+       его, а не самого раннего среди всех (баг 16.09.2026: под acc2 показывалась дата main). */
+    if (!perAcc[e.id]) perAcc[e.id] = {};
+    const pa = perAcc[e.id];
+    const pAcc = pa[acc];
+    if (!(pAcc && (cur === null || (tsMs(pAcc.ts) !== null && cur >= tsMs(pAcc.ts))))) pa[acc] = entry;
+    /* глобальная РАННЯЯ — для показа без фильтра и для «призраков» (прежнее поведение). */
+    const prev = byId[e.id];
     if (prev && (cur === null || (tsMs(prev.ts) !== null && cur >= tsMs(prev.ts)))) continue;
-    byId[e.id] = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
-                   employer: e.employer };
+    byId[e.id] = entry;
   }
+  /* accounts — ОТСОРТИРОВАННЫЙ набор всех аккаунтов, откликнувшихся на вакансию: два элемента =
+     конфликт «одна вакансия — два аккаунта», и его надо показать, а не прятать (RFC-004). */
+  for (const id of Object.keys(byId)) { byId[id].accounts = [...accs[id]].sort(); byId[id].byAcct = perAcc[id]; }
   return byId;
+}
+
+/* Эффективный ОТКЛИК (дата + via) для карточки под фильтром профиля (RFC-004). `byAcct` —
+   {account: запись журнала} из journalById. Под фильтром берём РАННЮЮ запись среди выбранных
+   профилей; без фильтра — среди всех (прежнее «первый отклик»). `accounts` (полный набор) всегда
+   переносится: метка-конфликт на бейдже от фильтра не зависит. Ни один выбранный не откликался
+   -> null (карточка под этим фильтром и не покажется — filterVacancies отсекает по accounts). */
+export function effectiveApplied(byAcct, filterSet, accounts) {
+  if (!byAcct) return null;
+  let codes = Object.keys(byAcct);
+  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
+  let best = null;
+  for (const c of codes) {
+    const e = byAcct[c];
+    if (!best || (tsMs(e.ts) !== null && (tsMs(best.ts) === null || tsMs(e.ts) < tsMs(best.ts)))) best = e;
+  }
+  return best ? { ...best, accounts: accounts || [...Object.keys(byAcct)].sort() } : null;
+}
+
+/* Эффективный статус вакансии для показа на карточке (RFC-004). У вакансии, куда откликнулись
+   оба аккаунта, статусы РАЗНЫЕ — берём статус того профиля, что в фильтре. `byAcct` —
+   {account: state} (из /api/statuses), `filterSet` — выбранные профили (пусто = все).
+   Несколько профилей с разными статусами -> приоритет: приглашение > отказ > прочее. */
+export function effectiveStatus(byAcct, filterSet) {
+  if (!byAcct) return null;
+  let codes = Object.keys(byAcct);
+  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
+  const states = codes.map(c => byAcct[c]).filter(Boolean);
+  return states.find(isInvited) || states.find(isDiscard) || states[0] || null;
+}
+
+/* Эффективная ПЕРЕПИСКА (и её дата) для карточки под фильтром профиля (RFC-004). `byAcct` —
+   {account: chatInfo} (из /api/chats). У вакансии с откликом от обоих чат и дата РАЗНЫЕ: под
+   фильтром acc2 берём чат acc2, иначе на бейдже отказа светилась бы дата основного («отказ 19
+   дней назад» от main). Пустой фильтр -> основной (носитель ленты, прежнее main-wins-поведение);
+   при отсутствии основного среди кандидатов — первый по коду (детерминированно). */
+export function effectiveChat(byAcct, filterSet) {
+  if (!byAcct) return null;
+  let codes = Object.keys(byAcct);
+  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
+  if (!codes.length) return null;
+  const pick = codes.includes('main') ? 'main' : [...codes].sort()[0];
+  return byAcct[pick] || null;
+}
+
+/* Статистика откликов по аккаунтам и меткам (RFC-004): для сводки в ленте. Чистая.
+   applied — журнал (строки с `id`,`account`), statusesByAcct — {vid: {account: state}}.
+   Статус берётся ПО СВОЕМУ аккаунту (не общий): иначе отказ основного попадал бы в счётчик
+   второго. «прочее» = отклик без терминального статуса или без синка. */
+export function crmStats(applied, statusesByAcct) {
+  const st = statusesByAcct || {};
+  const byId = journalById(applied);
+  const acc = {};
+  const bump = (code, key) => {
+    if (!acc[code]) acc[code] = { applied: 0, invited: 0, rejected: 0, other: 0 };
+    const a = acc[code];
+    a[key] += 1;
+  };
+  for (const [id, e] of Object.entries(byId)) {
+    for (const code of e.accounts) {
+      const s = st[id]?.[code];
+      const key = isInvited(s) ? 'invited' : isDiscard(s) ? 'rejected' : 'other';
+      bump(code, 'applied'); bump(code, key);
+    }
+  }
+  return acc;
 }
 
 /* Время последнего ЖИВОГО ответа работодателя — ключ сортировки «Ответы HR».
@@ -426,7 +563,7 @@ export function cardTone(v) {
      Отбор такие вакансии пропускает (form_status.py::skippable_form_ids) и сам вернёт их
      в оборот, если HH переопубликует. */
   if (v?.form_dead) return 'frozen';
-  if (v?.chat?.kind === 'bot_interview') return 'botiv';
+  if (isBotInterview(v?.chat)) return 'botiv';
   return cardColor(v);
 }
 
@@ -447,6 +584,7 @@ export function countActiveFilters(f = {}) {
     (f.status || 'all') !== 'all',
     (f.source || 'all') !== 'all',
     !!f.chatFilter,
+    size(f.accountFilter) > 0,
     !!f.resumeOnly,
     !!f.showNonIt,
     !!(f.dateFrom || f.dateTo),
@@ -466,21 +604,12 @@ export function cityMatches(city, query, exact = false) {
 
 /* Фильтрация + сортировка — чистая: (вакансии, состояние фильтров) -> массив. */
 export function filterVacancies(vacancies, f) {
-  /* Режим «Мои отклики»: самостоятельный вид — только твои отклики в календарном
-     диапазоне (+ поиск), прочие чипы игнорируются; сортировка — по дате отклика ↓. */
-  if (f.status === 'mine') {
-    const mine = vacancies.filter(v => {
-      if (!appliedInRange(v, f.dateFrom, f.dateTo)) return false;
-      if (f.search.length) {
-        const hay = (`${v.name} ${v.employer || ''}`).toLowerCase();
-        if (!f.search.every(t => hay.includes(t))) return false;
-      }
-      return true;
-    });
-    mine.sort((a, b) => (b.applied?.ts || '').localeCompare(a.applied?.ts || ''));
-    return mine;
-  }
-
+  /* Режим «Мои отклики» (status='mine') — НЕ отдельный вид, а ЛУПА: ограничивает выдачу твоими
+     откликами в календарном диапазоне (проверка appliedInRange ниже) и КОМПОНУЕТСЯ с остальными
+     фильтрами и сортировкой — зарплата, свежие/старые/ответы HR работают поверх (жалоба
+     владельца 16.09.2026: под «Показать (N)» фильтры и сортировка не действовали). Без явной
+     сортировки — по дате отклика ↓ (в конце функции). Синтетические (призраки) в этом режиме
+     показываются: это журнал откликов и по выпавшим из выдачи вакансиям. */
   const filtered = vacancies.filter(v => {
     /* карточки-«призраки» (отклик на выпавшую из выдачи вакансию): в общем списке скрыты,
        но показываем в чат-фильтрах — по ним висят живые чаты, на которые надо ответить.
@@ -490,8 +619,16 @@ export function filterVacancies(vacancies, f) {
        догадается добавить ещё и чат-фильтр. Показываем ТОЛЬКО призраков С ОТВЕТОМ: без
        этого условия в выдачу высыпался бы весь журнал откликов по выпавшим вакансиям,
        и они пустым ключом осели бы в хвосте — шум вместо ответов. */
-    if (v._synthetic && !f.chatFilter
+    const accSel = (f.accountFilter?.size || 0) > 0;
+    const mineMode = f.status === 'mine';
+    if (v._synthetic && !f.chatFilter && !accSel && !mineMode
         && !(f.sort === 'reply_new' && hrReplyTime(v))) return false;
+    /* «Мои отклики»: ограничить выдачу откликами в календарном диапазоне (лупа, RFC-004).
+       appliedInRange смотрит v.applied.ts — уже ПО выбранному профилю (effectiveApplied). */
+    if (mineMode && !appliedInRange(v, f.dateFrom, f.dateTo)) return false;
+    /* фильтр по аккаунтам (RFC-004, мультиселект профилей): вакансия проходит, если на неё
+       откликался ХОТЬ ОДИН выбранный аккаунт; призракам это разрешает показ (их смысл — журнал) */
+    if (accSel && !(v.applied?.accounts || []).some(c => f.accountFilter.has(c))) return false;
     if (f.search.length) {
       const hay = (`${v.name} ${v.employer || ''}`).toLowerCase();
       if (!f.search.every(t => hay.includes(t))) return false;
@@ -599,6 +736,9 @@ export function filterVacancies(vacancies, f) {
     filtered.sort((a, b) => (pct.get(b) - pct.get(a)) || (salDir ? salCmp(a, b) : 0));
   } else if (salDir) {
     filtered.sort(salCmp);
+  } else if (f.status === 'mine') {
+    /* «Мои отклики» без явной сортировки — по дате отклика ↓ (свежие отклики первыми). */
+    filtered.sort((a, b) => (b.applied?.ts || '').localeCompare(a.applied?.ts || ''));
   }
   return filtered;
 }

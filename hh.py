@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Any
 
 from hrwork.config import (
+    ACCOUNT,
     COLLECT_MIN_RATIO,
     COLLECT_SANITY_MIN,
     HH_DAILY_APPLY_CAP,
@@ -31,6 +32,7 @@ from hrwork.config import (
     SOURCES,
     log,
 )
+from hrwork.domain.account import HhAccount
 from hrwork.domain.dedup import dedup_cross_source
 from hrwork.infrastructure import storage
 from hrwork.infrastructure.net.proxy import load_proxies, mask_proxy
@@ -216,7 +218,23 @@ class Mode(Enum):
         return self.value
 
     def run(self, args: argparse.Namespace) -> None:
+        if (error := account_mode_error(self, ACCOUNT)) is not None:
+            raise SystemExit(error)
         _HANDLERS[self](args)
+
+
+def account_mode_error(mode: Mode, account: HhAccount) -> str | None:
+    """Почему режим недоступен аккаунту, либо None (RFC-004).
+
+    Не-основному аккаунту открыт только `autoclick` (вход, синк, отклики, поднятие, --dry-pool).
+    Остальное общее или принадлежит основному: сбор и лента пишут общий кеш, а `cache_valid`
+    сверяет его с `search_queries`/`cities` ПРОФИЛЯ — сбор от второго профиля пересобрал бы
+    кеш под него; сервер отдаёт журналы всех аккаунтов; чаты и анкеты второму не нужны
+    и отвечали бы фактами из резюме основного."""
+    if account.is_main or mode is Mode.AUTOCLICK:
+        return None
+    return (f"Аккаунт {account.code}: режим {mode} только для основного аккаунта (RFC-004) — "
+            f"сними HR_ACCOUNT")
 
 
 def _do_collect(args: argparse.Namespace) -> None:
@@ -248,17 +266,26 @@ def _do_serve(args: argparse.Namespace) -> None:
 
 
 def _do_autoclick(args: argparse.Namespace) -> None:
+    # первой строкой прогона: по логу крона сразу видно, от чьего имени он шёл (RFC-004)
+    log.info("Аккаунт HH: {} ({})", ACCOUNT.code, ACCOUNT.label)
     # лениво: playwright — опциональная зависимость, нужен только этому режиму
-    from hrwork.application.apply import autoclick
+    if args.dry_pool:                              # срез пула без браузера и без записи (RFC-004)
+        from hrwork.application.apply import dry_pool
+        dry_pool.run(write_eligible=args.write_eligible)
+        return
+    from hrwork.application.apply import autoclick, browser, hh_sync
     if args.login:
-        autoclick.login()
+        browser.login()
     elif args.sync_status or args.sync_full:
-        autoclick.sync_statuses(headless=not args.headed, full=args.sync_full)
+        hh_sync.sync_statuses(headless=not args.headed, full=args.sync_full)
     else:
-        autoclick.run(apply_limit=args.apply_limit, daily_cap=args.daily_cap,
-                      headless=not args.headed, cover_mode=args.cover,
-                      do_bump=not args.apply_only, do_apply=not args.bump_only,
-                      force_bump=args.bump_only)   # явный --bump-only обходит кулдаун-гейт
+        # параметры прогона — одним VO (аудит 22.09.2026, §5): раньше девять аргументов
+        # собирались в вызове, и добавление любого требовало правки и CLI, и тестов
+        autoclick.run(autoclick.RunOptions(
+            apply_limit=args.apply_limit, daily_cap=args.daily_cap,
+            headless=not args.headed, cover_mode=args.cover,
+            do_bump=not args.apply_only, do_apply=not args.bump_only,
+            force_bump=args.bump_only))   # явный --bump-only обходит кулдаун-гейт
 
 
 def _do_chat(args: argparse.Namespace) -> None:
@@ -341,6 +368,12 @@ def main() -> None:
                         help='autoclick: полный синк ВСЕХ чатов без кеша (долго, ~50 чатов/45с)')
     parser.add_argument('--headed', action='store_true',
                         help='autoclick: показывать окно браузера (отладка)')
+    parser.add_argument('--dry-pool', action='store_true',
+                        help='autoclick: показать пул кандидатов без браузера и без откликов — '
+                             'ярусы, роли, топы, причины отсева, отбитые блок-листом работодатели')
+    parser.add_argument('--write-eligible', action='store_true',
+                        help='autoclick --dry-pool у второго аккаунта: освежить общую часть A/B '
+                             '(eligible.json) по текущему кешу — шаг после сбора (RFC-004)')
     # chat: по умолчанию DRY-RUN — реальная отправка только с явным --send
     parser.add_argument('--send', action='store_true',
                         help='chat: РЕАЛЬНО отправить ответы (без флага — только показать)')

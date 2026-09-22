@@ -10,7 +10,7 @@
 """
 import pytest
 
-from hrwork.application.apply import autoclick
+from hrwork.application.apply import browser
 from hrwork.application.apply.outcome import ApplyOutcome
 
 
@@ -30,7 +30,7 @@ class _Page:
     ("", False),
 ])
 def test_captcha_page_detected_by_url(url, expected):
-    assert autoclick.is_captcha(_Page(url)) is expected
+    assert browser.is_captcha(_Page(url)) is expected
 
 
 def test_unreadable_page_is_not_captcha():
@@ -40,7 +40,7 @@ def test_unreadable_page_is_not_captcha():
         def url(self):
             raise RuntimeError("Execution context was destroyed")
 
-    assert autoclick.is_captcha(_Broken()) is False
+    assert browser.is_captcha(_Broken()) is False
 
 
 def test_captcha_outcome_code():

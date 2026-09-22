@@ -21,7 +21,7 @@ from hrwork.config import (
     TEXT,
     log,
 )
-from hrwork.infrastructure.storage import vacancy_repository
+from hrwork.infrastructure.storage import atomic_write_bytes, vacancy_repository
 
 from . import reporter as _reporter
 from .charts import (
@@ -96,9 +96,7 @@ def _ensure_plotly() -> str | None:
         # URL фиксированный https, не из пользовательского ввода
         with urllib.request.urlopen(PLOTLY_CDN, timeout=60) as r:
             data = r.read()
-        tmp = local.with_suffix(".tmp")
-        tmp.write_bytes(data)
-        tmp.replace(local)                         # атомарно: полуфайл не подхватится
+        atomic_write_bytes(local, data)   # атомарно: полуфайл не подхватится (jsonio)
         log.info("plotly.js скачан локально: {:.1f} МБ -> {}", len(data) / 1e6, local.name)
         return local.name
     except Exception as e:

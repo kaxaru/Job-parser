@@ -58,13 +58,12 @@
     <input id="q" type="search" placeholder="🔍 python backend" autocomplete="off" autofocus>
     <input id="city" type="text" placeholder="Город (напр. Москва)">
     <input id="sal" type="number" placeholder="З/п от" min="0" step="10000">
-    <select id="source" title="Портал-источник вакансии">
-      <option value="">Все источники</option>
-      <option value="hh">hh.ru</option>
-      <option value="hirify">hirify</option>
-      <option value="talanto">talanto</option>
-      <option value="getmatch">getmatch</option>
-    </select>
+    <!-- Опции портала рендерит СЕРВЕР из config.SOURCES (server.py::_search_page) — единый
+         список с лентой и с белым списком API. Раньше здесь были захардкожены 4 портала из
+         двенадцати: пять с вакансиями в выдаче нельзя было отфильтровать через UI, хотя API
+         их поддерживал (аудит dwh_demo 2026-08-09, F62). Пустой select без сервера безопасен:
+         страница всё равно не работает без /api/search. -->
+    <select id="source" title="Портал-источник вакансии"><!-- SOURCE_OPTIONS --></select>
     <select id="fresh" title="Свежесть вакансии (возраст с даты создания)">
       <option value="">Любая свежесть</option>
       <option value="fresh">🟢 Свежие ≤30 дн.</option>

@@ -18,7 +18,7 @@ PROF_CTX = {"1": VacancyContext(name="Python-разработчик", experience
 # запускающего. Подменять надо у держателя, через которого идёт вызов, — chat_answer.
 PROF_FE = {"answers": {
     "stack": ["Python", "FastAPI", "React", "TypeScript"],
-    "years_text": "Общий опыт 5 лет 9 мес.",
+    "years_text": "Общий опыт 6 лет 2 мес.",
     "years_frontend_text": "Около 2 лет фронтенда: React, TypeScript.",
 }}
 
@@ -136,7 +136,7 @@ def test_salary_silent_without_vacancy_context():
 def test_proposal_carries_full_question_not_preview():
     # в Proposal кладём ПОЛНЫЙ текст: preview обрезан до 160 символов, и вопрос,
     # стоящий в конце длинного письма, движок бы просто не увидел
-    long_q = ("Здравствуйте, Антон! Спасибо за ваш отклик и за интерес к нашей вакансии "
+    long_q = ("Здравствуйте! Спасибо за ваш отклик и за интерес к нашей вакансии "
               "и к нашей компании. Мы рады вашему резюме. Скажите пожалуйста, есть ли "
               "у вас опыт работы с Docker?")
     assert len(long_q) > 160

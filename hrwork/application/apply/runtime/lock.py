@@ -120,7 +120,7 @@ def release_if_mine() -> bool:
     """Снять lock, если его держит ЭТОТ процесс. True — сняли.
 
     Нужно аварийному выходу: watchdog расстреливает СОБСТВЕННОЕ дерево
-    (`autoclick.py::_kill_own_tree`), поэтому `finally` в `_single_instance` не наступает и
+    (`runtime/watchdog.py::_kill_own_tree`), поэтому `finally` в `_single_instance` не наступает и
     файл остаётся с мёртвым pid. Чужой lock не трогаем никогда — иначе второй Chromium
     на persistent-профиль."""
     with contextlib.suppress(OSError, TypeError, ValueError):

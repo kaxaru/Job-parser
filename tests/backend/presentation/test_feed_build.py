@@ -19,6 +19,10 @@ from hrwork.presentation.views import feed
 
 # FX-курсы (per-USD) фиксируем -> тесты гермётичны, без сети. USD 1:1, RUB 100.
 _FX = {"USD": 1.0, "RUB": 100.0, "EUR": 0.9}
+# Метка сбора (cache_meta.json::collected_at) — ФИКСИРОВАННАЯ: иначе бандл везёт возраст
+# кеша запускающего, и «свежий срез» на машине с трёхдневным кешем означал бы разное.
+# 2026-02-12 06:40 UTC — произвольный момент, важна только его неизменность.
+_COLLECTED_AT = 1_770_878_400.0
 _MARKS = {"v1": "applied"}
 _STATUSES = {"v1": "INVITATION"}     # у v1 есть статус работодателя из чата
 _FORMS = {"v2": {"name": "Аналитик данных"}}   # v2 — вакансия-опросник (нужна форма)
@@ -120,6 +124,9 @@ def _build_feed_files(out_dir, records=None, chats=None, **config_overrides):
         mp.setattr(feed.store, "chat_messages", lambda: dict(chats))
         mp.setattr(followup, "load_chat_messages", _live_crm_tripwire)
         mp.setattr(feed.rates, "get_rates", lambda: dict(_FX))
+        # Живая data/cache_meta.json в тестах не читается — та же причина, что у CRM-стейта
+        # выше: возраст среза у запускающего свой, а договор моста от него не зависит.
+        mp.setattr(feed, "collected_at", lambda: _COLLECTED_AT)
         mp.setattr(feed.shutil, "which", lambda _name: None)   # esbuild off -> не собираем feed.js
         mp.setattr(feed, "DATA_DIR", data)
         mp.setattr(feed, "FEED_OUT", data / "feed.html")
@@ -175,6 +182,9 @@ def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
     "VACANCIES", "SAL_MAX", "SAVED_MARKS", "FX_RATES", "FX_ALIAS",
     "STATE_LABELS_PY", "RESUME_CORE_PY", "MARK_VALUES_PY",
     "CHAT_FROZEN_PY",
+    # Код «бот-интервью» (единственный ЖЁЛТЫЙ фриз) — отдельный мост, а не вывод из набора:
+    # литерал в JS переживал переименование в Python молча (аудит 2026-09-22, §3.2).
+    "CHAT_BOT_INTERVIEW_PY",
     # Скоринг «% совпадения» (14.08.2026): ярусы стека, множители ролей и порог насыщения
     # ядра. До переделки веса стека были ЗАХАРДКОЖЕНЫ в resume.js — профилем не правились.
     # Presence-only по той же причине, что RESUME_CORE_PY: значения перекрываются
@@ -191,6 +201,9 @@ def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
     "SCHED_LABELS_PY", "REMOTE_LIKE_PY",
     # форма оформления: подписи ТК/самозанятый/ИП/ГПХ — из домена (Employment), 10.08.2026
     "EMP_LABELS_PY",
+    # подписи кнопки «Откликнуться в фоне» (исход `ApplyOutcome` + транспорт `TransportStatus`),
+    # 23.09.2026: единственный словарь ленты, живший без моста, — и `taken` уже разъехался.
+    "APPLY_LABELS_PY",
     # PORTAL_SITES_PY добавлен 01.08.2026 и в этот список НЕ попал — страж отставал от
     # кода почти неделю (найдено аудитом 07.08). Он и есть мост подписей порталов в JS,
     # без которого talanto и getmatch подписывались как «hh.ru».
@@ -201,6 +214,10 @@ def test_feed_globals_are_rebuilt_for_every_test(case, feed_globals):
     # шаблоны писем ленты из resume_profile.json (08.08.2026): форк должен править письма
     # профилем, а не src/feed/cover.js. Пустой список -> cover.js берёт свои дефолты.
     "FEED_COVER_TEMPLATES_PY",
+    # возраст среза (20.08.2026): метка сбора + порог протухания -> баннер «данные устарели».
+    # Заведён после того, как санити-гейт трое суток отменял запись кеша, а лента при этом
+    # пересобиралась каждый день из замороженного среза и выглядела живой.
+    "COLLECTED_AT_PY", "STALE_HOURS_PY",
 ])
 def test_feed_data_defines_expected_global(name, feed_globals):
     """Каждый глобал, от которого зависит JS-лента, обязан присутствовать в бандле.
@@ -251,6 +268,16 @@ def test_frozen_chat_kinds_injected_from_python(feed_globals):
     # разъезжался бы с Python (в ленте он был в трёх местах). Ожидаемое — литерал, а не
     # list(FROZEN_CODES): иначе тест повторил бы реализацию и прошёл при любой её ошибке.
     assert _const(feed_globals["text"], "CHAT_FROZEN_PY") == ["ack", "bot_interview"]
+
+
+def test_bot_interview_code_injected_from_python(feed_globals):
+    """Код ЖЁЛТОГО фриза едет отдельным мостом — литерал, а не вывод из набора.
+
+    `cardTone` и `view.js::chatBadge` красят «интервью с ботом» жёлтым по СРАВНЕНИЮ с этим
+    кодом. Набор `CHAT_FROZEN_PY` отвечает лишь «тупик»: переименуй `ChatKind.BOT_INTERVIEW`
+    в Python — набор обновится, а захардкоженный литерал в JS нет, и жёлтый тон пропадёт
+    молча (аудит 2026-09-22, §3.2)."""
+    assert _const(feed_globals["text"], "CHAT_BOT_INTERVIEW_PY") == "bot_interview"
 
 
 @pytest.mark.parametrize("vid, field, expected", [
@@ -422,6 +449,45 @@ def test_state_labels_bridge_carries_every_status_label(feed_globals):
     }
 
 
+def test_apply_labels_bridge_carries_the_feed_button_labels(feed_globals):
+    """Подписи кнопки «Откликнуться в фоне» едут ЦЕЛИКОМ и дословно (`apply/outcome.py::APPLY_LABELS`).
+
+    Ключи — коды `ApplyOutcome` (applied|already|form|skip|captcha) И `TransportStatus`
+    (queued|busy|no-session|taken|error): и то, что отдаёт воркер, и то, что сервер пишет сам.
+    До 23.09.2026 этот словарь был единственным в ленте БЕЗ моста, и дрейф уже случился —
+    `taken` в нём отсутствовал, и `main.js` показывал сырое `taken` вместо подписи
+    (аудит `2026-09-22-quality.md`, §3.2). Литералы, а не сверка с `APPLY_LABELS`: инжект
+    пустого словаря вернул бы сырые коды МОЛЧА, а presence-страж этого не видит."""
+    assert _const(feed_globals["text"], "APPLY_LABELS_PY") == {
+        "applied":    "✅ Отклик отправлен",
+        "already":    "уже откликались",
+        "form":       "📝 нужна форма — в очереди",
+        "skip":       "✖ пропущено (внешний/архив/опросник)",
+        "captcha":    "⛔ капча HH — нужен вход руками",
+        "queued":     "➕ в очереди крона",
+        "busy":       "⏳ занято — идёт крон-отклик, попробуйте через пару минут",
+        "no-session": "⚠ нет сессии — hh.py autoclick --login",
+        "taken":      "🚫 вакансию уже взял другой аккаунт",
+        "error":      "⚠ ошибка",
+    }
+
+
+def test_nonit_counter_comes_from_the_domain_role(tmp_path):
+    """Счётчик «+ не-IT (N)» в шапке ленты считает ОТ ДОМЕНА (`Role.is_it`), а не сравнением
+    ярлыка-строки с литералом `"Не-IT"` (аудит `2026-09-22-quality.md`, §3.2): переименование
+    члена enum обнуляло бы число, которое видит человек. Одна IT-роль + одна NON_IT -> «1»."""
+    records = [
+        _record("it", name="Python Backend", city="Москва", employer="Acme", source="hh",
+                mid=None, currency="", exp="between1And3", schedule="remote", techs=["Python"],
+                role=Role.BACKEND, url="https://hh.ru/vacancy/it"),
+        _record("sales", name="Менеджер по продажам", city="Москва", employer="Shop", source="hh",
+                mid=None, currency="", exp="between1And3", schedule="fullDay", techs=[],
+                role=Role.NON_IT, url="https://hh.ru/vacancy/sales"),
+    ]
+    _, html = _build_feed_files(tmp_path, records=records)
+    assert "+ не-IT (1)" in html
+
+
 def test_portal_sites_bridge_carries_the_domain_of_every_source(feed_globals):
     """Домены порталов едут из `config.PORTAL_SITES` — по одному на каждый источник.
 
@@ -527,3 +593,33 @@ def test_chip_code_matches_the_empty_exp_id_of_a_gradeless_card(tmp_path):
                        techs=["Python"], role=Role.BACKEND, url="https://web3.career/1")]
     card = _const(_build_feed_data(tmp_path, records=records), "VACANCIES")[0]
     assert card["exp_id"] == F.EXP_UNKNOWN[0]
+
+
+# ─── Возраст среза (20.08.2026) ─────────────────────────────────────────────────
+# Санити-гейт умеет отменять запись кеша МОЛЧА (один просевший портал -> `hh.py` пишет
+# ERROR и возвращает прежний срез), а лента назавтра пересобирается из замороженных данных
+# и выглядит живой. 16-19.08.2026 так простояло трое суток: отклики встали на второй день,
+# потому что пул кандидатов строится из того же кеша. Мост везёт МЕТКУ сбора, а не готовый
+# возраст: вкладку ленты не перезагружают сутками, и запечённое число врало бы ровно в том
+# сценарии, ради которого баннер и заводится.
+def test_collect_timestamp_bridge_carries_the_cache_mark(feed_globals):
+    """В бандл едет `cache_meta.json::collected_at` как есть — секунды эпохи, не строка."""
+    assert _const(feed_globals["text"], "COLLECTED_AT_PY") == _COLLECTED_AT
+
+
+def test_stale_threshold_bridge_carries_the_config_value(feed_globals):
+    """Порог протухания — из `config.STALE_CACHE_HOURS`, а не из хардкода в JS.
+
+    Литерал 36 здесь намеренно: сверка с `feed.STALE_CACHE_HOURS` прошла бы и при инжекте
+    самой себя, а число — договор с офлайн-фолбэком `model.js`, который его дублирует."""
+    assert _const(feed_globals["text"], "STALE_HOURS_PY") == 36
+
+
+def test_missing_cache_mark_is_injected_as_null(tmp_path):
+    """Метки нет (кеш от версии без неё) -> `null`, а не 0.
+
+    Ноль — это 01.01.1970, то есть «срез протух 56 лет назад»: баннер горел бы вечно там,
+    где честный ответ — «возраст неизвестен, молчу». Разбор в JS (`model.js::staleAge`)
+    отсекает всё, что не положительное число, но врать ему на входе всё равно нельзя."""
+    text = _build_feed_data(tmp_path, collected_at=lambda: None)
+    assert _const(text, "COLLECTED_AT_PY") is None

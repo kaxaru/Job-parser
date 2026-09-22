@@ -15,9 +15,19 @@ globalThis.REMOTE_LIKE_PY = ['flexible'];          /* только гибрид 
 globalThis.STATE_LABELS_PY = { DISCARD: 'ОТКАЗ-PY' };
 globalThis.MARK_VALUES_PY = ['applied'];           /* фолбэк — две пометки, инжект одна */
 globalThis.CHAT_FROZEN_PY = ['ack'];               /* фолбэк содержит ещё bot_interview */
+globalThis.CHAT_BOT_INTERVIEW_PY = 'bot-iv-PY';    /* код ЖЁЛТОГО фриза из Python, не фолбэк */
+/* Возраст среза: порог 2 ч против фолбэка 36 — срез «12 ч назад» протухший ТОЛЬКО по
+   инжекту. Метка стоит в прошлом относительно момента проверки, а не Date.now() теста. */
+globalThis.COLLECTED_AT_PY = 1_770_878_400 - 12 * 3600;
+globalThis.STALE_HOURS_PY = 2;
+/* Подписи исхода отклика: инжект — единственный ключ, фолбэк их десять. Сервер отдаёт
+   транспортные статусы (`taken`/`busy`/…), поэтому коды в ленте обязаны приходить из
+   Python, а не жить литералом в main.js (аудит 2026-09-22, §3.2). */
+globalThis.APPLY_LABELS_PY = { taken: 'ИЗ-ПАЙТОНА' };
 
 const {
-  SCHED_LABELS, STATUS_BTNS, filterVacancies, isFrozenChat, isRemoteLike, statusInfo,
+  APPLY_LABELS, SCHED_LABELS, STATUS_BTNS, cardTone, filterVacancies, isFrozenChat, isRemoteLike,
+  staleNow, statusInfo,
 } = await import('../../src/feed/model.js');
 
 const vac = over => ({
@@ -54,6 +64,10 @@ describe('мост Python -> JS: инжект побеждает офлайн-ф
     assert.equal(statusInfo(vac({ status: 'DISCARD' })).label, 'ОТКАЗ-PY');
   });
 
+  it('APPLY_LABELS_PY задаёт подпись исхода отклика', () => {
+    assert.equal(APPLY_LABELS.taken, 'ИЗ-ПАЙТОНА');   /* литерал фолбэка — «🚫 вакансию…» */
+  });
+
   it('MARK_VALUES_PY задаёт набор кнопок пометок', () => {
     assert.deepEqual(STATUS_BTNS.map(b => b.act), ['applied']);
   });
@@ -61,5 +75,22 @@ describe('мост Python -> JS: инжект побеждает офлайн-ф
   it('CHAT_FROZEN_PY задаёт набор тупиковых чатов', () => {
     assert.equal(isFrozenChat({ kind: 'ack' }), true);
     assert.equal(isFrozenChat({ kind: 'bot_interview' }), false);   /* фолбэк дал бы true */
+  });
+
+  /* Жёлтый тон — сравнение с КОДОМ из Python, а не с литералом: набор CHAT_FROZEN_PY
+     отвечает лишь «тупик», а какой фриз жёлтый — отдельный факт. Инжект здесь НЕ равен
+     фолбэку 'bot_interview', поэтому тест падает, если модель вернётся к литералу
+     (аудит 2026-09-22, §3.2). */
+  it('CHAT_BOT_INTERVIEW_PY задаёт код жёлтого фриза', () => {
+    assert.equal(cardTone({ ...vac(), status: null, chat: { kind: 'bot-iv-PY' } }), 'botiv');
+    assert.equal(cardTone({ ...vac(), status: null, chat: { kind: 'bot_interview' } }), '');
+  });
+
+  /* Оба конца моста разом: метка сбора из cache_meta.json и порог из config. С фолбэком
+     36 ч срез «12 ч назад» молчал бы — баннер зажигает именно инжект. */
+  it('COLLECTED_AT_PY и STALE_HOURS_PY задают возраст среза и порог', () => {
+    const mark = 1_770_878_400 - 12 * 3600;            /* == COLLECTED_AT_PY */
+    assert.equal(Math.round(staleNow(1_770_878_400_000).hours), 12);
+    assert.equal(staleNow((mark + 3600) * 1000), null);   /* час после сбора — ещё свежо */
   });
 });

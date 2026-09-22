@@ -58,20 +58,52 @@ def test_sends_xsrf_header():
     assert headers["x-xsrftoken"] == "TOKEN123"
 
 
-def _chats_page(items):
-    return _FakeResp(200, {"chats": {"items": items, "page": 0, "perPage": 20}})
+def _chats_page(items, next_from=None):
+    ch = {"items": items, "found": len(items)}
+    if next_from:
+        ch["nextFrom"] = next_from
+    return _FakeResp(200, {"chats": ch})
 
 
-# ── list_chats: chatId + vacancyId + applicantId по страницам ──
-def test_list_chats_collects_across_pages():
-    p0 = _chats_page([
-        {"id": 111, "currentParticipantId": "23015572", "resources": {"VACANCY": ["134809303"]},
-         "lastMessage": {"creationTime": "2026-07-20T10:00:00+03:00"}},
-    ])
-    p1 = _chats_page([])                            # пустая -> стоп
-    chats = chat.list_chats(_FakeReq([p0, p1]), "x")
-    assert chats == [{"chatId": 111, "vacancyId": "134809303", "applicantId": "23015572",
-                      "lastMessageTime": "2026-07-20T10:00:00+03:00"}]
+# ── list_chats: chatId + vacancyId + applicantId по курсору ──
+def _chat_item(cid, vid, ts="2026-07-20T10:00:00+03:00"):
+    return {"id": cid, "currentParticipantId": "23015572",
+            "resources": {"VACANCY": [vid]}, "lastMessage": {"creationTime": ts}}
+
+
+def test_list_chats_walks_the_cursor_not_the_page_number():
+    """Следующая страница берётся по `chats.nextFrom` (`&from=`). Параметр `&page=N` chatik
+    игнорирует и отдаёт первую страницу — инцидент 21.09.2026: синк аккаунта с 104 чатами
+    сходил 120 раз за одними и теми же 20, статусы не обновлялись вовсе."""
+    p0 = _chats_page([_chat_item(111, "134809303")], next_from="CURSOR1")
+    p1 = _chats_page([_chat_item(222, "134809304")])
+    req = _FakeReq([p0, p1])
+    chats = chat.list_chats(req, "x")
+    assert chats == [
+        {"chatId": 111, "vacancyId": "134809303", "applicantId": "23015572",
+         "lastMessageTime": "2026-07-20T10:00:00+03:00"},
+        {"chatId": 222, "vacancyId": "134809304", "applicantId": "23015572",
+         "lastMessageTime": "2026-07-20T10:00:00+03:00"},
+    ]
+    assert [url for url, _ in req.calls] == [chat.CHATS_URL, chat.CHATS_URL + "&from=CURSOR1"]
+
+
+def test_list_chats_stops_when_the_cursor_does_not_move():
+    """Страница без новых chatId = курсор не двинулся: обход прекращается, дубль не размножается."""
+    p0 = _chats_page([_chat_item(111, "134809303")], next_from="CURSOR1")
+    p1 = _chats_page([_chat_item(111, "134809303")], next_from="CURSOR1")
+    p2 = _chats_page([_chat_item(333, "134809305")], next_from="CURSOR3")
+    req = _FakeReq([p0, p1, p2])
+    chats = chat.list_chats(req, "x")
+    assert [(c["chatId"], c["vacancyId"]) for c in chats] == [(111, "134809303")]
+    assert len(req.calls) == 2                       # третий запрос не понадобился
+
+
+def test_list_chats_stops_at_the_page_cap():
+    pages = [_chats_page([_chat_item(i, str(1000 + i))], next_from=f"C{i}") for i in range(5)]
+    req = _FakeReq(pages)
+    chats = chat.list_chats(req, "x", pages=3)
+    assert [c["chatId"] for c in chats] == [0, 1, 2]
 
 
 # ── deep_get: извлечение currentApplicantState на любой глубине (для autoclick) ──
@@ -86,8 +118,18 @@ def test_find_chat_returns_chat_and_applicant():
     assert chat.find_chat(_FakeReq(_chats_page(items)), "x", "134516706") == (5454131905, 23015572)
 
 
+def test_find_chat_walks_to_the_second_page():
+    """Чат ищется и на второй странице — по курсору, а не тремя запросами первой."""
+    p0 = _chats_page([_chat_item(1, "999")], next_from="CURSOR1")
+    p1 = _chats_page([_chat_item(5454131905, "134516706")])
+    req = _FakeReq([p0, p1])
+    assert chat.find_chat(req, "x", "134516706") == (5454131905, "23015572")
+    assert [url for url, _ in req.calls] == [chat.CHATS_URL, chat.CHATS_URL + "&from=CURSOR1"]
+
+
 def test_find_chat_none_when_absent():
-    resp = [_chats_page([{"id": 1, "resources": {"VACANCY": ["999"]}}]), _chats_page([])]
+    resp = [_chats_page([{"id": 1, "resources": {"VACANCY": ["999"]}}], next_from="C1"),
+            _chats_page([])]
     assert chat.find_chat(_FakeReq(resp), "x", "134516706") == (None, None)
 
 

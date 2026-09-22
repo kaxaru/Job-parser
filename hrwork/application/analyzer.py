@@ -4,7 +4,7 @@ from collections import Counter, defaultdict
 from collections.abc import Callable
 from typing import Any
 
-from hrwork.config import LANG_KEYS, MIN_SAMPLE_CITY_LANG, MIN_SAMPLE_SALARY
+from hrwork.config import EXP_UNKNOWN_LABEL, LANG_KEYS, MIN_SAMPLE_CITY_LANG, MIN_SAMPLE_SALARY
 from hrwork.domain import freshness
 from hrwork.domain.employment import Employment
 from hrwork.domain.models import Vacancy
@@ -284,7 +284,7 @@ class Analyzer:
     def salary_by_experience(self) -> dict[str, dict[str, Any]]:
         buckets: dict[str, list[int]] = defaultdict(list)
         for v, rub in self.paid:
-            label = v.experience.label if v.experience else "Не указан"
+            label = v.experience.label if v.experience else EXP_UNKNOWN_LABEL
             buckets[label].append(rub)
         out = {}
         for label, sals in buckets.items():

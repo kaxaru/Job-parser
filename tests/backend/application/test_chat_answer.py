@@ -1,6 +1,7 @@
 """Тесты шаблонных ответов боту. Главное свойство: движок НЕ ВЫДУМЫВАЕТ фактов."""
 import pytest
 
+from hrwork.application.apply.chat import chat_answer as A
 from hrwork.application.apply.chat.chat_answer import Grade, VacancyContext, suggest
 
 PROF = {"answers": {
@@ -117,9 +118,9 @@ PROF_EN = {"answers": {
     "stack_past": ["C#", ".NET"],
     "years_text": "Около 5 лет.",
     "years_text_en": "About 5 years in total.",
-    "english_text": "Английский — B1.",
-    "english_text_en": "English — B1 (intermediate).",
-    "education_text": "Высшее: матфак, 2011.",
+    "english_text": "Английский — B2 (свободный).",
+    "english_text_en": "English — B2 (upper-intermediate).",
+    "education_text": "Высшее: университет, 2011.",
     "answer_negative": True,
 }}
 
@@ -144,7 +145,7 @@ def test_english_negative_answer_localized():
 def test_english_fact_taken_from_en_key():
     assert suggest("How many years of experience do you have?", PROF_EN)["text"] \
         == "About 5 years in total."
-    assert suggest("What is your English level?", PROF_EN)["text"] == "English — B1 (intermediate)."
+    assert suggest("What is your English level?", PROF_EN)["text"] == "English — B2 (upper-intermediate)."
 
 
 def test_no_translation_means_silence_not_russian():
@@ -257,11 +258,14 @@ def test_salary_and_place_english():
     assert a["text"] == "I work remotely. On-site is an option only in Privolzhsk."
 
 
-def test_polite_preamble_does_not_block_simple_question():
+def test_polite_preamble_does_not_block_simple_question(monkeypatch):
     # БАГ 20.07 (найден тестом chat_reply): «Спасибо за отклик. Есть ли опыт с Docker?»
     # -> _residual оставлял «спасибо отклик» -> движок молчал на простом вопросе.
     # Вежливая обвязка добавлена в _BOILERPLATE.
-    a = suggest("Здравствуйте, Антон! Спасибо за отклик. Есть ли у вас опыт работы с Docker?",
+    # Обращение по имени — обвязка из профиля (`config.USER_FIRST_NAME`): тест подставляет
+    # своё имя и проверяет именно снятие обращения, а не совпадение с именем владельца.
+    monkeypatch.setattr(A, "_BOILERPLATE", A.boilerplate("Пётр"))
+    a = suggest("Здравствуйте, Пётр! Спасибо за отклик. Есть ли у вас опыт работы с Docker?",
                 PROF)
     assert a["rule"] == "has_exp_yes"
     # Вхождение прошло бы и на «Да, есть опыт: Docker, Kubernetes.» — на выдуманном факте.
@@ -298,7 +302,7 @@ def test_years_with_specific_tech_is_silent():
     # (на .NET/1С), бот переспрашивал, loop крутил 5 отправок. React-стажа нет -> молчим.
     prof = {"answers": {
         "stack": ["Python", "React", "JavaScript"], "stack_past": ["C#"],
-        "years_text": "Общий опыт 5 лет: EPAM (.NET).",
+        "years_text": "Общий опыт 5 лет: ООО Пример (.NET).",
         "years_python_text": "Python — 3 года.",
     }}
     assert suggest("Сколько лет вы работаете с React в коммерческих проектах?", prof) is None
@@ -397,11 +401,11 @@ def test_years_with_cyrillic_tech_name_is_silent():
     # латинского backstop'а и получал ОБЩИЙ стаж, набранный на другом стеке.
     prof = {"answers": {
         "stack": ["Python", "Docker"], "stack_past": ["C#"],
-        "years_text": "Общий опыт 5 лет: EPAM (.NET).",
+        "years_text": "Общий опыт 5 лет: ООО Пример (.NET).",
         "years_python_text": "Python — 3 года.",
     }}
     assert suggest("Сколько лет вы работаете с Докером?", prof) is None
-    assert suggest("Сколько лет вы в разработке?", prof)["text"] == "Общий опыт 5 лет: EPAM (.NET)."
+    assert suggest("Сколько лет вы в разработке?", prof)["text"] == "Общий опыт 5 лет: ООО Пример (.NET)."
 
 
 # ══════════════ intent-роутер: маршрутизация по метке LLM ══════════════
@@ -410,7 +414,7 @@ from hrwork.application.apply.chat.chat_intent import IntentResult  # noqa: E402
 PROF_FE = {"answers": {
     "stack": ["Python", "FastAPI", "React", "TypeScript", "JavaScript"],
     "stack_past": ["C#"],
-    "years_text": "Общий опыт 5 лет 9 мес: EPAM (.NET), Коралл (1С).",
+    "years_text": "Общий опыт 6 лет 2 мес: ООО Пример (.NET), ООО Ромашка (1С).",
     "years_python_text": "Python — 3 года.",
     "years_frontend_text": "Около 2 лет фронтенда: React, TypeScript.",
     "answer_negative": True,
@@ -443,7 +447,7 @@ def test_intent_years_general_answers_general():
     assert a["rule"] == "years"
     # Факт из профиля отдаётся ДОСЛОВНО: подстрока «5 лет» прошла бы и на обрезанном,
     # и на склеенном с чужим фактом тексте.
-    assert a["text"] == "Общий опыт 5 лет 9 мес: EPAM (.NET), Коралл (1С)."
+    assert a["text"] == "Общий опыт 6 лет 2 мес: ООО Пример (.NET), ООО Ромашка (1С)."
 
 
 def test_intent_years_backstop_silences_tech_in_question():

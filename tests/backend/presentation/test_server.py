@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from hrwork.config import SOURCES
 from hrwork.presentation import server
 from hrwork.presentation.server import Resp, _Handler
 
@@ -232,6 +233,28 @@ def test_feed_and_dashboard_assets_are_served(name, tmp_path):
     assert gzip.decompress(r.body) == f"/* {name} */".encode()
 
 
+# ─────────── страница поиска: опции портала из config.SOURCES (аудит dwh_demo F62) ───────────
+
+def test_search_page_options_cover_every_configured_source():
+    """`<select id="source">` знает ВСЕ источники из `config.SOURCES`, а не четыре руками.
+
+    До 23.09.2026 список был захардкожен (hh/hirify/talanto/getmatch): himalayas/web3/
+    arbeitnow/themuse/jobicy фильтровались API, но не UI — вакансии в выдаче есть, отобрать
+    нельзя. Риск: пользователь ищет по четырём порталам, думая, что по всем."""
+    body = _bare_handler()._search_page().body.decode("utf-8")
+    assert server._SOURCE_OPTIONS_MARK not in body        # маркер заменён, а не оставлен как есть
+    assert '<option value="">Все источники</option>' in body
+    for src in SOURCES:                                   # каждый портал отфильтровывается
+        assert f'<option value="{src}">' in body
+    assert '<option value="hh">hh.ru</option>' in body    # подпись — домен PORTAL_SITES
+
+
+def test_search_page_keeps_the_source_options_marker():
+    # Маркер в самом файле обязан остаться: иначе серверная замена молча no-op, и select пуст.
+    html = (server._SRC_DIR / "search.html").read_text(encoding="utf-8")
+    assert server._SOURCE_OPTIONS_MARK in html
+
+
 # ─────────────────────────── лимит тела POST ───────────────────────────
 
 @pytest.mark.parametrize("attr", ["_marks_post", "_apply_post"])
@@ -364,7 +387,7 @@ class _WorkerSpy:
 
 def _apply(monkeypatch, body, status="applied"):
     """POST /api/apply с телом `body` -> (Resp, шпион воркера, аргументы store.enqueue)."""
-    from hrwork.application.apply import autoclick
+    from hrwork.application.apply import worker as apply_worker
     worker = _WorkerSpy(status)
     enqueued = []
 
@@ -372,7 +395,7 @@ def _apply(monkeypatch, body, status="applied"):
         enqueued.append(args)
         return 3                                  # позиция в очереди ожидания
 
-    monkeypatch.setattr(autoclick, "get_apply_worker", lambda: worker)
+    monkeypatch.setattr(apply_worker, "get_apply_worker", lambda: worker)
     monkeypatch.setattr(server.store, "enqueue", _enqueue)
     raw = json.dumps(body).encode("utf-8")
     h = _bare_handler(command="POST", headers={"Content-Length": str(len(raw))}, body=raw)
@@ -385,6 +408,17 @@ def test_apply_sends_the_employer_to_the_apply_worker(monkeypatch):
                                              "employer": "Acme"})
     assert worker.calls == [("77", "https://hh.ru/vacancy/77", "письмо",
                              "Python Developer", "Acme")]
+
+
+# RFC-004 R12: вакансию уже взял другой аккаунт — ответ `taken` до браузера и до очереди ожидания.
+def test_apply_refuses_a_vacancy_taken_by_another_account(monkeypatch):
+    from hrwork.application.apply import taken
+    monkeypatch.setattr(taken, "taken_by_others", lambda: {"77": "acc2"})
+    resp, worker, enqueued = _apply(monkeypatch, {"id": "77", "url": "u", "cover": "c", "name": "n"},
+                                    status="busy")
+    assert json.loads(resp.body) == {"status": "taken", "owner": "acc2", "letter": False}
+    assert worker.calls == []
+    assert enqueued == []
 
 
 def test_apply_without_employer_sends_empty_string(monkeypatch):
@@ -422,13 +456,14 @@ def test_chats_endpoint_keeps_contact_after_our_reply(monkeypatch):
     import json as _json_mod
 
     from hrwork.presentation import server as srv
-    monkeypatch.setattr(srv.store, "chat_messages", lambda: {
-        "1": {"messages": [
+    # /api/chats — ПО АККАУНТАМ (RFC-004): {vid: {account: info}}
+    monkeypatch.setattr(srv.crm, "chat_messages", lambda: {
+        "1": {"main": {"messages": [
             {"text": "Звоните: +7 912 345-67-89", "mine": False, "ts": "t1"},
-            {"text": "Спасибо, наберу", "mine": True, "ts": "t2"}]},
-        "2": {"messages": [
+            {"text": "Спасибо, наберу", "mine": True, "ts": "t2"}]}},
+        "2": {"main": {"messages": [
             {"text": "Добрый день!", "mine": False, "ts": "t1"},
-            {"text": "Здравствуйте!", "mine": True, "ts": "t2"}]},   # без контакта -> режется
+            {"text": "Здравствуйте!", "mine": True, "ts": "t2"}]}},   # без контакта -> режется
     })
     h = _bare_handler(path=srv._API_CHATS)
     resp = h._chats_get()
@@ -437,4 +472,4 @@ def test_chats_endpoint_keeps_contact_after_our_reply(monkeypatch):
     # проходила и тогда, когда в contact уезжал весь текст сообщения («Звоните: …»),
     # а при падении цепочки не было видно, чата нет или контакт не тот (аудит 09.08.2026).
     assert set(data) == {"1"}                  # kind=none без контакта по-прежнему отсечён
-    assert data["1"]["contact"] == "+7 912 345-67-89"
+    assert data["1"]["main"]["contact"] == "+7 912 345-67-89"

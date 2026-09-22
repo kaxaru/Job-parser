@@ -7,6 +7,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from loguru import logger
 
+from hrwork.accounts import resolve_account
+from hrwork.domain.account import AccountError
+
 # Логгер пакета: весь hrwork берёт его как `from hrwork.config import log`. Присваивание, а не
 # `import logger as log`, — чтобы это был настоящий атрибут модуля, а не неявный реэкспорт
 # (mypy --strict, no_implicit_reexport: иначе 24 ошибки во всех импортирующих модулях).
@@ -15,6 +18,10 @@ log = logger
 # ─── Paths ────────────────────────────────────────────────────────────────────
 
 BASE_DIR     = Path(__file__).resolve().parent.parent   # hr_work/
+
+# Аккаунт читается ДО .env (RFC-004): строка HR_ACCOUNT в .env сделала бы вторым аккаунтом
+# КАЖДЫЙ процесс — сервер ленты, сбор, крон основного. Аккаунт — свойство запуска, не машины.
+_HR_ACCOUNT_RAW = os.environ.get('HR_ACCOUNT', '')
 
 # .env в корне проекта; реальные переменные окружения имеют приоритет
 load_dotenv(BASE_DIR / '.env')
@@ -44,6 +51,17 @@ FEED_OUT      = DATA_DIR / 'feed.html'
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ─── Аккаунт HH (RFC-004) ─────────────────────────────────────────────────────
+# Выбирается ТОЛЬКО переменной окружения до импорта: пути и профиль ниже пекутся один раз.
+# ACCOUNT_DIR — состояние аккаунта (сессия, браузер, квота, журнал, статусы); для main это
+# сам DATA_DIR, то есть прежние пути. Общее для всех (кеш вакансий, лента, marks, lock)
+# остаётся на DATA_DIR. Ошибка разрешения — останов с подсказкой, а не трейсбек.
+try:
+    ACCOUNT = resolve_account(_HR_ACCOUNT_RAW, DATA_DIR)
+except AccountError as _account_error:
+    raise SystemExit(str(_account_error)) from None
+ACCOUNT_DIR = ACCOUNT.data_dir
 
 # ─── Logging ──────────────────────────────────────────────────────────────────
 
@@ -286,6 +304,9 @@ ATS_DEAD_BOARDS_WARN = float(os.getenv('ATS_DEAD_BOARDS_WARN', '0.3'))
 # devitjobs.uk — британская IT-доска. Вся выдача ОДНИМ запросом (2058 записей на 13.08.2026),
 # пагинации нет. Валюты в схеме нет вовсе — вилка годовая в фунтах, см. devitjobs.py::_salary.
 DEVITJOBS_URL = os.getenv('DEVITJOBS_URL', 'https://devitjobs.uk/api/jobsLight')
+# Свой таймаут вместо CURL_MAX_TIME (25 с): ответ ~4 МБ, в простое идёт 4-5 с, но запрос
+# стартует на пике веерного этапа 1 сбора и с 25 с падал (06-10.09.2026), см. devitjobs.py.
+DEVITJOBS_MAX_TIME = int(os.getenv('DEVITJOBS_MAX_TIME', '90'))              # сек на запрос
 
 # ─── Нормализация зарплат ─────────────────────────────────────────────────────
 NET_FROM_GROSS = 0.87            # net = gross − 13% НДФЛ
@@ -304,6 +325,12 @@ SERVE_PORT = int(os.getenv('SERVE_PORT', '8000'))              # порт лок
 # 19 суткам лога: в здоровые сутки максимальная серия 8 и 21, при блокировке — 97, 150, 268.
 APPLY_SKIP_STREAK_MAX = int(os.getenv('APPLY_SKIP_STREAK_MAX', '50'))
 HH_DAILY_APPLY_CAP = int(os.getenv('HH_DAILY_APPLY_CAP', '200'))  # потолок откликов в сутки (лимит HH)
+# Блок-лист РАБОТОДАТЕЛЕЙ для откликов (RFC-004). Общий для всех аккаунтов, поэтому живёт в
+# .env, а не в профиле резюме: два профиля не должны разъехаться по такому правилу.
+# Разделитель `;` — запятая встречается в самих названиях («Ромашка, Медиа»). Совпадение
+# по целому слову с нормализацией омоглифов: candidates.py::employer_blocked. Пусто — без блока.
+APPLY_EMPLOYER_BLOCKLIST = [w.strip() for w in os.getenv('APPLY_EMPLOYER_BLOCKLIST', '').split(';')
+                            if w.strip()]
 
 # ─── LLM-классификатор намерения (chat_intent) через OpenRouter ────────────────
 # LLM ТОЛЬКО классифицирует намерение вопроса бота (метка), НЕ генерирует ответ — факты
@@ -341,13 +368,17 @@ FORM_MODEL = os.getenv('FORM_MODEL', INTENT_MODEL)
 FORM_TIMEOUT = float(os.getenv('FORM_TIMEOUT', '8'))
 FORM_MAX_TOKENS = int(os.getenv('FORM_MAX_TOKENS', '300'))
 FORM_MAX_ANSWER_LEN = int(os.getenv('FORM_MAX_ANSWER_LEN', '1500'))   # жёсткий лимит длины ответа поля
-FORMS_ENABLED = os.getenv('FORMS_LLM', '').strip().lower() in ('1', 'true', 'yes', 'on')
+# Анкеты — только основному аккаунту, НЕЗАВИСИМО от FORMS_LLM (RFC-004): их заполняют ответы
+# из профиля и personal/resume.md основного, и второй аккаунт отправил бы работодателю чужое резюме.
+FORMS_ENABLED = (os.getenv('FORMS_LLM', '').strip().lower() in ('1', 'true', 'yes', 'on')
+                 and ACCOUNT.is_main)
 
 # ─── Профиль резюме — ЕДИНЫЙ источник для autoclick-фильтра и resume.js-скоринга ──────
 # Раньше «ядро» дублировалось (autoclick.APPLY_CORE/APPLY_EXPS ⇄ resume.js) и молча расходилось.
 # Правь resume_profile.json в корне; feed.py инжектит это в feed-data.js для ленты.
 _RESUME_DEFAULT = {"core": ["Python", "FastAPI"], "exp_ids": ["noExperience", "between1And3"]}
-_RESUME_FILE = BASE_DIR / "resume_profile.json"
+# У второго аккаунта своё резюме и свой отбор; наличие файла гарантирует resolve_account.
+_RESUME_FILE = BASE_DIR / "resume_profile.json" if ACCOUNT.is_main else ACCOUNT_DIR / "resume_profile.json"
 try:
     _rp = ({**_RESUME_DEFAULT, **json.loads(_RESUME_FILE.read_text(encoding="utf-8"))}
            if _RESUME_FILE.exists() else _RESUME_DEFAULT)
@@ -355,6 +386,16 @@ except (json.JSONDecodeError, OSError):
     _rp = _RESUME_DEFAULT
 RESUME_CORE = _rp["core"]            # технологии-ядро (нужна хотя бы одна) — показ/отклик
 RESUME_EXP_IDS = _rp["exp_ids"]      # допустимый опыт (raw id, см. EXP_LABELS)
+
+# ─── Имя владельца ────────────────────────────────────────────────────────────────────
+# Нужно только распознаванию персонализации: работодатели начинают письмо «<Имя>, здравствуйте»,
+# и без снятия обращения один и тот же шаблон рассылки выглядит как уникальный текст
+# (`chat_class.py::norm_text`, `chat_answer.py::_BOILERPLATE`). До 25.09.2026 имя владельца было
+# ЗАХАРДКОЖЕНО в этих двух регулярках — то есть личные данные лежали в исходнике, а форк обязан
+# был искать и править оба места. Теперь имя живёт в `resume_profile.json::first_name`
+# (файл в .gitignore); ключа нет -> пустая строка, персонализация просто не снимается.
+# Сравнение по целому слову и регистронезависимо; имя экранируется перед подстановкой в regex.
+USER_FIRST_NAME = str(_rp.get("first_name") or "").strip()
 
 # ─── Скоринг «% совпадения»: ЯРУСЫ СТЕКА и ЖЕЛАННОСТЬ РОЛИ ───────────────────────────
 # Две РАЗНЫЕ оси, и смешивать их нельзя (разбор 14.08.2026):
@@ -508,9 +549,9 @@ FEED_COVER_TEMPLATES: list[str] = [
 # ─── Многоуровневый отбор откликов (autoclick), приоритет tier1 -> tier2 -> tier3 ──────
 # tier1 — строгое ядро RESUME_CORE (Python/FastAPI), удалёнка; исчерпается — пойдёт tier2.
 # tier2 — широкий стек, удалёнка. tier3 — любой из (строгий+широкий), ОФИС, только эти города.
-# ВАЖНО про смысл tier3: это НЕ готовность к переезду. Кандидат живёт в Тольятти и ищет
-# удалёнку; крупные города в списке потому, что там офисная по описанию вакансия с большой
-# вероятностью допускает удалённый формат — то есть это ставка на переговоры, а не на релокацию.
+# ВАЖНО про смысл tier3: это НЕ готовность к переезду. Кандидат ищет удалёнку; крупные города
+# в списке потому, что там офисная по описанию вакансия с большой вероятностью допускает
+# удалённый формат — то есть это ставка на переговоры, а не на релокацию.
 # Порядок гарантируется сортировкой пула по tier: строгие уходят первыми, простоя между нет.
 # ВСЕ ТРИ ТИРА живут в resume_profile.json (08.08.2026). Раньше tier1 был в профиле, а
 # tier2/3 здесь — и это был помеченный компромисс: в `APPLY_OFFICE_CITIES` буквально стоял
@@ -519,7 +560,11 @@ FEED_COVER_TEMPLATES: list[str] = [
 # `"office_cities": []` в профиле ВЫКЛЮЧАЕТ тир3 (см. `_profile_list` про пустые списки).
 # Пустой набор безопасен: `techs & set()` и `city in set()` всегда ложны — тир не срабатывает.
 _CORE_WIDE_DEFAULT = ["Django", "Flask", "PostgreSQL", "MySQL", "Redis", "Kafka"]
-_OFFICE_CITIES_DEFAULT = ["Москва", "Санкт-Петербург", "Тольятти", "Самара"]
+# НЕЙТРАЛЬНЫЙ дефолт (25.09.2026): здесь стоял город владельца, то есть чужой форк обязан был
+# править исходник, а сам репозиторий раскрывал, где живёт пользователь. Теперь личные города
+# живут в `resume_profile.json::office_cities` (файл в .gitignore), а дефолт — два крупнейших
+# рынка. Профиль заменяет список ЦЕЛИКОМ: у кого свои города — просто указывает их у себя.
+_OFFICE_CITIES_DEFAULT = ["Москва", "Санкт-Петербург"]
 # Опыт, добавляемый к отбору СВЕРХ resume.exp_ids: вилку «3–6 лет» массово ставят на мидл-
 # позиции, куда откликаться уместно, но задирать сам профиль нельзя — поедет процент матча.
 _EXTRA_EXP_IDS_DEFAULT = ["between3And6"]
@@ -527,6 +572,22 @@ _EXTRA_EXP_IDS_DEFAULT = ["between3And6"]
 APPLY_CORE_WIDE = set(_profile_list("core_wide", _CORE_WIDE_DEFAULT))
 APPLY_OFFICE_CITIES = set(_profile_list("office_cities", _OFFICE_CITIES_DEFAULT))
 APPLY_EXTRA_EXP_IDS = _profile_list("extra_exp_ids", _EXTRA_EXP_IDS_DEFAULT)
+# Принимать ГИБРИД (Schedule.HYBRID, «flexible») в ЛЮБОМ городе как удалёнку (RFC-004). Ключа
+# нет -> False: у основного гибрид идёт офисной веткой (только APPLY_OFFICE_CITIES), поведение
+# не меняется. Второй аккаунт ставит accept_hybrid:true — гибрид под наш стек в любом городе
+# (частично из дома), и пул ниши заметно шире.
+APPLY_ACCEPT_HYBRID = bool(_rp.get("accept_hybrid", False))
+# Белый список ролей под автоотклик — ярлыки `Role.label` (RFC-004). Ключа нет -> None, то есть
+# без ограничения: так живёт основной профиль. Второй аккаунт сужает отбор до своих ролей
+# («Backend», «Разработчик», «GenAI»). Неизвестный ярлык валит импорт candidates.py (строгий
+# разбор своей константы), а не молча выключает роль.
+APPLY_ROLES: list[str] | None = (_profile_list("apply_roles", []) if "apply_roles" in _rp else None)
+# Слова, одно из которых обязано стоять в тайтле вакансии с ролью «Разработчик» (RFC-004).
+# Эта роль — фолбэк детектора: тайтл роль не назвал, а язык нашёлся в описании. У второго
+# аккаунта так в пул шли «Senior Ceph Engineer» и «Marketing Analytics» (замер 15.09.2026: 8 из 12).
+# Ключа нет -> None, проверки нет (основной профиль). Формат — как у blacklists: слова, `*` в конце.
+APPLY_DEVELOPER_TITLE_WORDS: list[str] | None = (
+    _profile_list("developer_title_words", []) if "developer_title_words" in _rp else None)
 
 # ── Официальный API hh.ru (второй путь рядом с браузерным) ───────────────────────────
 # Проверено 28.07: api.hh.ru НЕ закрыт DDoS-Guard, как считалось при написании
@@ -582,6 +643,16 @@ PAGE_DELAY = 0.25       # сек между страницами
 # Пересобирать не чаще раза в день. Env-override нужен крону: при ежедневном запуске возраст
 # кеша попадает ровно на границу 24ч, и сбор то срабатывал бы, то нет (cron_collect.bat = 20).
 CACHE_TTL_HOURS = int(os.getenv('CACHE_TTL_HOURS', '24'))
+# Возраст среза, с которого лента показывает баннер «данные устарели». НЕ равен TTL выше
+# намеренно: TTL отвечает на «пора ли собирать», а этот порог — на «сбор перестал доезжать
+# до кеша». Между ними обязан помещаться один пропущенный суточный прогон плюс запас на сон
+# машины и догоняющий слот планировщика, иначе баннер загорался бы каждое утро на здоровой
+# системе и его перестали бы замечать. 36ч = 24 (суточная сетка) + 12 (запас).
+# Порог сторожит МОЛЧАЛИВЫЙ отказ: 16-19.08.2026 санити-гейт трое суток отменял запись кеша
+# (himalayas отдавал 1913 против 26148 в базе), лента и дашборд каждый день пересобирались
+# из замороженного среза и выглядели живыми, а отклики встали на второй день — пул кандидатов
+# строится из того же кеша. Заметили вручную, по остановившемуся applied_log.jsonl.
+STALE_CACHE_HOURS = int(os.getenv('STALE_CACHE_HOURS', '36'))
 
 # ─── Dashboard palette ────────────────────────────────────────────────────────
 
@@ -884,6 +955,13 @@ EXP_LABELS = {
     'between3And6': '3–6 лет',
     'moreThan6':    '6+ лет',
 }
+
+# Единый литерал состояния «опыт не назван». До 23.09.2026 он жил двумя копиями:
+# `views/feed.py::EXP_UNKNOWN` (подпись пятого чипа фильтра) и `analyzer.py::salary_by_experience`
+# (строка отчёта «6. Зарплата по опыту»). Чип и строка отчёта называют ОДНО состояние, и связать
+# их было нечем: при расхождении пользователь не сопоставил бы фильтр с отчётом
+# (аудит `2026-09-22-quality.md`, §3.2). Код состояния — пустая строка, см. `EXP_UNKNOWN`.
+EXP_UNKNOWN_LABEL = 'Не указан'
 
 
 def _known_exp_ids(key: str, ids: list[str]) -> list[str]:

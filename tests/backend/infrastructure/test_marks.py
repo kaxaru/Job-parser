@@ -21,13 +21,13 @@ def test_load_missing_returns_empty(tmp_marks):
     assert marks.load_marks() == {}
 
 
-def test_save_then_load_roundtrip(tmp_marks):
-    marks.save_marks({"1": "applied", "2": "rejected"})
+def test_update_then_load_roundtrip(tmp_marks):
+    marks.update_marks(lambda _current: {"1": "applied", "2": "rejected"})
     assert marks.load_marks() == {"1": "applied", "2": "rejected"}
 
 
-def test_save_filters_invalid_status(tmp_marks):
-    marks.save_marks({"1": "applied", "2": "garbage", "3": "rejected"})
+def test_update_filters_invalid_status(tmp_marks):
+    marks.update_marks(lambda _current: {"1": "applied", "2": "garbage", "3": "rejected"})
     assert marks.load_marks() == {"1": "applied", "3": "rejected"}
 
 
@@ -47,5 +47,5 @@ def test_load_non_dict_returns_empty(tmp_marks):
 
 
 def test_keys_coerced_to_str(tmp_marks):
-    marks.save_marks({123: "applied"})        # int-ключ -> строка
+    marks.update_marks(lambda _current: {123: "applied"})   # int-ключ -> строка
     assert marks.load_marks() == {"123": "applied"}

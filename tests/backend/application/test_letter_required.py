@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from hrwork.application.apply import autoclick
+from hrwork.application.apply import autoclick, selectors
 from hrwork.application.apply.candidates import Candidate
 
 # Шаблон письма `cover.py::COVER_TEMPLATE` печётся ОДИН РАЗ на импорте из resume_profile.json,
@@ -64,8 +64,8 @@ class _Locator:
 
 class _Page:
     def __init__(self, submit: _Locator, letter: _Locator):
-        self._by_selector = {autoclick._RESPONSE_SUBMIT: submit,
-                             autoclick._RESPONSE_LETTER: letter}
+        self._by_selector = {selectors.RESPONSE_SUBMIT: submit,
+                             selectors.RESPONSE_LETTER: letter}
 
     def locator(self, selector: str) -> Any:
         return self._by_selector[selector]

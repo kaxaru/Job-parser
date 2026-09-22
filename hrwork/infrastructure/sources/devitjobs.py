@@ -22,20 +22,22 @@
 
 Ключа и авторизации не требуется (проверено 13.08.2026).
 Автоотклик неприменим: заявка уходит на сайт работодателя.
+
+Один запрос — одна точка отказа, поэтому у него ретраи с длинным бэкоффом (см. `_fetch`).
 """
 import json
 from typing import Any
 
-from hrwork.config import DEVITJOBS_URL, GLOBAL_SOURCES_IT_ONLY, log
+from hrwork.config import DEVITJOBS_MAX_TIME, DEVITJOBS_URL, log
 from hrwork.domain.experience import Experience
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RetryPolicy, fetch_bytes_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import Source, it_only, normalize_each, register_source
 from .hh import BROWSER_UA
 
 SITE = "https://devitjobs.uk"
@@ -44,14 +46,16 @@ SITE = "https://devitjobs.uk"
 # объявлена явно, чтобы допущение было видно в коде, а не растворилось в литерале.
 CURRENCY = "GBP"
 
-# `workplace` портала -> доменный формат. Берётся именно он, а не `remoteType`: последний
-# заполнен двумя значениями (None и «onlycountry») и отвечает на другой вопрос —
-# «ограничена ли удалёнка страной», а не «удалёнка ли это».
-_WORKPLACE = {
-    "remote": Schedule.REMOTE,
-    "hybrid": Schedule.HYBRID,
-    "office": Schedule.OFFICE,
-}
+# Ретраи транспорта. Бэкофф намеренно длиннее, чем у остальных порталов (1 -> 8 с): сбой
+# приходится на веерный этап 1 сбора, и короткие паузы уложили бы все попытки в тот же пик
+# нагрузки. 30 -> 60 -> 120 с растягивают четыре попытки на ~3,5 минуты; худший случай с
+# таймаутами ~9,5 минуты — меньше длительности сбора, поэтому общий прогон он не удлиняет.
+RETRY = RetryPolicy(attempts=4, backoff_start=30.0, backoff_max=120.0)
+
+# Таблицы `workplace` -> Schedule здесь БОЛЬШЕ НЕТ: она переехала в домен
+# (`Schedule.from_devitjobs`). Причина та же, что была у таблиц talanto/грейдов: адаптерная
+# копия доменной таблицы тихо расходится с оригиналом, и один и тот же ярлык портала
+# начинает значить на разных срезах разное (аудит 22.09.2026, §3.1).
 
 
 def _salary(it: dict[str, Any]) -> Salary | None:
@@ -111,7 +115,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord | None:
         # Грейд и тип занятости уходят в домен ЯРЛЫКАМИ: «Regular» (британское имя
         # середины) и «Internship» узнаёт общая таблица грейдов, остальное даёт None.
         experience=Experience.from_grades([it.get("expLevel"), it.get("jobType")]),
-        schedule=_WORKPLACE.get(str(it.get("workplace") or "").lower(), Schedule.OFFICE),
+        schedule=Schedule.from_devitjobs(it.get("workplace")),
         # Описания у эндпоинта нет — детект стека держится на структурных полях.
         detect_text=f"{name} {techs} {tags} {it.get('techCategory') or ''}",
         employer=str(it.get("company") or ""),
@@ -127,6 +131,12 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord | None:
                          enriched_at=None)
 
 
+def _log_empty_attempt(attempt: int, elapsed: float) -> None:
+    """Пустая попытка транспорта — в лог: время разводит таймаут под нагрузкой и HTTP-отказ."""
+    log.warning("devitjobs: попытка {}/{} пустая за {:.0f}с (лимит {}с)",
+                attempt, RETRY.attempts, elapsed, DEVITJOBS_MAX_TIME)
+
+
 @register_source("devitjobs")
 class DevitjobsSource(Source):
     """Сбор вакансий devitjobs: один запрос, одна фаза."""
@@ -136,11 +146,28 @@ class DevitjobsSource(Source):
     def __init__(self, **_: Any) -> None:
         pass
 
-    async def collect(self) -> list[VacancyRecord]:
+    async def _fetch(self) -> bytes | None:
+        """Вся выдача одним запросом, с ретраями транспорта (цикл — `net/http.py`).
+
+        Одиночная попытка без ретраев была единственной точкой отказа: пустой ответ давал
+        0 вакансий, и санити-гейт сбора отбраковывал ВЕСЬ срез из-за источника меньше 1 %
+        базы (06-10.09.2026, четыре прогона из пяти). В простое запрос идёт 4-5 с, в прогоне
+        падал через 39-169 с от старта — на пике веерного этапа 1.
+
+        Длительность КАЖДОЙ пустой попытки уходит в лог (`on_empty`): `fetch_bytes` причину
+        сбоя не отдаёт (контракт: сбой -> None), а время разводит классы — около лимита
+        таймаут под нагрузкой, мгновенный отказ это HTTP-ошибка или блок."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
-        out = await fetch_bytes(DEVITJOBS_URL, headers=headers)
+        out = await fetch_bytes_retry(DEVITJOBS_URL, headers=headers, policy=RETRY,
+                                      max_time=DEVITJOBS_MAX_TIME, on_empty=_log_empty_attempt)
+        if out is None:
+            log.warning("devitjobs: выдача не получена (попыток: {}) — источник пропущен",
+                        RETRY.attempts)
+        return out
+
+    async def collect(self) -> list[VacancyRecord]:
+        out = await self._fetch()
         if not out:
-            log.warning("devitjobs: выдача не получена — источник недоступен")
             return []
         try:
             items: list[dict[str, Any]] = json.loads(out.decode("utf-8", "replace"))
@@ -154,7 +181,7 @@ class DevitjobsSource(Source):
 
         paused = sum(1 for it in items if isinstance(it, dict) and it.get("isPaused"))
         recs = normalize_each(items, _normalize, source="devitjobs")
-        out_recs = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out_recs = it_only(recs)
         # Счётчик виз — по СЫРЫМ карточкам, а не по тексту `requirement`: считать по своей
         # же подписи значит завязать метрику на формат строки, и первая правка `_summary`
         # молча обнулила бы её.

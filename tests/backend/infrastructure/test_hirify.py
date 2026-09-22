@@ -259,32 +259,10 @@ def test_meta_header_reads_usd_as_a_number_whatever_the_portal_sent(salary_in_us
     assert _header_parts(header) == expected
 
 
-def test_broken_card_is_skipped_without_killing_the_source(monkeypatch):
-    # РЕГРЕСС 08.08.2026: исключение из _normalize пробивало до hh.py::_run_source, источник
-    # отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов. Кривая карточка — чужие данные:
-    # пропускается поштучно. Здесь ломается regions (список строк вместо объектов).
-    items = [
-        {"id": 1, "slug": "a", "title": "A", "grades": [], "work_format": [],
-         "created_at": "2026-07-01T00:00:00Z"},
-        {"id": 2, "slug": "b", "title": "B", "grades": [], "work_format": [],
-         "created_at": "2026-07-02T00:00:00Z", "regions": ["United Kingdom"]},
-        {"id": 3, "slug": "c", "title": "C", "grades": [], "work_format": [],
-         "created_at": "2026-07-03T00:00:00Z"},
-    ]
-
-    async def fake_page(page):
-        return {"data": items, "last_page": 1, "total": 3, "per_page": 3}
-
-    async def fake_one(slug):
-        return {"text": f"<p>full {slug}</p>"}
-
-    src = HirifySource()
-    monkeypatch.setattr(src, "_get_page", fake_page)
-    monkeypatch.setattr(src, "_get_one", fake_one)
-    monkeypatch.setattr(storage, "load_desc_cache", dict)
-
-    out = asyncio.run(src.collect())
-    assert sorted(r.vacancy.id for r in out) == ["hirify_1", "hirify_3"]
+# Изоляция кривой карточки когда-то проверялась и здесь (`test_broken_card_is_skipped_without_
+# killing_the_source`, ломался `regions`). Сценарий — свойство общей функции
+# `base.normalize_each`, а не схемы портала, поэтому его единственное место —
+# `test_source_item_isolation.py` (аудит 22.09.2026, §6).
 
 
 # ── Сверка списка с total: сбойная страница != пустая страница ─────────────────

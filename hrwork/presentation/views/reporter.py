@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from hrwork.application.analyzer import Analyzer
-from hrwork.config import REPORTS_DIR, log
+from hrwork.config import EXP_LABELS, REPORTS_DIR, log
 from hrwork.domain import freshness
 from hrwork.domain.employment import Employment
 from hrwork.domain.models import Vacancy
@@ -146,7 +146,11 @@ def report_top_stacks(a: Analyzer, w: ReportWriter) -> None:
 
 def report_salary_by_exp(a: Analyzer, w: ReportWriter) -> None:
     sal_exp = a.salary_by_experience()
-    order = ['Без опыта', '1–3 года', '3–6 лет', '6+ лет']
+    # Подписи корзин — ИЗ `config.EXP_LABELS` по доменным кодам, а не четырьмя литералами:
+    # они приходят из того же словаря (`analyzer.py::salary_by_experience` -> `v.experience.label`),
+    # и переименование подписи раньше ТИХО теряло строку отчёта (аудит `2026-09-22-quality.md`, §3.2).
+    order = [EXP_LABELS[c] for c in
+             ('noExperience', 'between1And3', 'between3And6', 'moreThan6')]
     cols = ['Опыт', 'N', 'Медиана', 'P25', 'P75']
     rows = [[exp, s['n'], _fmt(s['median']), _fmt(s.get('p25')), _fmt(s.get('p75'))]
             for exp in order if (s := sal_exp.get(exp))]

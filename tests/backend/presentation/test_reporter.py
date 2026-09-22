@@ -5,7 +5,11 @@
 (каталог вывода приходит извне и может содержать что угодно); полный прогон пишет ровно
 заявленный набор отчётов.
 """
+import csv
 import datetime
+import re
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -122,6 +126,38 @@ def test_managed_csv_lists_exactly_the_reports_writer_produces():
     assert reporter.MANAGED_CSV == _ALL_REPORTS
 
 
+# --- страж: имена CSV-отчётов не разъезжаются между вкладками, читателем и реестром ---
+# Имя отчёта живёт в ТРЁХ местах: `dashboard.py::_CHARTS` (по нему Дашборд проверяет наличие
+# файла -> показывать вкладку), `charts.py::_read` (по нему график открывает файл) и
+# `reporter.py::MANAGED_CSV` (что чистит ReportWriter). Страж был только у пары
+# reporter↔писатель. Читаем ИСХОДНИКИ текстом (как test_feed_bridge.py), а не импортируем
+# соседей: страж обязан работать без импорта plotly.
+_VIEWS_DIR = Path(reporter.__file__).parent
+_DASHBOARD_SRC = (_VIEWS_DIR / "dashboard.py").read_text(encoding="utf-8")
+_CHARTS_SRC = (_VIEWS_DIR / "charts.py").read_text(encoding="utf-8")
+# Имя отчёта — строка в кавычках, начинающаяся с цифры: `"01_cities.csv"`, `'13_...'`.
+_CSV_NAME_RX = re.compile(r"['\"](\d[\w]*\.csv)['\"]")
+
+
+def test_chart_csv_names_stay_within_the_reports_the_writer_owns():
+    """Имя, разошедшееся между `_CHARTS` и `charts.py`, обязано быть видно страху.
+
+    Переименование в `charts.py` без правки `_CHARTS` -> `_read` открывает несуществующий
+    файл (`open` без try) и `hh.py dashboard` падает; обратный дрейф -> вкладка пропадает
+    молча: «данные есть» проверяется по существованию CSV (аудит `2026-09-22-quality.md`, §3.2).
+    Разрешённый набор — литерал `_ALL_REPORTS` плюс воронка: `13_company_funnel.csv` пишет
+    `funnel.py` мимо реестра отчётов (см. `funnel.py::write_funnel_csv`)."""
+    allowed = _ALL_REPORTS | {"13_company_funnel.csv"}
+    charts_names = set(_CSV_NAME_RX.findall(_CHARTS_SRC))
+    dashboard_names = set(_CSV_NAME_RX.findall(_DASHBOARD_SRC))
+    assert charts_names <= allowed, f"charts.py читает чужое имя: {sorted(charts_names - allowed)}"
+    assert dashboard_names <= allowed, \
+        f"_CHARTS гейтит вкладку по чужому имени: {sorted(dashboard_names - allowed)}"
+    # Множества равны: каждый график читает CSV, и на каждый такой CSV есть гейт вкладки.
+    # Переименование в ОДНОМ месте на другое, тоже разрешённое, ловится только здесь.
+    assert charts_names == dashboard_names
+
+
 # --- отчёт 14: заголовки CSV — подписи форм из домена (контракт с charts.py) ---
 
 def test_employment_report_names_columns_with_domain_labels(tmp_path):
@@ -145,3 +181,28 @@ def test_employment_report_names_columns_with_domain_labels(tmp_path):
                       "Не указано", "%названо"]
     # вакансия с двумя формами считается в обоих столбцах, но «названо» у неё одно
     assert row == ["hh", "2", "1", "1", "0", "0", "1", "50.0"]
+
+
+# --- отчёт 6: подписи корзин приходят из config.EXP_LABELS, а не из четырёх литералов ---
+
+def test_salary_by_exp_rows_take_their_names_from_the_exp_labels_dict(tmp_path, monkeypatch):
+    """Переименование подписи в `config.EXP_LABELS` НЕ должно тихо терять строку отчёта.
+
+    До 23.09.2026 `reporter.py::report_salary_by_exp` держал `order` четырьмя литералами, тогда
+    как ключи бакетов приходят из ТОГО ЖЕ словаря (`config.EXP_LABELS` -> `Experience.label` ->
+    `analyzer.py::salary_by_experience`). Подпись, уехавшая в словаре, переставала находить свой
+    бакет, и строка «6. Зарплата по опыту» исчезала БЕЗ ошибки и предупреждения
+    (аудит `2026-09-22-quality.md`, §3.2). Здесь подпись одного грейда новая — строка обязана
+    остаться; на литералах `rows` пуст и файл содержит только шапку."""
+    monkeypatch.setattr(reporter, "EXP_LABELS", {
+        "noExperience": "Без опыта", "between1And3": "1–3 года (новая подпись)",
+        "between3And6": "3–6 лет", "moreThan6": "6+ лет"})
+    analyzer = SimpleNamespace(salary_by_experience=lambda: {
+        "1–3 года (новая подпись)": {"n": 5, "median": 120_000, "p25": 100_000, "p75": 140_000}})
+    reporter.report_salary_by_exp(analyzer, reporter.ReportWriter(tmp_path))
+    with open(tmp_path / "06_salary_by_exp.csv", encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.reader(f))
+    assert rows == [
+        ["Опыт", "N", "Медиана", "P25", "P75"],
+        ["1–3 года (новая подпись)", "5", "120 000", "100 000", "140 000"],
+    ]

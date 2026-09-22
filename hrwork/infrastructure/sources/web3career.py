@@ -26,13 +26,10 @@
 Автоотклик неприменим: заявка уходит по внешнему `apply_url` на сайт работодателя.
 """
 import asyncio
-import datetime
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from hrwork.config import (
-    GLOBAL_SOURCES_IT_ONLY,
     WEB3_TAG_CONCURRENCY,
     WEB3_TAGS,
     WEB3_TOKEN,
@@ -42,11 +39,12 @@ from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_STANDARD, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import Source, it_only, normalize_each, register_source
 from .hh import BROWSER_UA
+from .text import ts_to_iso
 
 SITE = "https://web3.career"
 API = f"{SITE}/api/v1"
@@ -59,20 +57,11 @@ class Web3Cfg:
     api_url: str = API
     limit: int = PAGE_LIMIT
     tag_conc: int = WEB3_TAG_CONCURRENCY
-    retry_attempts: int = 3
-    backoff_start: float = 1.0
-    backoff_max: float = 8.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_STANDARD
 
 
 CFG = Web3Cfg()
-
-
-def _iso(ts: Any) -> str | None:
-    """date_epoch приходит unix-секундами -> ISO-UTC."""
-    try:
-        return datetime.datetime.fromtimestamp(int(ts), tz=datetime.timezone.utc).isoformat()
-    except (TypeError, ValueError, OSError):
-        return None
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -129,7 +118,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
     name = str(it.get("title") or "")
     desc = str(it.get("description") or "")
     tags = " ".join(str(t) for t in (it.get("tags") or []))
-    when = _iso(it.get("date_epoch"))
+    when = ts_to_iso(it.get("date_epoch"))
     vac = build_vacancy(
         vid=f"web3_{it.get('id')}",              # неймспейс — не сталкивается с id других порталов
         name=name,
@@ -154,6 +143,19 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
                          sig=_sig(it), enriched=bool(desc), enriched_at=None)
 
 
+def _cards(payload: Any) -> list[dict[str, Any]] | None:
+    """Ответ web3 -> карточки. Формат — `[строка-заголовок, строка-справка, [вакансии]]`:
+    берём ПЕРВЫЙ вложенный список, а не индекс, чтобы не сломаться от перестановки элементов
+    в ответе. Не список вовсе (например объект с ошибкой) -> None: это сбой схемы, и прежний
+    цикл на нём уходил на следующую попытку."""
+    if not isinstance(payload, list):
+        return None
+    for el in payload:
+        if isinstance(el, list):
+            return [x for x in el if isinstance(x, dict)]
+    return []
+
+
 @register_source("web3")
 class Web3CareerSource(Source):
     """Сбор вакансий web3.career: перебор тегов (пагинации у API нет)."""
@@ -175,26 +177,9 @@ class Web3CareerSource(Source):
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
         url = (f"{CFG.api_url}?token={WEB3_TOKEN}&limit={CFG.limit}"
                f"&tag={tag}&show_description=true")
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload = json.loads(out.decode("utf-8", "replace"))
-                except json.JSONDecodeError as e:
-                    log.debug("web3 tag={}: {}", tag, e)
-                    payload = None
-                if isinstance(payload, list):
-                    # Ответ — [строка-заголовок, строка-справка, [вакансии]]: берём
-                    # первый вложенный список, а не индекс, чтобы не сломаться от
-                    # перестановки элементов в ответе.
-                    for el in payload:
-                        if isinstance(el, list):
-                            return [x for x in el if isinstance(x, dict)]
-                    return []
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return []
+        cards = await fetch_json_retry(url, headers=headers, policy=CFG.retry, parse=_cards,
+                                       log_context=f"web3 tag={tag}")
+        return cards or []
 
     async def collect(self) -> list[VacancyRecord]:
         if not WEB3_TOKEN:
@@ -226,7 +211,7 @@ class Web3CareerSource(Source):
         # Нормализация — через normalize_each: кривая карточка портала не должна ронять
         # источник целиком (иначе санити-гейт видит нулевой срез и морозит кеш всех порталов).
         recs = normalize_each(uniq.values(), _normalize, source="web3")
-        out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out = it_only(recs)
         log.info("web3: собрано {} (тегов {}, ответов {}, дублей {}, не-IT отсеяно {})",
                  len(out), len(WEB3_TAGS), total, total - len(uniq), len(recs) - len(out))
         return out

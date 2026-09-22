@@ -51,6 +51,62 @@ Set-ScheduledTask -TaskName hh_collect -Settings (New-ScheduledTaskSettingsSet `
   -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable)
 ```
 
+#### Приоритетный крон второго аккаунта (RFC-004, `hh_apply_<code>`)
+
+Второй аккаунт (`acc2`) держит ПРИОРИТЕТ на свою нишу: основной от неё отступает
+(`ab_split.py`, `apply.md`). Отклики шлёт `cron/cron_apply_account.bat <code> [limit]`
+(код аккаунта, лимит откликов за прогон — по умолчанию 20): задаёт `HR_ACCOUNT`,
+отклики + синк статусов, `--daily-cap 60`, лог `logs\cron_apply_<code>.log`.
+`FORMS_LLM`/`HR_LOGIN_PHONE` НЕ ставит (анкеты у не-основного выключены; SMS-вход ночью
+не дёргаем — протухшая сессия останавливает прогон с баннером).
+
+**Лимиты acc2** (подняты 22.09.2026, было 10/сутки): три ежедневных слота — 10:45, 14:15,
+17:45 (`cron/cron_apply_acc2.bat`) — по 20 откликов, суточный потолок 60 в `apply_quota.json`.
+Упор при этом не в лимит, а в ПУЛ: пока пул не пуст, откликов столько, сколько в нём вакансий
+(замер 22.09: пул 97), дальше — сколько добавляет рынок (~11/сутки). Потолок HH на аккаунт —
+200/сутки (`HH_DAILY_APPLY_CAP`); 60 — осознанный компромисс против анти-детекта (второй
+аккаунт того же человека). Слоты сдвинуты на +45 мин от сетки `hh_apply`; браузер один на
+машину — прогоны сериализуются через `autoclick.lock`. Менять лимит — только вторым
+аргументом обёртки, задачу перерегистрировать не нужно.
+
+**Порядок включения — ТОЛЬКО после живой проверки (необратимо!).** Сначала вручную войти и
+прогнать `--apply-limit 1 --headed` -> `5` (см. `rfc-004`), и лишь потом включать все три шага
+ВМЕСТЕ, чтобы основной начал отступать ровно когда acc2 начинает откликаться (иначе ниша
+простаивает):
+
+```bat
+REM 1) освежать пул acc2 после каждого сбора (браузерно-независимо) — добавить в cron_collect.bat
+REM    последней строкой (setlocal изолирует HR_ACCOUNT от остальных шагов сбора):
+REM    setlocal & set "HR_ACCOUNT=acc2" & "%PY%" hh.py autoclick --dry-pool --write-eligible >> logs\cron_collect.log 2>&1 & endlocal
+REM 2) записать eligible.json сразу (чтобы основной начал отступать, не дожидаясь сбора):
+set "HR_ACCOUNT=acc2" & "%PY%" hh.py autoclick --dry-pool --write-eligible
+REM 3) задача автооткликов acc2 — ТРИ ежедневных слота (10:45, 14:15, 17:45), лимит 20 за прогон.
+REM    Отдельные CalendarTrigger, а не Repetition: повторяющиеся триггеры переставали
+REM    срабатывать после сна (10.09.2026), слоты вынесены в самостоятельные триггеры.
+schtasks /Create /TN hh_apply_acc2 /TR "wscript.exe \"%VBS%\" \"%BAT%\cron_apply_acc2.bat\"" /SC DAILY /ST 10:45 /F
+```
+
+Два добавочных слота — тем же действием, без правки `.bat` (PowerShell; `Set-ScheduledTask`
+сохраняет действие, principal и `ExecutionTimeLimit`):
+
+```powershell
+$task = Get-ScheduledTask -TaskName hh_apply_acc2
+$task.Triggers = @(
+  (New-ScheduledTaskTrigger -Daily -At 10:45),
+  (New-ScheduledTaskTrigger -Daily -At 14:15),
+  (New-ScheduledTaskTrigger -Daily -At 17:45)
+)
+Set-ScheduledTask -InputObject $task
+```
+
+Проверить слоты: `(Get-ScheduledTask -TaskName hh_apply_acc2).Triggers.StartBoundary`.
+
+Затем добить `ExecutionTimeLimit`/restart через `Set-ScheduledTask` (как у `hh_apply`).
+`hh_apply_acc2` берёт браузер — сериализуется с `hh_apply` через `autoclick.lock` (сдвиг сетки).
+Ручной вход acc2 (телефон в рантайме, нигде не хранится):
+`set HR_LOGIN_PHONE=… & set HR_ACCOUNT=acc2 & <PY> hh.py autoclick --login`.
+Отключить: `schtasks /Delete /TN hh_apply_acc2 /F` + убрать строку из `cron_collect.bat`.
+
 Проверка — `schtasks /Query /TN hh_collect /V /FO LIST`.
 
 ### Автоперезапуск при падении (все три задачи)
@@ -96,12 +152,18 @@ foreach ($n in "hh_apply","hh_collect","hh_chat") {
 Планировщик задач Windows. Сводка:
 
 ```
-10:00 ─┬─ hh_apply                     каждые 90 мин до 23:30, по 20 откликов
+10:00 ─┬─ hh_apply                     каждые 90 мин до 23:30 (основной; с 21.09 ПАУЗА откликов)
 10:30 ─┼─ hh_chat                      каждые 90 мин до 23:30: синк чатов + автоответы (loop)
-12:00 ─┼─ hh_collect                   раз в сутки
+10:45 ─┼─ hh_apply_acc2                три слота в сутки — 10:45, 14:15, 17:45: по 20 откликов acc2,
+       │                              потолок 60/сутки (приоритетный пул)
+12:00 ─┼─ hh_collect                   раз в сутки (+ освежение eligible.json acc2)
        ├─ hh_sync                      СНЯТА 14.08.2026 (синк делает hh_chat)
        └─ hh_bump                      отключена (слита в hh_apply)
 ```
+
+`hh_apply_acc2` (RFC-004) — единственная браузерная задача кроме `hh_apply`; сериализуется с
+ней через `autoclick.lock` (сдвиг +45 мин). Регистрация и отключение — в разделе выше
+(«Приоритетный крон второго аккаунта»).
 
 Только `hh_apply` берёт браузер и `autoclick.lock`. Остальные — HTTP, поэтому наложения
 безопасны. `hh_chat` смещён на +30 мин от `hh_apply`, чтобы браузерный прогон и синк
@@ -114,9 +176,20 @@ foreach ($n in "hh_apply","hh_collect","hh_chat") {
 **Расписание.** Ежедневно 12:00, `ExecutionTimeLimit` 2 ч, `StartWhenAvailable`.
 
 **Команда.** `cron/cron_collect.bat`: `hh.py collect`, затем best-effort пересборка
-(шаги −1…3): `hh.py feed` (лента), `docker compose up -d --wait` (поднять стек),
+(шаги −1…4): `hh.py feed` (лента), `docker compose up -d --wait` (поднять стек),
 `search_demo/load.py` (переиндексация поиска), `hh.py dashboard` (Plotly),
-`python -m etl all` (DWH).
+`python -m etl all` (DWH), выгрузка для Airflow (3a), `docker compose stop` BI-части стенда (4).
+
+**Стенд `dwh_demo` живёт только во время крона** (с 10.09.2026). Шаг 4 гасит `clickhouse`,
+`mssql` и `metabase`: круглосуточно они держали ~4,6 ГБ памяти WSL ради часа работы в сутки,
+и вместе с остальным под нехватку памяти попадали соседние процессы. `hh-postgres` остаётся
+поднятым — на нём `/search` в ленте. Остановка через `stop -t 60`, а не `down`: контейнеры и
+тома целы. MSSQL при этом всегда добивается SIGKILL — SIGTERM до `sqlservr` не доходит (PID 1
+образа — `launch_sqlservr.sh`, запускает сервер фоном без проброса сигналов); так он гасился и при
+каждом рестарте Docker. База поднимается штатным восстановлением за 4–9 с, а факт в ней шаг 3
+перезаливает целиком. Таймаут 60 с — запас ClickHouse после заливки. Витрины Metabase между
+прогонами — поднять руками:
+`cd dwh_demo; docker compose up -d --wait clickhouse mssql metabase`.
 
 **Что делает.** Пересбор вакансий ДВЕНАДЦАТИ источников (hh, hirify, talanto, getmatch,
 arbeitnow, himalayas, web3, themuse, jobicy, greenhouse, ashby, devitjobs — фактический
@@ -167,7 +240,15 @@ arbeitnow, himalayas, web3, themuse, jobicy, greenhouse, ashby, devitjobs — ф
 
 **Расписание.** Каждые 90 минут в окне 10:00–23:30 (10 слотов), лимит 1 ч.
 
-**Команда.** `cron/cron_apply.bat` -> `hh.py autoclick --apply-limit 20`
+> **ПАУЗА с 21.09.2026: отклики идут только со второго аккаунта.** `cron_apply.bat` запускает
+> `--apply-limit 20 --daily-cap 0`: батч и дренаж очереди ленты оба считают дневной остаток,
+> поэтому кликов нет ни одного, а поднятие резюме (кулдаун 4 ч) и синк статусов работают как
+> прежде — резюме основного остаётся в поиске и работодатель может позвать сам. Проверено
+> живым прогоном 21.09: `Дневной лимит откликов исчерпан: 11/0 — пропускаю отклики`, 19 с.
+> Пауза НЕ закрывает кнопку «Откликнуться в фоне» в ленте (`POST /api/apply` квоту не
+> проверяет) — это ручной путь владельца. Откат — убрать `--daily-cap 0` из обёртки.
+
+**Команда.** `cron/cron_apply.bat` -> `hh.py autoclick --apply-limit 20 --daily-cap 0`
 
 **Что делает.** Поднятие резюме (если прошёл кулдаун) + отклики + дренаж очереди из ленты.
 
@@ -421,6 +502,21 @@ Get-Process python, node, chrome -ErrorAction SilentlyContinue |
 
 **Не сработал ли санити-гейт.** В `cron_collect.log` — `Источник hh: 300 << 16000 (< 50%)`.
 Кеш при этом цел. Разбираться с блокировкой, а не запускать `--force` рефлекторно.
+
+**Свежий ли срез вообще.** Первый признак — баннер `⚠ Данные устарели` в ленте: он горит,
+когда `cache_meta.json::collected_at` старше `STALE_CACHE_HOURS` (36 ч). Возраст считает
+браузер от метки, поэтому баннер честен и на ленте, собранной сегодня из вчерашнего кеша —
+а это и есть та ситуация, которую ищем. Быстрая проверка руками:
+
+```powershell
+..\.venv3\Scripts\python.exe -c "import time;from hrwork.infrastructure.storage import collected_at;t=collected_at();print('нет метки' if t is None else f'{(time.time()-t)/3600:.1f} ч')"
+```
+
+Почему это отдельный сигнал: гейт отменяет ЗАПИСЬ кеша, но не трогает ни ленту, ни
+дашборд — крон назавтра пересоберёт их из замороженного среза, и оба будут выглядеть
+живыми. 16–19.08.2026 так простояло трое суток; отклики встали на второй день (пул
+кандидатов строится из того же кеша), и заметили это только по `applied_log.jsonl`,
+который перестал расти при `rc=0` у всех прогонов.
 
 ## Убить всё
 

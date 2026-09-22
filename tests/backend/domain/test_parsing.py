@@ -6,7 +6,6 @@ from hrwork.domain.models import Vacancy
 from hrwork.domain.parsing import (
     _detect_role,
     _detect_techs,
-    _salary_mid,
     is_hard_non_it,
     langs_in_title,
     parse_vacancy,
@@ -23,29 +22,6 @@ RAW = {
     "schedule": {"id": "remote"},
     "snippet": {"requirement": "Python, Docker", "responsibility": ""},
 }
-
-
-# ── _salary_mid: середина вилки + gross->net (×0.87) ──
-def test_salary_mid_from_and_to():
-    assert _salary_mid({"from": 100000, "to": 200000, "currency": "RUR"}) == (100000, 200000, 150000)
-
-
-def test_salary_mid_gross_to_net():
-    # gross=True -> чистыми (×0.87)
-    assert _salary_mid({"from": 100000, "to": 200000, "gross": True}) == (87000, 174000, 130500)
-
-
-def test_salary_mid_only_from():
-    assert _salary_mid({"from": 120000}) == (120000, None, 120000)
-
-
-def test_salary_mid_only_to():
-    assert _salary_mid({"to": 90000}) == (None, 90000, 90000)
-
-
-def test_salary_mid_none_or_empty():
-    assert _salary_mid(None) == (None, None, None)
-    assert _salary_mid({}) == (None, None, None)
 
 
 # ── _detect_techs: детект технологий регэкспами ──

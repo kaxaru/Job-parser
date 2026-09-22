@@ -8,7 +8,6 @@ Analyzer/views работают без изменений. Отклики (Playw
 """
 import asyncio
 import html
-import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,7 +24,7 @@ from hrwork.domain.parsing import build_vacancy, is_hard_non_it
 from hrwork.domain.salary import Salary, SalaryPeriod
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure import storage
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_PATIENT, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
 from .base import Source, check_list_complete, normalize_each, register_source
@@ -37,9 +36,8 @@ class TalantoCfg:
     api_url: str = "https://talanto.work/api/jobs/"
     page_size: int = 100                            # подтверждено API: limit=100 работает
     max_pages: int = 600                            # страховка (~40k активных / 100 = ~410 страниц)
-    retry_attempts: int = 4
-    backoff_start: float = 1.0
-    backoff_max: float = 10.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_PATIENT
     page_conc: int = TALANTO_PAGE_CONCURRENCY
     enrich_conc: int = TALANTO_ENRICH_CONCURRENCY
     enrich_max: int = TALANTO_ENRICH_MAX
@@ -187,18 +185,9 @@ class TalantoSource(Source):
 
     async def _curl_json(self, url: str) -> dict[str, Any] | None:
         headers = {"User-Agent": BROWSER_UA, "Accept": "*/*", "Accept-Language": "ru"}
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    return payload
-                except json.JSONDecodeError as e:
-                    log.debug("talanto {}: {}", url, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return None
+        payload: dict[str, Any] | None = await fetch_json_retry(
+            url, headers=headers, policy=CFG.retry, log_context=f"talanto {url}")
+        return payload
 
     async def _get_page(self, offset: int) -> dict[str, Any] | None:
         return await self._curl_json(f"{CFG.api_url}?{TALANTO_PARAMS}&offset={offset}")

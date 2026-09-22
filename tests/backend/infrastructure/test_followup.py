@@ -1,7 +1,13 @@
 """Тесты форм-очереди (вакансии-опросники): идемпотентная запись в JSON."""
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from hrwork.infrastructure.storage import followup
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
@@ -78,8 +84,10 @@ def test_cache_form_overwrites_same_id(tmp_cache):
 # ── Очередь ожидания (лента -> крон): FIFO, идемпотентность по id ──
 @pytest.fixture
 def tmp_pending(tmp_path, monkeypatch):
-    monkeypatch.setattr(followup, "PENDING_FILE", tmp_path / "apply_pending.json")
+    f = tmp_path / "apply_pending.json"
+    monkeypatch.setattr(followup, "PENDING_FILE", f)
     monkeypatch.setattr(followup, "DATA_DIR", tmp_path)
+    return f
 
 
 def test_pending_empty_by_default(tmp_pending):
@@ -142,3 +150,32 @@ def test_requeue_is_idempotent_by_id(tmp_pending):
     followup.requeue_pending({"id": "1", "url": "u1", "name": "n1", "cover": "c1"})
     assert followup.requeue_pending({"id": "1", "url": "u1", "name": "n1", "cover": "c1"}) == 1
     assert len(followup.load_pending()) == 1
+
+
+# ── Межпроцессная запись очереди (аудит 22.09.2026, §1) ─────────────────────────────────
+# Писателей ДВА ПРОЦЕССА: сервер ленты (клик «Откликнуться в фоне» -> server.py::_apply_post)
+# и владелец браузера (autoclick.py::_drain_pending). Без общей блокировки цепочка
+# «прочитал -> изменил -> записал» теряет клик, сделанный между чтением и записью; наложение
+# на общий фиксированный tmp-файл `atomic_write_json` даёт битый JSON — и `read_json_or`
+# отдаёт пустой список, то есть очередь пропадает ЦЕЛИКОМ.
+
+_ENQUEUER = r"""
+import sys
+from pathlib import Path
+from hrwork.infrastructure.storage import followup
+followup.PENDING_FILE = Path(sys.argv[1])
+prefix, rounds = sys.argv[2], int(sys.argv[3])
+for i in range(rounds):
+    followup.enqueue_pending(f"{prefix}{i}", f"u{prefix}{i}", f"n{prefix}{i}", "c")
+"""
+
+
+def test_concurrent_enqueues_keep_every_record(tmp_pending):
+    writers = [subprocess.Popen([sys.executable, "-c", _ENQUEUER, str(tmp_pending), prefix, "60"],
+                                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+               for prefix in ("a", "r")]
+    for w in writers:
+        _, err = w.communicate(timeout=120)
+        assert w.returncode == 0, err.decode("utf-8", "replace")[-2000:]
+    ids = [rec["id"] for rec in followup.load_pending()]
+    assert sorted(ids) == sorted(f"{p}{i}" for p in ("a", "r") for i in range(60))

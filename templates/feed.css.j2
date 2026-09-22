@@ -164,6 +164,21 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
 .sync-status.err   { color: #d35a5a; }
 .sync-status.local { color: #c79a3a; }
 
+/* ── Баннер «данные устарели» ──
+   Полоса во всю ширину под шапкой, НЕ липкая: сигнал разовый (сбор встал — иди чини),
+   держать его перед глазами весь скролл незачем, а липких элементов тут и так два.
+   Цвет — та же тревожная охра, что у `.sync-status.local`: оба говорят «данные не там,
+   где должны быть», и разводить два разных красных на одном экране не нужно. */
+.stale-banner {
+  padding: 10px 24px;
+  background: color-mix(in srgb, #c79a3a 14%, var(--paper));
+  border-bottom: 1px solid color-mix(in srgb, #c79a3a 45%, var(--grid));
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.stale-banner[hidden] { display: none; }   /* hidden против display:flex у соседей */
+
 /* ── Панель управления ────────────────────────────────
    Липкой оставлена только узкая полоса (~48px). Раньше липким был весь бар с фильтрами:
    замерено 398px при окне 1000px — 40% экрана постоянно, а на ширине 900px 691px из 900,
@@ -230,7 +245,6 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
 }
 
 /* Поиск по названию */
-.search-wrap { min-width: 240px; }
 .search-input {
   width: 260px;
   max-width: 100%;
@@ -299,18 +313,35 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
 input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; }
 .sal-val { min-width: 56px; color: var(--accent); font-size: 0.8rem; }
 
-/* City dropdown */
-select {
-  background: var(--grid);
-  color: var(--text);
-  border: 1px solid var(--grid);
-  border-radius: 4px;
-  padding: 5px 8px;
-  font-size: 0.85rem;
-  cursor: pointer;
-  max-width: 180px;
+/* Профили (RFC-004): мультиселект-выпадашка через <details> */
+.acc-dd { position: relative; display: inline-block; }
+.acc-summary {
+  list-style: none; cursor: pointer; user-select: none;
+  background: var(--grid); color: var(--text);
+  border: 1px solid var(--grid); border-radius: 4px;
+  padding: 5px 10px; font-size: 0.82rem; max-width: 260px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-select option { background: var(--paper); }
+.acc-summary::-webkit-details-marker { display: none; }
+.acc-summary.active { background: var(--accent); color: #fff; }
+.acc-menu {
+  position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; min-width: 240px;
+  background: var(--paper); border: 1px solid var(--grid); border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.28); padding: 6px; display: flex; flex-direction: column; gap: 2px;
+}
+.acc-opt {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 8px; border-radius: 4px; font-size: 0.84rem; color: var(--text);
+}
+.acc-opt:hover { background: var(--grid); }
+.acc-opt input { cursor: pointer; }
+.acc-mini { color: var(--muted); font-size: 0.76rem; }
+.acc-warn { color: #E0863A; font-size: 0.76rem; margin-left: 4px; }
+.acc-clear {
+  margin-top: 4px; background: transparent; border: 1px solid var(--grid);
+  border-radius: 4px; color: var(--muted); padding: 4px 8px; cursor: pointer; font-size: 0.78rem;
+}
+.acc-clear:hover { background: var(--grid); color: var(--text); }
 
 /* Schedule toggle */
 .sched-btns {

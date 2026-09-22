@@ -17,25 +17,23 @@ arbeitnow добавляет удалёнку и релокацию по ЕС. �
 Автоотклик сюда неприменим: Playwright-путь заточен под форму HH, здесь внешние ссылки.
 """
 import asyncio
-import datetime
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from hrwork.config import (
     ARBEITNOW_MAX_PAGES,
     ARBEITNOW_PAGE_CONCURRENCY,
-    GLOBAL_SOURCES_IT_ONLY,
     log,
 )
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_STANDARD, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import Source, get_page_with_empty_retry, it_only, normalize_each, register_source, warn_if_hole
 from .hh import BROWSER_UA
+from .text import ts_to_iso
 
 SITE = "https://www.arbeitnow.com"
 API = f"{SITE}/api/job-board-api"
@@ -46,24 +44,11 @@ class ArbeitnowCfg:
     api_url: str = API
     max_pages: int = ARBEITNOW_MAX_PAGES
     page_conc: int = ARBEITNOW_PAGE_CONCURRENCY
-    retry_attempts: int = 3
-    backoff_start: float = 1.0
-    backoff_max: float = 8.0
-    # Перепроверка пустой страницы — семантика himalayas.py::_get_page, см. _get_page ниже.
-    empty_retries: int = 3
-    empty_retry_delay: float = 2.0
-    empty_retry_max: float = 8.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_STANDARD
 
 
 CFG = ArbeitnowCfg()
-
-
-def _iso(ts: Any) -> str | None:
-    """created_at приходит unix-секундами -> ISO-UTC (в остальных источниках дата уже строка)."""
-    try:
-        return datetime.datetime.fromtimestamp(int(ts), tz=datetime.timezone.utc).isoformat()
-    except (TypeError, ValueError, OSError):
-        return None
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -72,26 +57,13 @@ def _sig(it: dict[str, Any]) -> str:
     return str(it.get("created_at") or "")
 
 
-def _warn_if_hole(pages: list[int], chunks: list[list[dict[str, Any]]]) -> None:
-    """Обход прерывается на первой пустой странице. Если ПОСЛЕ неё в той же пачке страница
-    отдала данные, пустая была ДЫРОЙ, а не концом выдачи: список не кончился, а обход всё
-    равно остановлен, и хвост за пачкой не собран. Молчать про это нельзя — именно молчание
-    превратило троттлинг himalayas в «успешный» сбор 40 % портала (07.08.2026)."""
-    empty = [p for p, c in zip(pages, chunks) if not c]
-    last_full = max((p for p, c in zip(pages, chunks) if c), default=0)
-    if empty and empty[0] < last_full:
-        log.warning("arbeitnow: обход оборван на ПУСТОЙ странице {}, но страница {} той же "
-                    "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана",
-                    empty[0], last_full)
-
-
 def _normalize(it: dict[str, Any]) -> VacancyRecord:
     """Карточка arbeitnow -> VacancyRecord (ACL: внешняя схема живёт только здесь)."""
     name = str(it.get("title") or "")
     tags = " ".join(str(t) for t in (it.get("tags") or []))
     jtypes = " ".join(str(t) for t in (it.get("job_types") or []))
     desc = str(it.get("description") or "")
-    created = _iso(it.get("created_at"))
+    created = ts_to_iso(it.get("created_at"))
     slug = str(it.get("slug") or "")
     vac = build_vacancy(
         vid=f"arbeitnow_{slug}",                 # неймспейс — не сталкивается с id других порталов
@@ -129,42 +101,17 @@ class ArbeitnowSource(Source):
         """Одна страница с ретраями ТРАНСПОРТА (сбой curl / битый JSON). Пустой список
         от отвечающего портала здесь не ретраится — это делает `_get_page`."""
         headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(f"{CFG.api_url}?page={page}", headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    data: list[dict[str, Any]] = payload.get("data") or []
-                    return data
-                except json.JSONDecodeError as e:
-                    log.debug("arbeitnow page={}: {}", page, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return []
+        payload = await fetch_json_retry(
+            f"{CFG.api_url}?page={page}", headers=headers, policy=CFG.retry,
+            parse=lambda p: p.get("data") or [],
+            log_context=f"arbeitnow page={page}")
+        return payload or []
 
     async def _get_page(self, page: int) -> list[dict[str, Any]]:
-        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — та же семантика, что в
-        `himalayas.py::_get_page` (3 попытки с паузами 2/4/8 с).
-
-        Урок инцидента 07.08.2026 (himalayas: 12 043 из 26 216 легли в кеш под видом полного
-        среза): портал под троттлингом отдаёт HTTP 200 с пустым списком, внешне неотличимый
-        от «выдача кончилась», а ретраи транспорта на это не срабатывают — ответ-то пришёл.
-        Обход выходил по первой такой странице и отчитывался успехом. Пришли данные со
-        второй-четвёртой попытки — это был троттлинг; пусто после всех — конец выдачи."""
-        data = await self._fetch_once(page)
-        if data:
-            return data
-        delay = CFG.empty_retry_delay
-        for attempt in range(CFG.empty_retries):
-            await asyncio.sleep(delay)
-            data = await self._fetch_once(page)
-            if data:
-                log.debug("arbeitnow page={}: пусто было троттлингом, ответ с попытки {}",
-                          page, attempt + 2)
-                return data
-            delay = min(delay * 2, CFG.empty_retry_max)
-        return []
+        """Страница с ПЕРЕПРОВЕРКОЙ пустого ответа — общая `base.get_page_with_empty_retry`
+        (семантика и урок инцидента 07.08.2026 живут там, одна копия на три адаптера)."""
+        return await get_page_with_empty_retry(
+            lambda: self._fetch_once(page), f"page={page}", source="arbeitnow")
 
     async def collect(self) -> list[VacancyRecord]:
         first = await self._get_page(1)
@@ -187,7 +134,7 @@ class ArbeitnowSource(Source):
             read += len(batch)
             if any(not c for c in chunks):       # пусто ПОСЛЕ перепроверок — список кончился
                 exhausted = True
-                _warn_if_hole(batch, chunks)
+                warn_if_hole(batch, chunks, source="arbeitnow")
                 break
             page = batch[-1] + 1
 
@@ -202,7 +149,7 @@ class ArbeitnowSource(Source):
         recs = normalize_each(uniq.values(), _normalize, source="arbeitnow")
         # Портал общий, не IT-шный: две трети выдачи — ритейл/логистика/медицина.
         # См. config.GLOBAL_SOURCES_IT_ONLY — там причина и способ выключить.
-        out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out = it_only(recs)
         # `read`, а не `page - 1`: записи последней пачки добавляются ДО выхода из цикла,
         # поэтому счётчик по `page` занижал итог (в логе 37 при реально прочитанных 43).
         log.info("arbeitnow: собрано {} (страниц {}, карточек {}, дублей {}, не-IT отсеяно {})",

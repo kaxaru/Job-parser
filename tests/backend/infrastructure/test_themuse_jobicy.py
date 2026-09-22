@@ -5,7 +5,6 @@
 проверяется: один и тот же «senior» с любого портала обязан попасть в одну корзину, иначе
 поедут и отбор кандидатов, и срезы аналитики.
 """
-import asyncio
 import datetime
 
 import pytest
@@ -94,20 +93,10 @@ def test_themuse_has_no_salary():
     assert themuse._normalize(_muse()).vacancy.salary is None
 
 
-def test_themuse_broken_card_is_skipped_without_killing_the_source(monkeypatch):
-    # РЕГРЕСС 08.08.2026: исключение из _normalize пробивало до hh.py::_run_source, источник
-    # отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов. Кривая карточка — чужие данные:
-    # пропускается поштучно. Здесь ломается locations (список строк вместо объектов).
-    batch = [_muse(id="1"), _muse(id="2", locations=["New York, NY"]), _muse(id="3")]
-
-    async def fake_page(query, page):
-        return batch if page == 1 else []
-
-    src = themuse.ThemuseSource()
-    monkeypatch.setattr(src, "_get_page", fake_page)
-
-    out = asyncio.run(src.collect())
-    assert [r.vacancy.id for r in out] == ["themuse_1", "themuse_3"]
+# Изоляция кривой карточки когда-то проверялась и здесь (`test_themuse_broken_card_is_skipped_
+# without_killing_the_source`). Сценарий — свойство общей функции `base.normalize_each`, а не
+# схемы портала, поэтому его единственное место — `test_source_item_isolation.py`
+# (аудит 22.09.2026, §6).
 
 
 # ── jobicy ─────────────────────────────────────────────────────────────────────

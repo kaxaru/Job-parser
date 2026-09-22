@@ -232,7 +232,6 @@ def test_collect_writes_pre_dedup_base_when_meta_has_none(tmp_path, monkeypatch,
     result = asyncio.run(hh.collect(force=False))
 
     assert len(result) == 420
-    assert repo.saved is not None
     assert len(repo.saved) == 420
     after = _meta(meta_path)
     assert after[META_KEY] == {"talanto": 420}     # база записана по СЕГОДНЯШНЕМУ pre-dedup
@@ -270,7 +269,6 @@ def test_collect_writes_cache_after_source_left_sources(tmp_path, monkeypatch):
     result = asyncio.run(hh.collect(force=False))
 
     assert len(result) == 1000
-    assert repo.saved is not None
     assert len(repo.saved) == 1000
     assert _meta(meta_path)[META_KEY] == {"hh": 1000}   # выключенный портал ушёл и из базы
 
@@ -319,7 +317,6 @@ def test_force_overwrites_cache_despite_collapse_and_rebases_gate(tmp_path, monk
     result = asyncio.run(hh.collect(force=True))
 
     assert len(result) == 100
-    assert repo.saved is not None
     assert len(repo.saved) == 100
     assert _meta(meta_path)[META_KEY] == {"hh": 100}   # новая база — то, что реально собрано
 
@@ -341,5 +338,4 @@ def test_enrich_keeps_pre_dedup_base(tmp_path, monkeypatch):
     after = _meta(meta_path)
     assert after[META_KEY] == {"talanto": 1000}
     assert after["count"] == 800
-    assert repo.saved is not None
     assert len(repo.saved) == 800

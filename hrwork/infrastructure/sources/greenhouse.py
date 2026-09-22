@@ -32,14 +32,14 @@ stripe 566 против 38, openai 731 против 3).
 import html
 from typing import Any
 
-from hrwork.config import GLOBAL_SOURCES_IT_ONLY, GREENHOUSE_BOARDS, log
+from hrwork.config import GREENHOUSE_BOARDS, log
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .ats import collect_boards
-from .base import Source, normalize_each, register_source
+from .ats import board_jobs, collect_boards
+from .base import Source, it_only, normalize_each, register_source
 from .text import strip_html
 
 SITE = "https://boards-api.greenhouse.io"
@@ -50,10 +50,6 @@ def board_url(org: str) -> str:
     """URL борда компании. `content=true` включает описание — иначе понадобилась бы
     вторая фаза на каждую вакансию, а их тысячи."""
     return f"{API}/{org}/jobs?content=true"
-
-
-def _jobs(payload: Any) -> list[dict[str, Any]]:
-    return list((payload or {}).get("jobs") or [])
 
 
 def _text(content: Any) -> str:
@@ -131,7 +127,8 @@ class GreenhouseSource(Source):
         pass                                     # ключа и прокси не нужно — публичный API
 
     async def collect(self) -> list[VacancyRecord]:
-        alive = await collect_boards(GREENHOUSE_BOARDS, board_url, _jobs, source="greenhouse")
+        alive = await collect_boards(GREENHOUSE_BOARDS, board_url, board_jobs,
+                                     source="greenhouse")
         if not alive:
             return []
 
@@ -149,7 +146,7 @@ class GreenhouseSource(Source):
         # Борд работодателя — НЕ IT-выдача: техкомпании публикуют там продажи, саппорт
         # и юристов на тех же страницах. Замер 13.08.2026 по обоим ATS: 43 % бесспорно
         # не-IT (Account Executive, BDR, Accounting Manager). См. GLOBAL_SOURCES_IT_ONLY.
-        out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out = it_only(recs)
         log.info("greenhouse: собрано {} (бордов {} из {}, карточек {}, дублей {}, "
                  "не-IT отсеяно {})", len(out), len(alive), len(GREENHOUSE_BOARDS),
                  total, total - len(uniq), len(recs) - len(out))

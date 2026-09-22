@@ -306,15 +306,10 @@ def test_collect_takes_the_grade_from_cache_without_touching_the_card(monkeypatc
            [("getmatch_35091", "between3And6")]
 
 
-def test_one_broken_card_does_not_kill_the_source(monkeypatch):
-    """АУДИТ 08.08.2026: исключение из `_normalize` пробивало до `hh.py::_run_source`, тот
-    отдавал [], и санити-гейт замораживал кеш ВСЕХ порталов. Кривая карточка — чужие данные:
-    её пропускаем со счётчиком, остальные доезжают."""
-    broken = {**ITEM, "id": 999, "company": ["дрейф схемы: список вместо объекта"]}
-    pages = {0: {"meta": {"total": 2}, "offers": [ITEM, broken]}}
-    src = _src(monkeypatch, pages)
-    out = asyncio.run(src.collect())
-    assert [r.vacancy.id for r in out] == ["getmatch_35091"]
+# Изоляция кривой карточки (`test_one_broken_card_does_not_kill_the_source`) проверяется
+# В ОДНОМ месте — `test_source_item_isolation.py`: это свойство общей функции
+# `base.normalize_each`, а не схемы конкретного портала (аудит 22.09.2026, §6 «дубли
+# сценариев между файлами адаптеров»).
 
 
 # ── Текст карточки идёт в детекцию, а не только короткая выжимка (10.08.2026) ──────────

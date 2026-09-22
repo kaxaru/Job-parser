@@ -130,3 +130,39 @@ def test_repository_save_without_volumes_keeps_the_base(tmp_path, meta_file):
     repo.save([_rec(1), _rec(2)])
     after = _meta(meta_file)
     assert (after[META_KEY], after["count"]) == ({"talanto": 1000}, 2)
+
+
+# ─── Метка сбора: возраст среза для баннера ленты (20.08.2026) ──────────────────
+# `cache_valid` на любой неожиданности молча отвечает False — это безопасно, потому что
+# означает «собрать заново». У читателя метки исход другой: она едет в браузер и решает,
+# показывать ли «данные устарели». Поэтому «метки нет» обязано отличаться от «срез старый»:
+# первое — молчание, второе — баннер. Ноль вместо None означал бы 01.01.1970, то есть вечный
+# баннер там, где честный ответ — «не знаю».
+def test_collect_mark_reads_back_from_meta(meta_file):
+    files.save_meta(count=5)
+    assert files.collected_at() == pytest.approx(_meta(meta_file)["collected_at"])
+
+
+def test_missing_meta_file_has_no_collect_mark(meta_file):
+    assert files.collected_at() is None
+
+
+@pytest.mark.parametrize("stored", [
+    pytest.param({}, id="ключа нет"),
+    pytest.param({"collected_at": None}, id="null"),
+    pytest.param({"collected_at": "2026-08-16T17:53:00"}, id="строка вместо секунд"),
+    pytest.param({"collected_at": 0}, id="ноль — это 1970, а не «давно»"),
+    pytest.param({"collected_at": -1}, id="отрицательное"),
+    pytest.param({"collected_at": True}, id="bool: в Python True == 1, то есть снова 1970"),
+])
+def test_unusable_collect_mark_reads_as_unknown(meta_file, stored):
+    meta_file.write_text(json.dumps(stored), encoding="utf-8")
+    assert files.collected_at() is None
+
+
+def test_collect_mark_survives_a_float_second_fraction(meta_file):
+    """`time.time()` отдаёт дробные секунды — их нельзя ронять в int: метка едет в JS,
+    где из неё считается возраст, и округление до секунды там ничего не меняет, а вот
+    падение на `isinstance(ts, int)` обнулило бы весь баннер."""
+    meta_file.write_text(json.dumps({"collected_at": 1_770_878_400.75}), encoding="utf-8")
+    assert files.collected_at() == 1_770_878_400.75

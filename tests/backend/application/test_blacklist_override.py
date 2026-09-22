@@ -143,9 +143,10 @@ def test_comment_keys_are_not_rules():
     from hrwork.config import APPLY_BLACKLISTS
     example_bl = json.loads(_EXAMPLE.read_text(encoding="utf-8"))["blacklists"]
     assert sorted(k for k in example_bl if k.startswith("_")) == [
-        "_help_analyst", "_help_devops", "_help_internship", "_help_lead", "_help_management",
-        "_help_ml", "_help_non_engineering", "_help_operations", "_help_other_engineering",
-        "_help_other_lang", "_help_qa", "_help_target_engineering"]
+        "_help_analyst", "_help_devops", "_help_gamedev", "_help_internship", "_help_lead",
+        "_help_management", "_help_ml", "_help_non_engineering", "_help_operations",
+        "_help_other_engineering", "_help_other_lang", "_help_qa", "_help_security",
+        "_help_target_engineering"]
     assert [k for k in APPLY_BLACKLISTS if k.startswith("_")] == []
 
 
@@ -154,8 +155,8 @@ def test_every_rule_key_is_wired():
     обещает ручку, которой нет."""
     # ключи, которые реально читает candidates.py
     wired = {"lead", "internship", "other_engineering", "operations", "management",
-             "non_engineering", "qa", "analyst", "ml", "devops", "other_lang",
-             "target_engineering"}
+             "non_engineering", "qa", "analyst", "ml", "devops", "security", "gamedev",
+             "other_lang", "target_engineering"}
     assert set(_EXAMPLE_RULES) == wired
 
 

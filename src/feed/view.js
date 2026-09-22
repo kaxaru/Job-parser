@@ -3,10 +3,32 @@
 
 import { coverLetter, coverTemplates } from './cover.js';
 import { loadDescriptions } from './marks.js';
-import {ageColor, cardColor, cardTone, chatAgeLabel, employmentLabel, esc, filterVacancies, fmtSal, hashId, isFrozenChat, matchColor, matchInk, portalSite, 
+import {ageColor, cardColor, cardTone, chatAgeLabel, employmentLabel, esc, filterVacancies, fmtSal, hashId, isBotInterview, isFrozenChat, matchColor, matchInk, portalSite,
   SCHED_LABELS, STATUS_BTNS, safeUrl, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
+
+/* Аккаунты hh.ru (RFC-004): код -> метка, и сколько их всего. Наполняется из /api/accounts
+   (main.js::setAccounts). При одном аккаунте метку на карточке не рисуем — старый вид. */
+let ACCOUNT_LABELS = {};
+let ACCOUNT_COUNT = 1;
+export function setAccounts(list) {
+  ACCOUNT_LABELS = Object.fromEntries((list || []).map(a => [a.code, a.label || a.code]));
+  ACCOUNT_COUNT = (list || []).length || 1;
+}
+
+/* Метка профиля на карточке отклика: от какого аккаунта ушёл отклик. Два аккаунта на одной
+   вакансии — КОНФЛИКТ (оба откликнулись), показываем оба и красим иначе. Пусто при одном
+   аккаунте (`ACCOUNT_COUNT < 2`) или если вакансия не из журнала. Экспорт — для теста. */
+export function accountBadge(codes) {
+  if (ACCOUNT_COUNT < 2 || !codes?.length) return '';
+  const labels = codes.map(c => ACCOUNT_LABELS[c] || c);
+  const conflict = codes.length > 1;
+  const bg = conflict ? '#B45309' : '#3F5C8A';
+  const title = conflict ? 'Отклик от нескольких аккаунтов на одну вакансию' : 'Аккаунт отклика';
+  return `<span class="status-badge" style="background:${bg}"`
+       + ` title="${esc(title)}">${conflict ? '⚠ ' : '👤 '}${esc(labels.join(' + '))}</span>`;
+}
 
 /* ── Билдеры разметки (чистые) ── */
 /* Плавная смена темы: новая тема раскрывается кругом из кнопки-переключателя
@@ -90,6 +112,7 @@ export function statusBadge(v) {
     out += '<span class="status-badge" style="background:#A35F90"'
          + ' title="Требует заполнения формы-опросника на HH">📝 форма</span>';
   }
+  out += accountBadge(v.applied?.accounts);      /* метка профиля (RFC-004) — при ≥2 аккаунтах */
   if (v.form_dead) {                          /* свип форм не нашёл полей — вакансия снята/архив */
     out += '<span class="status-badge" style="background:#5c6068"'
          + ' title="Форма отклика недоступна — вакансия, скорее всего, снята с публикации">⌛ не актуальна</span>';
@@ -100,7 +123,7 @@ export function statusBadge(v) {
   if (v.chat?.needs_reply) {
     const c = v.chat;
     const frozen = isFrozenChat(c);                  /* тупик: заглушка «свяжемся» или бот-интервью */
-    const botIv = c.kind === 'bot_interview';        /* интервью у бота в Telegram/Max — полумёртвое */
+    const botIv = isBotInterview(c);                 /* интервью у бота в Telegram/Max — полумёртвое */
     const who = frozen ? '' : c.sender === 'human' ? '👤' : c.sender === 'bot' ? '🤖' : '📋';
     const bg = botIv ? '#E8C11C'                     /* жёлтый — уводит во внешний мессенджер */
              : frozen ? '#4A7B9A'                    /* фриз — ледяной, отличать от живых вопросов */
@@ -141,7 +164,9 @@ function freshBadge(v) {
   const gap   = (v.gap != null && v.gap > 7) ? ` · переопубл. +${v.gap}д` : '';
   const resp  = (v.resp != null) ? ` · ${v.resp} откл.` : '';
   const title = `Создана ${v.age} дн назад${gap}${resp}`;
-  return `<span class="fresh-badge" style="color:${color};font-weight:600"`
+  /* Тон и жирность — инлайном (цвет считается под контраст подложки): класса нет намеренно,
+     правила в feed.css ему не было — только пустой хук (аудит 2026-09-22, §4). */
+  return `<span style="color:${color};font-weight:600"`
        + ` title="${esc(title)}">${icon}${v.age}д${gap}</span>`;
 }
 
@@ -151,12 +176,29 @@ const STATUS_BTNS_HTML = STATUS_BTNS.map(s =>
   `<button class="status-btn st-${s.act}-btn" data-act="${s.act}" title="${s.title}">${s.label}</button>`,
 ).join('');
 
+/* ── Общие строки карточки и модалки ──
+   «работодатель · город» и «зарплата · грейд [· формат · оформление]» собирались ДВАЖДЫ
+   (`cardHTML` и `showModal`) и по-разному — аудит 2026-09-22, §3.3. Возвращают УЖЕ
+   экранированную разметку: карточка вставляет её как есть, модалка — без повторного `esc()`
+   (двойное экранирование показывало бы «&quot;» — инцидент 08.08.2026). */
+export function subLine(v) {
+  return [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
+}
+
+/* `extended` — модалка: там полей НАМЕРЕННО больше (формат работы и формы оформления).
+   В карточке строка несёт только зарплату и грейд — форма названа лишь у части вакансий,
+   а формат дублировал бы чип. Так текущее поведение обеих поверхностей и сохранено. */
+export function salLine(v, extended = false) {
+  const parts = [fmtSal(v, _displayCur), v.exp];
+  if (extended) parts.push(SCHED_LABELS[v.schedule] || v.schedule || '', employmentLabel(v));
+  return parts.filter(Boolean).map(esc).join(' · ');
+}
+
 /* Разметка карточки БЕЗ статуса (статус — класс, навешивается после вставки),
    чтобы кэш HTML оставался валидным при тоггле отклика/отказа. */
 function cardHTML(v) {
-  const sal     = fmtSal(v, _displayCur);
-  const salLine = sal ? `${sal} · ${esc(v.exp)}` : esc(v.exp);
-  const sub     = [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
+  const sal = salLine(v);
+  const sub = subLine(v);
   return `<div class="card${v.form_dead ? ' st-dead' : ''}" data-id="${esc(v.id)}"
      tabindex="0" role="button" aria-label="${esc(v.name)} — открыть карточку">
   <div class="tags">${tagsHTML(v.techs, 8)}</div>
@@ -164,7 +206,7 @@ function cardHTML(v) {
      onclick="event.stopPropagation()">${esc(v.name)}</a>
   <div class="card-sub">${sub} ${freshBadge(v)}</div>
   <div class="card-status">${statusBadge(v)}</div>
-  <div class="card-sal"><span>${salLine}</span>${matchBadge(v)}</div>
+  <div class="card-sal"><span>${sal}</span>${matchBadge(v)}</div>
   <div class="card-foot">${STATUS_BTNS_HTML}</div>
 </div>`;
 }
@@ -298,6 +340,26 @@ export function setSync(syncState) {
   el.className = `sync-status ${cls}`;
 }
 
+/* ── Баннер «данные устарели» (model.js::staleNow) ──
+   Текст, а не иконка в углу: молчаливый отказ сбора уже один раз прожил трое суток
+   незамеченным, и сигнал должен читаться, не требуя догадки. null -> прячем: баннер
+   обязан уметь ГАСНУТЬ, его перерисовывает тот же пятиминутный цикл, что и оверлей. */
+export function setStale(notice) {
+  const el = document.getElementById('stale-banner');
+  if (!el) return;
+  if (!notice) { el.hidden = true; el.textContent = ''; return; }
+  const { hours, at } = notice;
+  /* До двух суток счёт в часах (виден масштаб «проспали один прогон»), дальше в днях —
+     «79 ч» глазом не читается, а «3 дня» читается. */
+  const age = hours < 48 ? `${Math.round(hours)} ч` : `${Math.floor(hours / 24)} дн`;
+  const when = at.toLocaleString('ru-RU',
+    { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  el.textContent = `⚠ Данные устарели: срез от ${when}, это ${age} назад. `
+    + 'Сбор не доезжает до кеша — проверь logs/cron_collect.log (санити-гейт?) '
+    + 'и прогони python hh.py collect.';
+  el.hidden = false;
+}
+
 /* ── Модалка ── */
 const overlay  = document.getElementById('modal-overlay');
 const modalBox = document.getElementById('modal-box');
@@ -310,13 +372,11 @@ let   _serverMode = false;   /* кнопка «Откликнуться в фо�
 
 export function showModal(v) {
   activeId = v.id;
-  const sal      = fmtSal(v, _displayCur);
-  const schedLbl = SCHED_LABELS[v.schedule] || v.schedule || '';
-  /* Форма оформления — только в модалке: в карточке строка и так несёт зарплату, грейд
-     и формат, а форма названа лишь у части вакансий (см. views/feed.py::EMP_UNKNOWN). */
-  const salLine  = [sal, v.exp, schedLbl, employmentLabel(v)].filter(Boolean).join(' · ');
-  const sub      = [v.employer, v.city].filter(Boolean).map(esc).join(' · ');
-  const portal   = portalSite(v.source);
+  /* Строка «зарплата · грейд · формат · оформление» — РАСШИРЕННАЯ (в карточке полей меньше):
+     форма оформления и формат работы уместны только здесь. Общий билдер — `salLine`. */
+  const sal    = salLine(v, true);
+  const sub    = subLine(v);
+  const portal = portalSite(v.source);
   /* автоклик (Playwright) — только HH; у прочих порталов лишь прямая ссылка */
   const canBg    = _serverMode && (v.source || 'hh') === 'hh';
 
@@ -326,7 +386,7 @@ export function showModal(v) {
       <div class="modal-tags">${tagsHTML(v.techs)}</div>
       <a class="modal-title" href="${safeUrl(v.url)}" target="_blank" rel="noopener noreferrer">${esc(v.name)}</a>
       <div class="modal-meta">${sub}</div>
-      <div class="modal-sal"><span>${esc(salLine)}</span>${matchBadge(v)}</div>
+      <div class="modal-sal"><span>${sal}</span>${matchBadge(v)}</div>
     </div>
     <div class="modal-body">
       <div class="cover" id="m-cover"></div>

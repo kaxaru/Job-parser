@@ -7,6 +7,7 @@ from hrwork.application.apply.outcome import ApplyChannel
 from hrwork.application.apply.runtime import quota
 from hrwork.application.apply.runtime.store import ApplicationStore
 from hrwork.infrastructure.storage import MARK_VALUES, followup, marks
+from hrwork.infrastructure.storage.followup import JournalRow
 
 _QUOTA_DAY = "2026-08-08"      # «сегодня» квоты, фиксированное -> прогон не зависит от часов
 
@@ -20,7 +21,7 @@ def tmp_state(tmp_path, monkeypatch):
     (аудит 08.08.2026). Публичного шва у модуля нет — замораживаем `quota._today`."""
     monkeypatch.setattr(marks, "MARKS_FILE", tmp_path / "marks.json")
     monkeypatch.setattr(quota, "QUOTA_FILE", tmp_path / "apply_quota.json")
-    monkeypatch.setattr(quota, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(quota, "ACCOUNT_DIR", tmp_path)
     monkeypatch.setattr(quota, "_today", lambda: _QUOTA_DAY)
     monkeypatch.setattr(followup, "APPLIED_LOG_FILE", tmp_path / "applied_log.jsonl")
     monkeypatch.setattr(followup, "RESPONSE_STATUS_FILE", tmp_path / "response_status.json")
@@ -36,12 +37,21 @@ def test_marks_merge_and_set(tmp_state):
     assert s.marks() == {"1": "applied"}
     s.merge_marks({"2": "rejected"})                # домержили, не потеряв "1"
     assert s.marks() == {"1": "applied", "2": "rejected"}
-    s.set_marks({"9": "applied"})                   # полная замена (лента шлёт свой набор)
-    assert s.marks() == {"9": "applied"}
+    s.set_marks({"9": "applied"})                   # набор ленты заменяет карту…
+    assert s.marks() == {"1": "applied", "9": "applied"}   # …но «откликнулись» с диска не теряет (RFC-004)
+
+
+# RFC-004: лента шлёт ВСЮ карту, загруженную раньше. «Откликнулись», записанное за это время
+# кроном, синком или другим аккаунтом, полная замена стирала — и отбор видел вакансию свободной.
+def test_feed_marks_keep_applied_written_by_other_processes(tmp_state):
+    s = ApplicationStore()
+    s.merge_marks({"1": "applied", "2": "rejected", "3": "applied"})
+    s.set_marks({"3": "rejected", "4": "rejected"})     # лента не знает про "1", сняла "2", сменила "3"
+    assert s.marks() == {"1": "applied", "3": "rejected", "4": "rejected"}
 
 
 def test_mark_applied_writes_a_value_the_marks_filter_accepts(tmp_state):
-    # СТРАЖ СОГЛАСОВАННОСТИ. `save_marks`/`load_marks` молча выбрасывают значение не из
+    # СТРАЖ СОГЛАСОВАННОСТИ. `update_marks`/`load_marks` молча выбрасывают значение не из
     # MARK_VALUES, поэтому литерал мимо VO (опечатка "aplied") не упал бы — он бы просто
     # ПОТЕРЯЛ отметку, и крон откликнулся бы на ту же вакансию повторно.
     ApplicationStore().mark_applied("42")
@@ -75,13 +85,30 @@ def test_reconcile_quota_delegates(tmp_state):
 
 def test_journal_and_applied_ids(tmp_state):
     s = ApplicationStore()
-    s.log_applied("11", "Dev A", "u1", via=ApplyChannel.CRON)
-    s.log_applied("22", "Dev B", "u2", via=ApplyChannel.FEED)
+    s.log_applied(JournalRow("11", "Dev A", "u1", via=ApplyChannel.CRON.code))
+    s.log_applied(JournalRow("22", "Dev B", "u2", via=ApplyChannel.FEED.code))
     log = {e["id"]: e for e in s.applied_log()}
     assert set(log) == {"11", "22"}
     assert log["11"]["via"] == "cron"                 # VO -> строка на диске
     assert log["22"]["via"] == "feed"
     assert s.applied_ids() == {"11", "22"}
+
+
+# RFC-004 R14: по строке журнала видно, от какого аккаунта ушёл отклик и был ли он в общей
+# части A/B. «Неизвестно» (синк, одиночный аккаунт) поле `ab` не пишет — иначе анализ прочёл бы
+# его как «вне сплита».
+@pytest.mark.parametrize("ab, expected_tail", [
+    (True, {"account": "main", "ab": True}),
+    (False, {"account": "main", "ab": False}),
+    (None, {"account": "main"}),
+])
+def test_journal_row_names_the_account_and_the_ab_share(tmp_state, ab, expected_tail):
+    ApplicationStore().log_applied(JournalRow("7", "N", "u", via=ApplyChannel.CRON.code,
+                                                  ts="2026-09-15T12:00:00+04:00",
+                                                  employer="Acme", ab=ab))
+    row = json.loads((tmp_state / "applied_log.jsonl").read_text(encoding="utf-8"))
+    assert row == {"id": "7", "name": "N", "url": "u", "via": "cron", "status": "applied",
+                   "ts": "2026-09-15T12:00:00+04:00", "employer": "Acme", **expected_tail}
 
 
 def test_statuses_and_forms(tmp_state):
@@ -117,6 +144,6 @@ def test_store_shares_disk_state_across_instances(tmp_state):
     ApplicationStore().mark_applied("7")
     assert ApplicationStore().marks() == {"7": "applied"}
     # записанный журнал читается корректно и как валидный JSONL
-    ApplicationStore().log_applied("7", "N", "u", via=ApplyChannel.CRON)
+    ApplicationStore().log_applied(JournalRow("7", "N", "u", via=ApplyChannel.CRON.code))
     lines = (tmp_state / "applied_log.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert json.loads(lines[0])["id"] == "7"

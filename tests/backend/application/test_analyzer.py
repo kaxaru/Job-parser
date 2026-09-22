@@ -179,6 +179,18 @@ def test_salary_by_experience_below_threshold_excluded():
     assert Analyzer.with_live_rates(vacs).salary_by_experience() == {}
 
 
+def test_salary_by_experience_names_the_unstated_grade():
+    """Вакансия без грейда попадает в бакет «Не указан» — ту же подпись отдаёт чип ленты.
+
+    До 23.09.2026 подпись жила двумя копиями (`views/feed.py::EXP_UNKNOWN` и здесь), и связать
+    фильтр с отчётом «6. Зарплата по опыту» было нечем (аудит `2026-09-22-quality.md`, §3.2).
+    Литерал из спеки, а не `config.EXP_UNKNOWN_LABEL`: значение видит человек в CSV."""
+    vacs = [_vac(str(i), "Москва", 100_000, exp=None) for i in range(5)]
+    out = Analyzer.with_live_rates(vacs).salary_by_experience()
+    assert out["Не указан"]["n"] == 5
+    assert out["Не указан"]["median"] == 100_000
+
+
 def test_salary_by_lang_requires_lang_key_and_threshold():
     vacs = [_vac(str(i), "Москва", 100000 + i * 1000, techs=["Python"]) for i in range(5)]
     out = Analyzer.with_live_rates(vacs).salary_by_lang()

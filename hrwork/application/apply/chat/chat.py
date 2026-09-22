@@ -77,22 +77,50 @@ def _chat_vacancy_ids(item: dict[str, Any]) -> list[str]:
     return [str(v) for v in ((item.get("resources") or {}).get("VACANCY") or [])]
 
 
+def _chat_page(request_ctx: Any, xsrf: str,
+               cursor: str | None) -> tuple[list[dict[str, Any]], str | None] | None:
+    """Одна страница списка чатов -> `(items, курсор следующей)`; `None` при сбое или не-200.
+
+    Пагинация у chatik КУРСОРНАЯ: в ответе лежит `chats.nextFrom`, и следующая страница
+    запрашивается `&from=<nextFrom>`. Параметр `&page=N` API игнорирует и отдаёт ПЕРВУЮ
+    страницу на любом запросе (инцидент 21.09.2026: синк аккаунта с 104 чатами сходил 120 раз
+    за одними и теми же 20, статусы не обновлялись вообще)."""
+    url = CHATS_URL if not cursor else f"{CHATS_URL}&from={cursor}"
+    with contextlib.suppress(Exception):
+        r = request_ctx.get(url, headers=_headers(xsrf))
+        if r.status != 200:
+            return None
+        ch: dict[str, Any] = r.json().get("chats") or {}
+        items: list[dict[str, Any]] = ch.get("items") or []
+        nxt = ch.get("nextFrom")
+        return items, (str(nxt) if nxt else None)
+    return None
+
+
+def _chat_list_entry(item: dict[str, Any]) -> dict[str, Any]:
+    """item списка чатов -> запись синка: {chatId, vacancyId, applicantId, lastMessageTime}."""
+    vac = _chat_vacancy_ids(item)
+    return {"chatId": item.get("id"), "vacancyId": vac[0],
+            "applicantId": item.get("currentParticipantId"),
+            "lastMessageTime": ((item.get("lastMessage") or {}).get("creationTime")) or ""}
+
+
 def find_chat(request_ctx: Any, xsrf: str, vacancy_id: Any,
               pages: int = 3) -> tuple[Any, Any]:
     """(chatId, applicantId) для вакансии — из item.id и item.currentParticipantId.
     (None, None), если чат ещё не создан. applicantId нужен для chat_data/сопроводительного."""
     vid = str(vacancy_id)
-    for page in range(pages):
-        with contextlib.suppress(Exception):
-            r = request_ctx.get(CHATS_URL + f"&page={page}", headers=_headers(xsrf))
-            if r.status != 200:
-                return None, None
-            items = ((r.json().get("chats") or {}).get("items")) or []
-            if not items:
-                return None, None
-            for it in items:
-                if vid in _chat_vacancy_ids(it):
-                    return it.get("id"), it.get("currentParticipantId")
+    cursor: str | None = None
+    for _ in range(pages):
+        page = _chat_page(request_ctx, xsrf, cursor)
+        if page is None:
+            return None, None
+        items, cursor = page
+        for it in items:
+            if vid in _chat_vacancy_ids(it):
+                return it.get("id"), it.get("currentParticipantId")
+        if not items or not cursor:
+            return None, None
     return None, None
 
 
@@ -110,7 +138,7 @@ def chat_data(request_ctx: Any, xsrf: str, chat_id: Any, applicant_id: Any) -> d
 
 def chat_entry(chat_id: Any, data: dict[str, Any]) -> dict[str, Any]:
     """chat_data -> запись для chat_messages.json: {chatId, write, messages}.
-    Формат ДОЛЖЕН совпадать с инлайн-сборкой в autoclick.sync_statuses (там она не
+    Формат ДОЛЖЕН совпадать с инлайн-сборкой в hh_sync.sync_statuses (там она не
     вынесена сюда намеренно — боевой путь откликов не рефакторим ради этого). Общий
     потребитель — chat_reply.poll_replies (точечный опрос после отправки)."""
     ch = data.get("chat") or {}
@@ -228,30 +256,31 @@ def quick_replies(request_ctx: Any, xsrf: str, chat_id: Any,
 
 def list_chats(request_ctx: Any, xsrf: str, pages: int = 30) -> list[dict[str, Any]]:
     """Все чаты постранично -> [{chatId, vacancyId, applicantId, lastMessageTime}].
-    Пагинация до пустой страницы (или `pages` максимум). Cookie-only.
+    Идём по курсору `chats.nextFrom` до его конца (или `pages` максимум). Cookie-only.
     lastMessageTime (ISO с tz) — creationTime последнего сообщения из самого списка:
     по нему инкрементальный синк решает «качать или взять из кеша» без запроса в чат.
     НЕ lastActivityTime: то поле обновляет в том числе НАШЕ чтение chat_data (замер
-    23.07: после полного синка 84 % чатов «активны за сутки») — самоотравляющийся сигнал."""
+    23.07: после полного синка 84 % чатов «активны за сутки») — самоотравляющийся сигнал.
+
+    Дубль chatId останавливает обход: страница без новых чатов означает, что курсор
+    не двинулся (защита от повтора последней страницы), а не новый корпус."""
     out: list[dict[str, Any]] = []
-    for page in range(pages):
-        got = False
-        with contextlib.suppress(Exception):
-            r = request_ctx.get(CHATS_URL + f"&page={page}", headers=_headers(xsrf))
-            if r.status != 200:
-                break
-            items = ((r.json().get("chats") or {}).get("items")) or []
-            if not items:
-                break
-            got = True
-            for it in items:
-                vac = _chat_vacancy_ids(it)
-                if vac:
-                    out.append({"chatId": it.get("id"), "vacancyId": vac[0],
-                                "applicantId": it.get("currentParticipantId"),
-                                "lastMessageTime":
-                                    ((it.get("lastMessage") or {}).get("creationTime")) or ""})
-        if not got:
+    seen_chats: set[Any] = set()
+    cursor: str | None = None
+    for _ in range(pages):
+        page = _chat_page(request_ctx, xsrf, cursor)
+        if page is None:
+            break
+        items, cursor = page
+        fresh = 0
+        for it in items:
+            if it.get("id") in seen_chats:
+                continue
+            seen_chats.add(it.get("id"))
+            fresh += 1
+            if _chat_vacancy_ids(it):
+                out.append(_chat_list_entry(it))
+        if not items or not fresh or not cursor:
             break
     return out
 

@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml/badge.svg?branch=dev)](https://github.com/kaxaru/Job-parser/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
-[![Tests](https://img.shields.io/badge/tests-2746%20py%20%2B%20243%20js-success)](docs/testing.md)
+[![Tests](https://img.shields.io/badge/tests-3025%20py%20%2B%20287%20js-success)](docs/testing.md)
 [![Ruff](https://img.shields.io/badge/lint-ruff%20%2B%20biome%20%2B%20mypy%20strict-informational)](ruff.toml)
 
 Агрегатор IT-вакансий с **12 источников** (hh.ru, hirify.me, talanto.work, getmatch.ru,

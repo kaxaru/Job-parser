@@ -1,5 +1,6 @@
-"""Value Object формата работы. Единый источник маппинга HH/hirify -> домен и обратно
-(раньше логика дублировалась: html_client._schedule_from_formats + hirify._schedule_from_wf)."""
+"""Value Object формата работы. Единый источник маппинга «метка портала -> домен» и обратно
+(раньше логика дублировалась: html_client._schedule_from_formats + hirify._schedule_from_wf,
+позже — адаптерные копии таблиц talanto/ashby/devitjobs)."""
 from enum import Enum
 
 
@@ -80,6 +81,32 @@ class Schedule(Enum):
         и тот же ярлык значил на разных порталах разное)."""
         return _TALANTO.get(str(raw or "").strip().lower())
 
+    @classmethod
+    def from_ashby(cls, raw: str | None) -> "Schedule":
+        """`workplaceType` ashby (Remote/Hybrid/OnSite) -> формат. Незнакомое -> OFFICE.
+
+        Строгий контракт (как `from_hirify_wf`): на входе ОДНО поле и конечный набор меток,
+        поэтому «ни одной из известных» — это офис, и доменный дефолт ставит сам парсер,
+        а не каждый вызывающий.
+
+        Регистр НЕ нормализуется: метки портала каноничны (`Remote`/`Hybrid`/`OnSite`), и
+        `remote` в нижнем регистре значил бы дрейф схемы, который лучше увидеть офисом, чем
+        молча угадать. Внешние пробелы при этом снимаются — это шум доставки.
+
+        Таблица стоит рядом с `from_talanto`/`from_getmatch` по той же причине: адаптерная
+        копия доменной таблицы расходится с ней тихо (аудит 22.09.2026)."""
+        return _ASHBY.get(str(raw or "").strip(), cls.OFFICE)
+
+    @classmethod
+    def from_devitjobs(cls, raw: str | None) -> "Schedule":
+        """`workplace` devitjobs (remote/hybrid/office) -> формат. Незнакомое -> OFFICE.
+
+        Берётся именно `workplace`, а не `remoteType`: последний заполнен двумя значениями
+        (None и «onlycountry») и отвечает на другой вопрос — «ограничена ли удалёнка страной»,
+        а не «удалёнка ли это». Регистр портала не фиксирован, поэтому метка приводится
+        к нижнему (работа парсера, а не адаптера)."""
+        return _DEVITJOBS.get(str(raw or "").strip().lower(), cls.OFFICE)
+
     @property
     def is_remote_like(self) -> bool:
         """«Удалёнкоподобность» = REMOTE + HYBRID. ЕДИНСТВЕННЫЙ ответ на вопрос «это
@@ -96,6 +123,20 @@ class Schedule(Enum):
 
 # Коды talanto -> VO. Мягкий парсер: ключа нет -> None (см. `Schedule.from_talanto`).
 _TALANTO: dict[str, Schedule] = {
+    "remote": Schedule.REMOTE,
+    "hybrid": Schedule.HYBRID,
+    "office": Schedule.OFFICE,
+}
+
+# Метки ashby -> VO. Совпадение полное и регистрозависимое (см. `Schedule.from_ashby`).
+_ASHBY: dict[str, Schedule] = {
+    "Remote": Schedule.REMOTE,
+    "Hybrid": Schedule.HYBRID,
+    "OnSite": Schedule.OFFICE,
+}
+
+# Метки devitjobs -> VO. Портал отдаёт их в нижнем регистре (см. `Schedule.from_devitjobs`).
+_DEVITJOBS: dict[str, Schedule] = {
     "remote": Schedule.REMOTE,
     "hybrid": Schedule.HYBRID,
     "office": Schedule.OFFICE,

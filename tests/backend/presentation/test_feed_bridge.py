@@ -18,6 +18,9 @@
 (`_RESUME_STACK_DEFAULT`, `_RESUME_ROLE_FIT_DEFAULT`), а не с разрешёнными
 `RESUME_STACK_TIERS`/`RESUME_ROLE_FIT`: профиль их перекрывает и в офлайн-копию не попадает
 по построению. Страж ловит ровно дрейф КОДА — правку дефолта в Python без правки копии в JS.
+Так же `RESUME_LANGS` (выводится из ядра ПРОФИЛЯ) сверяется с пересечением дефолтного ядра
+и `LANG_KEYS`, а `RESUME_CORE_SATURATION` — со своим источником в `config` (он не профильный:
+дефолт кодовый, `os.getenv` лишь перекрывает его).
 """
 import re
 from pathlib import Path
@@ -25,13 +28,16 @@ from pathlib import Path
 import pytest
 
 from hrwork.application.apply.chat import chat, chat_class
+from hrwork.application.apply.outcome import APPLY_LABELS
 from hrwork.config import (
+    _RESUME_DEFAULT,
     _RESUME_LANG_FIT_DEFAULT,
     _RESUME_ROLE_FIT_DEFAULT,
     _RESUME_STACK_DEFAULT,
     _STACK_TIER_WEIGHTS,
     LANG_KEYS,
     PORTAL_SITES,
+    RESUME_CORE_SATURATION,
 )
 from hrwork.domain.employment import Employment
 from hrwork.domain.experience import Experience
@@ -61,9 +67,28 @@ def _fallback_src(js: str, injected: str) -> str:
     raise AssertionError(f"не найден конец фолбэка для {injected}")
 
 
+def _fallback_expr(js: str, injected: str) -> str:
+    """Текст литерала-фолбэка для СКАЛЯРНОЙ константы (`3`, `'bot_interview'`):
+    `const X = (typeof X_PY !== 'undefined' && X_PY) || <это>;` -> "<это>".
+
+    `_fallback_src` ищет закрывающую скобку и на скаляре не работает: у числа и строки
+    нет `{`/`[`."""
+    start = js.index(f"typeof {injected} !==")
+    rest = js[js.index("||", start) + 2:]
+    return rest[:rest.index(";")].strip()
+
+
 def _js_dict(text: str) -> dict[str, str]:
-    """JS-литерал `{ключ: 'значение', …}` -> dict (ключи — идентификаторы, значения строки)."""
-    return dict(re.findall(r"(\w+):\s*'([^']*)'", text))
+    """JS-литерал `{ключ: 'значение', …}` -> dict (значения — строки).
+
+    Ключ бывает голым идентификатором (`applied`) ИЛИ строкой, когда содержит дефис
+    (`'no-session'`, коды `TransportStatus` в `APPLY_LABELS`), поэтому разбираем обе формы.
+    Голый `(\\w+)` без второй ветви молча пропускал бы `no-session` — и страж сравнивал бы
+    9 ключей из 10."""
+    out: dict[str, str] = {}
+    for quoted, bare, val in re.findall(r"(?:'([\w-]+)'|(\w+)):\s*'([^']*)'", text):
+        out[quoted or bare] = val
+    return out
 
 
 def _js_strings(text: str) -> list[str]:
@@ -82,6 +107,11 @@ def _js_strings(text: str) -> list[str]:
     ("EMP_LABELS_PY", {e.code: e.label for e in Employment}),
     # Домены порталов в модалке (инцидент 01.08.2026: talanto подписывался как «hh.ru»).
     ("PORTAL_SITES_PY", PORTAL_SITES),
+    # Подписи кнопки «Откликнуться в фоне» (`apply/outcome.py::APPLY_LABELS`): ключи — коды
+    # `ApplyOutcome` И `TransportStatus`. Дрейф УЖЕ случился (аудит 2026-09-22-quality.md,
+    # §3.2): сервер отдавал `taken`, метки для которого в фолбэке не было, — в ленте висело
+    # сырое `taken`; `captcha` не был размечен вовсе.
+    ("APPLY_LABELS_PY", APPLY_LABELS),
 ])
 def test_js_label_fallback_matches_python_source(injected, source):
     assert _js_dict(_fallback_src(_MODEL_JS, injected)) == source
@@ -159,6 +189,35 @@ def test_role_fit_fallback_matches_config_default():
     Это ось ЖЕЛАНИЯ, и её расхождение тихое вдвойне: балл поедет, а состав ленты нет —
     заметить можно только по порядку карточек."""
     assert _js_num_map(_fallback_src(_RESUME_JS, "RESUME_ROLE_FIT_PY")) == _RESUME_ROLE_FIT_DEFAULT
+
+
+def test_resume_langs_fallback_matches_the_default_profile_anchor():
+    """`resume.js::RESUME_LANGS` выводится из ядра ПРОФИЛЯ (`RESUME_CORE ∩ LANG_KEYS`),
+    поэтому офлайн-копия сверяется с пересечением ДЕФОЛТНОГО ядра и `LANG_KEYS`, а не с
+    разрешённым значением: у форка со своим `resume_profile.json` сверка падала бы на чужой
+    настройке, а не на дрейфе кода (та же причина, по которой не сверяется RESUME_CORE —
+    см. шапку модуля)."""
+    expected = [t for t in _RESUME_DEFAULT["core"] if t in LANG_KEYS]
+    assert _js_strings(_fallback_src(_RESUME_JS, "RESUME_LANGS_PY")) == expected
+
+
+def test_core_saturation_fallback_matches_the_config_source():
+    """Порог насыщения ядра (`config.RESUME_CORE_SATURATION`) — офлайн-копия обязана
+    совпадать с источником в Python. Не профильная константа (дефолт кодовый, `os.getenv`
+    лишь перекрывает его), поэтому сверяем с самим `config`, а не с дефолтом отдельной
+    константы. Правит БАЛЛ карточки, а не состав ленты -> дрейф заметили бы не сразу
+    (аудит 2026-09-22, §4-40)."""
+    assert _fallback_expr(_RESUME_JS, "RESUME_CORE_SAT_PY") == str(RESUME_CORE_SATURATION)
+
+
+def test_bot_interview_code_fallback_matches_python():
+    """Офлайн-копия кода ЖЁЛТОГО фриза == источник в Python (`ChatKind.BOT_INTERVIEW`).
+
+    Набор `CHAT_FROZEN_PY` отвечает лишь «тупик»: переименуй код в `chat_class`, набор
+    обновится, а литерал в JS нет — и жёлтый тон карточки/бейджа пропал бы молча
+    (аудит 2026-09-22, §3.2)."""
+    code = chat_class.ChatKind.BOT_INTERVIEW.code
+    assert _fallback_expr(_MODEL_JS, "CHAT_BOT_INTERVIEW_PY") == f"'{code}'"
 
 
 def test_state_labels_fallback_carries_the_two_keys_that_drifted():

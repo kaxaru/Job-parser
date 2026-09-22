@@ -5,16 +5,18 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  APPLY_LABELS,
   SCHED_LABELS,
   ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
   countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, isRemoteLike,
   matchColor, matchInk,
   safeUrl,
   isDiscard, isInvited,
-  journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
+  crmStats, effectiveApplied, effectiveChat, effectiveStatus, journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
   comparableSalary,
   employmentLabel,
   hrReplyTime,
+  staleAge,
 } from '../../src/feed/model.js';
 
 /* Фабрика вакансии с дефолтами — переопределяем только нужные поля в каждом тесте.
@@ -616,6 +618,25 @@ describe('filterVacancies — режим «Мои отклики»', () => {
     const out = filterVacancies([a, syn], flt({ status: 'all' }));
     assert.deepEqual(out.map(v => v.id), ['a']);        // syn._synthetic отфильтрован
   });
+  /* Баг 16.09.2026: под «Показать (N)» фильтр зарплат и сортировка не действовали (режим был
+     самостоятельным с ранним return). Теперь «Мои отклики» — лупа, КОМПОНУЕТСЯ с фильтрами. */
+  it('фильтр зарплат компонуется с «Мои отклики»', () => {
+    const hi = vac({ id: 'hi', sal_mid: 200000, applied: { ts: '2026-07-05T10:00:00' } });
+    const lo = vac({ id: 'lo', sal_mid: 90000, applied: { ts: '2026-07-06T10:00:00' } });
+    const out = filterVacancies([hi, lo], flt({ status: 'mine', minSal: 150000 }));
+    assert.deepEqual(out.map(v => v.id), ['hi']);       // lo (90к) отсеян порогом 150к
+  });
+  it('сортировка «свежие» (date_new) компонуется с «Мои отклики»', () => {
+    const oldv = vac({ id: 'o', age: 90, applied: { ts: '2026-07-06T10:00:00' } });
+    const newv = vac({ id: 'n', age: 2, applied: { ts: '2026-07-01T10:00:00' } });
+    // по дате отклика было бы [o, n]; date_new сортирует по свежести вакансии -> [n, o]
+    const out = filterVacancies([oldv, newv], flt({ status: 'mine', sort: 'date_new' }));
+    assert.deepEqual(out.map(v => v.id), ['n', 'o']);
+  });
+  it('без явной сортировки «Мои отклики» — по дате отклика ↓', () => {
+    const out = filterVacancies([b, a], flt({ status: 'mine' }));   // a=05, b=01
+    assert.deepEqual(out.map(v => v.id), ['a', 'b']);
+  });
 });
 
 describe('filterVacancies — сортировка по дате появления вакансии', () => {
@@ -1070,5 +1091,212 @@ describe('«Ответы HR» открывает призраков с отве�
     g.chat.contact = '+7 900';
     const f = flt({ sort: 'none', chatFilter: 'contact' });
     assert.deepEqual(filterVacancies([g], f).map(v => v.id), ['ga']);
+  });
+});
+
+
+/* ── Возраст среза ──────────────────────────────────────────────────────────────
+   Сбор отказывает МОЛЧА: санити-гейт отменяет запись кеша целиком, лента назавтра
+   пересобирается из замороженного среза и выглядит живой. 16-19.08.2026 так простояло
+   трое суток — заметили по остановившимся откликам, а не по ленте.
+   Порог сравнивается через `>=`: ровно на границе баннер уже горит, иначе «36 ч» было бы
+   недостижимым состоянием между двумя тиками таймера. */
+describe('staleAge — возраст среза против порога', () => {
+  const HOUR = 3600;
+  const now = 1_770_878_400_000;                    /* мс эпохи, фиксированные */
+  const agoH = h => now / 1000 - h * HOUR;
+
+  it('свежий срез — молчание', () => {
+    assert.equal(staleAge(agoH(5), 36, now), null);
+  });
+
+  it('старше порога — возраст в часах и момент сбора', () => {
+    const notice = staleAge(agoH(79), 36, now);
+    assert.equal(Math.round(notice.hours), 79);
+    assert.equal(notice.at.getTime(), agoH(79) * 1000);
+  });
+
+  it('ровно на пороге баннер уже горит', () => {
+    assert.ok(staleAge(agoH(36), 36, now));
+  });
+
+  it('на волосок до порога — ещё нет', () => {
+    assert.equal(staleAge(agoH(36) + 1, 36, now), null);
+  });
+
+  /* Метки нет — это НЕ «протухло»: так выглядит file:// без feed-data.js и кеш от версии
+     без метки. Ноль отдельным случаем: 0 — это 1970, и наивное `if (collectedAt)` там
+     сработало бы правильно, а `typeof === 'number'` без проверки знака — нет. */
+  for (const [id, value] of [
+    ['метки нет', undefined], ['null', null], ['ноль (1970)', 0], ['отрицательное', -1],
+    ['строка', '1770878400'], ['NaN', NaN],
+  ]) {
+    it(`${id} -> молчание, а не вечный баннер`, () => {
+      assert.equal(staleAge(value, 36, now), null);
+    });
+  }
+});
+
+
+describe('effectiveStatus — статус карточки под фильтром профиля (RFC-004)', () => {
+  const byAcct = { main: 'DISCARD', acc2: 'RESPONSE' };   /* отказ у основного, отклик у второго */
+  it('фильтр acc2 -> статус acc2 (а не отказ основного) — баг 15.09.2026', () => {
+    assert.equal(effectiveStatus(byAcct, new Set(['acc2'])), 'RESPONSE');
+  });
+  it('фильтр основного -> его статус', () => {
+    assert.equal(effectiveStatus(byAcct, new Set(['main'])), 'DISCARD');
+  });
+  it('без фильтра при конфликте -> приоритет приглашение > отказ > прочее', () => {
+    assert.equal(effectiveStatus({ main: 'RESPONSE', acc2: 'INVITATION' }, new Set()), 'INVITATION');
+    assert.equal(effectiveStatus(byAcct, new Set()), 'DISCARD');
+  });
+  it('нет статусов у выбранного профиля -> null', () => {
+    assert.equal(effectiveStatus({ main: 'DISCARD' }, new Set(['acc2'])), null);
+    assert.equal(effectiveStatus(null, new Set()), null);
+  });
+});
+
+describe('effectiveChat — переписка и её дата под фильтром профиля (RFC-004)', () => {
+  const cMain = { ts: 'old', label: 'отказ' };      /* чат основного: старый (19 дней назад) */
+  const cAcc2 = { ts: 'new', label: 'отказ' };      /* чат acc2: его собственная дата */
+  const byAcct = { main: cMain, acc2: cAcc2 };
+  it('фильтр acc2 -> чат (и дата) acc2, а не основного — баг 16.09.2026 «отказ 19 дней назад»', () => {
+    assert.equal(effectiveChat(byAcct, new Set(['acc2'])), cAcc2);
+  });
+  it('фильтр основного -> его чат', () => {
+    assert.equal(effectiveChat(byAcct, new Set(['main'])), cMain);
+  });
+  it('без фильтра при конфликте -> основной (носитель ленты, прежнее main-wins)', () => {
+    assert.equal(effectiveChat(byAcct, new Set()), cMain);
+  });
+  it('без основного среди кандидатов -> первый по коду (детерминированно)', () => {
+    assert.equal(effectiveChat({ acc3: cAcc2, acc2: cMain }, new Set()), cMain);   /* acc2 < acc3 */
+  });
+  it('нет чата у выбранного профиля / нет данных -> null', () => {
+    assert.equal(effectiveChat({ main: cMain }, new Set(['acc2'])), null);
+    assert.equal(effectiveChat(null, new Set()), null);
+  });
+});
+
+describe('journalById — набор аккаунтов на вакансию (RFC-004)', () => {
+  it('легаси-строка без account относится к основному', () => {
+    const j = journalById([{ id: '1', ts: '2026-09-15T10:00:00+04:00' }]);
+    assert.deepEqual(j['1'].accounts, ['main']);
+    assert.equal(j['1'].account, 'main');
+  });
+  it('две записи от разных аккаунтов на одну вакансию — конфликт (оба в accounts)', () => {
+    const j = journalById([
+      { id: '1', ts: '2026-09-15T10:00:00+04:00', account: 'main' },
+      { id: '1', ts: '2026-09-15T09:00:00+04:00', account: 'acc2' },
+    ]);
+    assert.deepEqual(j['1'].accounts, ['acc2', 'main']);
+  });
+  it('byAcct — ранняя запись КАЖДОГО профиля отдельно (RFC-004)', () => {
+    const j = journalById([
+      { id: '1', ts: '2026-08-27T10:00:00+04:00', via: 'cron', account: 'main' },
+      { id: '1', ts: '2026-09-15T10:00:00+04:00', via: 'cron', account: 'acc2' },
+    ]);
+    assert.equal(j['1'].byAcct.main.ts, '2026-08-27T10:00:00+04:00');
+    assert.equal(j['1'].byAcct.acc2.ts, '2026-09-15T10:00:00+04:00');
+  });
+});
+
+describe('effectiveApplied — дата/via отклика под фильтром профиля (RFC-004)', () => {
+  const byAcct = {
+    main: { ts: '2026-08-27T10:00:00+04:00', via: 'cron', account: 'main' },   /* старее */
+    acc2: { ts: '2026-09-15T10:00:00+04:00', via: 'cron', account: 'acc2' },   /* новее */
+  };
+  const accounts = ['acc2', 'main'];
+  it('фильтр acc2 -> дата acc2, а не самая ранняя main — баг 16.09.2026', () => {
+    const e = effectiveApplied(byAcct, new Set(['acc2']), accounts);
+    assert.equal(e.ts, '2026-09-15T10:00:00+04:00');
+    assert.deepEqual(e.accounts, accounts);            /* полный набор — для метки-конфликта */
+  });
+  it('фильтр main -> дата main', () => {
+    assert.equal(effectiveApplied(byAcct, new Set(['main']), accounts).ts, '2026-08-27T10:00:00+04:00');
+  });
+  it('без фильтра -> самый ранний отклик (прежнее поведение)', () => {
+    assert.equal(effectiveApplied(byAcct, new Set(), accounts).ts, '2026-08-27T10:00:00+04:00');
+  });
+  it('выбранный профиль не откликался -> null (карточка отсеется по accounts)', () => {
+    assert.equal(effectiveApplied({ main: byAcct.main }, new Set(['acc2']), ['main']), null);
+    assert.equal(effectiveApplied(null, new Set(), []), null);
+  });
+});
+
+describe('crmStats — статистика откликов по аккаунтам и меткам (RFC-004)', () => {
+  it('приглашение/отказ/без исхода разносятся по аккаунтам', () => {
+    const applied = [
+      { id: '1', account: 'main' }, { id: '2', account: 'main' }, { id: '3', account: 'acc2' },
+    ];
+    const statuses = { 1: { main: 'INVITATION' }, 2: { main: 'DISCARD' } };   /* 3 — без исхода */
+    assert.deepEqual(crmStats(applied, statuses), {
+      main: { applied: 2, invited: 1, rejected: 1, other: 0 },
+      acc2: { applied: 1, invited: 0, rejected: 0, other: 1 },
+    });
+  });
+  it('конфликт: одна вакансия у двух аккаунтов — статус учитывается обоим', () => {
+    // отказ ТОЛЬКО у основного (баг 15.09.2026: раньше отказ основного шёл и в счётчик acc2)
+    const applied = [{ id: '1', account: 'main' }, { id: '1', account: 'acc2' }];
+    assert.deepEqual(crmStats(applied, { 1: { main: 'DISCARD', acc2: 'RESPONSE' } }), {
+      main: { applied: 1, invited: 0, rejected: 1, other: 0 },
+      acc2: { applied: 1, invited: 0, rejected: 0, other: 1 },
+    });
+  });
+});
+
+describe('filterVacancies — фильтр по аккаунту (RFC-004)', () => {
+  const base = { search: [], roles: new Set(), langs: new Set(), exps: new Set(), emps: new Set(),
+    status: 'all', schedule: 'all', source: 'all', minSal: 0, maxSal: 1e9, salMax: 1e9,
+    showNonIt: true, displayCur: 'RUB' };
+  const vs = [
+    { id: '1', name: 'A', employer: '', techs: [], role: 'Backend', applied: { accounts: ['main'] } },
+    { id: '2', name: 'B', employer: '', techs: [], role: 'Backend', applied: { accounts: ['acc2'] } },
+    { id: '3', name: 'C', employer: '', techs: [], role: 'Backend', applied: { accounts: ['acc2', 'main'] } },
+  ];
+  it('один выбранный профиль — только его отклики (плюс общие)', () => {
+    const out = filterVacancies(vs, { ...base, accountFilter: new Set(['acc2']) });
+    assert.deepEqual(out.map(v => v.id).sort(), ['2', '3']);
+  });
+  it('несколько профилей — объединение (мультиселект)', () => {
+    const out = filterVacancies(vs, { ...base, accountFilter: new Set(['main', 'acc2']) });
+    assert.deepEqual(out.map(v => v.id).sort(), ['1', '2', '3']);
+  });
+  it('пустой набор — фильтр выключен, показываем все', () => {
+    const out = filterVacancies(vs, { ...base, accountFilter: new Set() });
+    assert.deepEqual(out.map(v => v.id).sort(), ['1', '2', '3']);
+  });
+});
+
+/* Офлайн-фолбэк подписей исхода отклика. Лента открывается и из `file://`, где
+   `feed-data.js` (и вместе с ним инжект `APPLY_LABELS_PY`) не подгружен, поэтому словарь
+   обязан быть полным и дословным. До аудита 2026-09-22 метки жили только в `main.js` без
+   моста и разъехались с сервером: `server.py::_apply_post` отдаёт статус `taken` (вакансию
+   уже взял другой аккаунт), метки для него не было — пользователь видел сырое английское
+   слово; `captcha` не был размечен вовсе. */
+describe('APPLY_LABELS — подписи исхода отклика (офлайн-фолбэк)', () => {
+  /* [код, подпись] — коды `ApplyOutcome` + транспортные статусы `TransportStatus` одним
+     словарём (Python: `apply/outcome.py::APPLY_LABELS`). Значения выписаны литералами до
+     запуска: это вход спеки, а не снимок вывода реализации. */
+  const cases = [
+    ['applied', '✅ Отклик отправлен'],
+    ['already', 'уже откликались'],
+    ['form', '📝 нужна форма — в очереди'],
+    ['skip', '✖ пропущено (внешний/архив/опросник)'],
+    ['captcha', '⛔ капча HH — нужен вход руками'],
+    ['queued', '➕ в очереди крона'],
+    ['busy', '⏳ занято — идёт крон-отклик, попробуйте через пару минут'],
+    ['no-session', '⚠ нет сессии — hh.py autoclick --login'],
+    ['taken', '🚫 вакансию уже взял другой аккаунт'],
+    ['error', '⚠ ошибка'],
+  ];
+  for (const [code, label] of cases) {
+    it(`${code} -> «${label}»`, () => {
+      assert.equal(APPLY_LABELS[code], label);
+    });
+  }
+
+  it('словарь полон: ровно десять кодов и ни одного лишнего', () => {
+    assert.deepEqual(Object.keys(APPLY_LABELS), cases.map(([code]) => code));
   });
 });

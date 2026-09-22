@@ -17,7 +17,6 @@ Greenhouse и Ashby устроены одинаково и не похожи н�
    срезе не перезаписывает кеш.
 """
 import asyncio
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -27,13 +26,24 @@ from hrwork.config import (
     ATS_MAX_TIME,
     log,
 )
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_STANDARD, fetch_json_retry
 
 from .hh import BROWSER_UA
 
-RETRY_ATTEMPTS = 3
-BACKOFF_START = 1.0
-BACKOFF_MAX = 8.0
+#: Политика ретраев транспорта — единственный источник значения (net/http.py). Бэкофф 1 -> 8 с:
+#: прогон длинный, а молчащий борд ничего дальше не отменяет (см. fetch_board).
+RETRY = RETRY_STANDARD
+
+
+def board_jobs(payload: Any) -> list[dict[str, Any]]:
+    """Ответ борда ATS -> список карточек: и у Greenhouse, и у Ashby они лежат в `jobs`.
+
+    Общая форма ответа — единственное, что у этих двух платформ совпадает дословно, поэтому
+    извлекатель живёт ЗДЕСЬ, рядом с обходом реестра бордов, а не копией в каждом адаптере
+    (аудит 22.09.2026, §3.1). Схемы самих карточек, наоборот, разные — они и остаются в
+    адаптерах.
+    """
+    return list((payload or {}).get("jobs") or [])
 
 
 async def fetch_board(url: str, extract: Callable[[Any], list[dict[str, Any]]],
@@ -47,20 +57,19 @@ async def fetch_board(url: str, extract: Callable[[Any], list[dict[str, Any]]],
     Ретраятся только сбои ТРАНСПОРТА. Перепроверки пустого ответа, как у himalayas, здесь
     нет намеренно: там пустая страница неотличима от конца выдачи и обход по ней ОБРЫВАЛСЯ,
     а тут конца выдачи не существует — пустой борд ничего дальше не отменяет.
-    """
+
+    Битый JSON при этом ретраится наравне со сбоем транспорта (общее правило `fetch_json_retry`),
+    а вот ответ НЕ НАШЕЙ СХЕМЫ — нет: `extract` на нём бросает, и исключение уходит наружу
+    («ретрай не поможет»). Раньше битый JSON тоже возвращал None сразу, и борд с обрезанным
+    телом помечался МЁРТВЫМ, завышая долю протухшего реестра."""
     headers = {"User-Agent": BROWSER_UA, "Accept": "application/json"}
-    delay = BACKOFF_START
-    for _attempt in range(RETRY_ATTEMPTS):
-        out = await fetch_bytes(url, headers=headers, max_time=ATS_MAX_TIME)
-        if out:
-            try:
-                return extract(json.loads(out.decode("utf-8", "replace")))
-            except (json.JSONDecodeError, AttributeError, TypeError) as e:
-                log.debug("{} board={}: {}", source, board, e)
-                return None            # ответ пришёл, но это не наша схема — ретрай не поможет
-        await asyncio.sleep(delay)
-        delay = min(delay * 2, BACKOFF_MAX)
-    return None
+    try:
+        return await fetch_json_retry(url, headers=headers, policy=RETRY, parse=extract,
+                                      max_time=ATS_MAX_TIME,
+                                      log_context=f"{source} board={board}")
+    except (AttributeError, TypeError) as e:
+        log.debug("{} board={}: {}", source, board, e)
+        return None            # ответ пришёл, но это не наша схема — ретрай не поможет
 
 
 async def collect_boards(boards: list[str], url_for: Callable[[str], str],

@@ -14,13 +14,10 @@
 Автоотклик неприменим: заявка уходит на сайт работодателя.
 """
 import asyncio
-import datetime
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from hrwork.config import (
-    GLOBAL_SOURCES_IT_ONLY,
     JOBICY_COUNT,
     JOBICY_INDUSTRIES,
     JOBICY_REQUEST_CONCURRENCY,
@@ -30,11 +27,12 @@ from hrwork.domain.experience import Experience
 from hrwork.domain.models import REMOTE_CITY
 from hrwork.domain.parsing import build_vacancy
 from hrwork.domain.schedule import Schedule
-from hrwork.infrastructure.net.http import fetch_bytes
+from hrwork.infrastructure.net.http import RETRY_STANDARD, RetryPolicy, fetch_json_retry
 from hrwork.infrastructure.storage import VacancyRecord
 
-from .base import Source, normalize_each, register_source
+from .base import Source, it_only, normalize_each, register_source
 from .hh import BROWSER_UA
+from .text import iso_to_iso
 
 SITE = "https://jobicy.com"
 API = f"{SITE}/api/v2/remote-jobs"
@@ -45,23 +43,11 @@ class JobicyCfg:
     api_url: str = API
     count: int = JOBICY_COUNT
     req_conc: int = JOBICY_REQUEST_CONCURRENCY
-    retry_attempts: int = 3
-    backoff_start: float = 1.0
-    backoff_max: float = 8.0
+    # Политика ретраев транспорта — единственный источник значения (net/http.py).
+    retry: RetryPolicy = RETRY_STANDARD
 
 
 CFG = JobicyCfg()
-
-
-def _iso(ts: Any) -> str | None:
-    """pubDate приходит строкой ISO с таймзоной — нормализуем к UTC."""
-    raw = str(ts or "").strip()
-    if not raw:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(raw.replace("Z", "+00:00")).isoformat()
-    except ValueError:
-        return None
 
 
 def _sig(it: dict[str, Any]) -> str:
@@ -97,7 +83,7 @@ def _normalize(it: dict[str, Any]) -> VacancyRecord:
     desc = str(it.get("jobDescription") or "")
     excerpt = str(it.get("jobExcerpt") or "")
     industry = " ".join(str(x) for x in (it.get("jobIndustry") or []))
-    when = _iso(it.get("pubDate"))
+    when = iso_to_iso(it.get("pubDate"))
     vac = build_vacancy(
         vid=f"jobicy_{it.get('id')}",            # неймспейс — не сталкивается с id других порталов
         name=name,
@@ -132,19 +118,10 @@ class JobicySource(Source):
         url = f"{CFG.api_url}?count={CFG.count}"
         if industry:
             url += f"&industry={industry}"
-        delay = CFG.backoff_start
-        for _attempt in range(CFG.retry_attempts):
-            out = await fetch_bytes(url, headers=headers)
-            if out:
-                try:
-                    payload: dict[str, Any] = json.loads(out.decode("utf-8", "replace"))
-                    jobs: list[dict[str, Any]] = payload.get("jobs") or []
-                    return jobs
-                except json.JSONDecodeError as e:
-                    log.debug("jobicy industry={}: {}", industry, e)
-            await asyncio.sleep(delay)
-            delay = min(delay * 2, CFG.backoff_max)
-        return []
+        jobs = await fetch_json_retry(url, headers=headers, policy=CFG.retry,
+                                      parse=lambda p: p.get("jobs") or [],
+                                      log_context=f"jobicy industry={industry}")
+        return jobs or []
 
     async def collect(self) -> list[VacancyRecord]:
         sem = asyncio.Semaphore(CFG.req_conc)
@@ -167,7 +144,7 @@ class JobicySource(Source):
         # Нормализация — через normalize_each: кривая карточка портала не должна ронять
         # источник целиком (иначе санити-гейт видит нулевой срез и морозит кеш всех порталов).
         recs = normalize_each(uniq.values(), _normalize, source="jobicy")
-        out = [r for r in recs if r.vacancy.role.is_it] if GLOBAL_SOURCES_IT_ONLY else recs
+        out = it_only(recs)
         log.info("jobicy: собрано {} (индустрий {}, ответов {}, дублей {}, не-IT отсеяно {})",
                  len(out), len(JOBICY_INDUSTRIES), total, total - len(uniq), len(recs) - len(out))
         return out

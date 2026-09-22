@@ -14,9 +14,10 @@ import asyncio
 
 import pytest
 
-from hrwork.infrastructure.sources import arbeitnow, themuse
+from hrwork.infrastructure.net import http as H
+from hrwork.infrastructure.sources import arbeitnow, base, themuse
 
-#: пустая страница -> 1 запрос + 3 перепроверки (CFG.empty_retries)
+#: пустая страница -> 1 запрос + 3 перепроверки (base.EMPTY_PAGE_RETRY.probes)
 PROBES_ON_EMPTY = 4
 
 
@@ -40,45 +41,46 @@ async def _no_sleep(_delay):
     return None
 
 
-def _bodies(module, monkeypatch, bodies):
-    """Подменить сетевой примитив заранее заготовленными телами ответов (последнее — залипает)."""
+def _bodies(monkeypatch, bodies):
+    """Подменить сетевой примитив заранее заготовленными телами ответов (последнее — залипает).
+
+    Точка подмены — `net/http.py::fetch_bytes`: это единственный транспорт и для адаптеров,
+    и для ретрай-цикла (адаптеры больше не держат своего цикла, аудит 22.09.2026, §3.1)."""
     urls: list[str] = []
 
     async def fake_fetch(url, **_kw):
         urls.append(url)
         return bodies[min(len(urls) - 1, len(bodies) - 1)]
 
-    monkeypatch.setattr(module, "fetch_bytes", fake_fetch)
-    monkeypatch.setattr(module.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(H, "fetch_bytes", fake_fetch)
+    monkeypatch.setattr(H.asyncio, "sleep", _no_sleep)
     return urls
 
 
 # ── перепроверка пустой страницы ───────────────────────────────────────────────
 
 def test_arbeitnow_empty_page_is_rechecked_and_throttled_data_is_taken(monkeypatch):
-    urls = _bodies(arbeitnow, monkeypatch,
-                   [b'{"data": []}', b'{"data": [{"slug": "s1"}]}'])
+    urls = _bodies(monkeypatch, [b'{"data": []}', b'{"data": [{"slug": "s1"}]}'])
     got = asyncio.run(arbeitnow.ArbeitnowSource()._get_page(7))
     assert got == [{"slug": "s1"}]
     assert len(urls) == 2                    # пустой ответ перепрошен, данные пришли со 2-й попытки
 
 
 def test_arbeitnow_page_empty_after_all_rechecks_is_the_end_of_the_list(monkeypatch):
-    urls = _bodies(arbeitnow, monkeypatch, [b'{"data": []}'])
+    urls = _bodies(monkeypatch, [b'{"data": []}'])
     assert asyncio.run(arbeitnow.ArbeitnowSource()._get_page(7)) == []
     assert len(urls) == PROBES_ON_EMPTY
 
 
 def test_themuse_empty_page_is_rechecked_and_throttled_data_is_taken(monkeypatch):
-    urls = _bodies(themuse, monkeypatch,
-                   [b'{"results": []}', b'{"results": [{"id": "1"}]}'])
+    urls = _bodies(monkeypatch, [b'{"results": []}', b'{"results": [{"id": "1"}]}'])
     got = asyncio.run(themuse.ThemuseSource()._get_page("category=IT", 7))
     assert got == [{"id": "1"}]
     assert len(urls) == 2
 
 
 def test_themuse_page_empty_after_all_rechecks_is_the_end_of_the_list(monkeypatch):
-    urls = _bodies(themuse, monkeypatch, [b'{"results": []}'])
+    urls = _bodies(monkeypatch, [b'{"results": []}'])
     assert asyncio.run(themuse.ThemuseSource()._get_page("category=IT", 7)) == []
     assert len(urls) == PROBES_ON_EMPTY
 
@@ -93,15 +95,15 @@ def test_themuse_page_empty_after_all_rechecks_is_the_end_of_the_list(monkeypatc
 ])
 def test_arbeitnow_reports_a_break_on_a_hole_only(monkeypatch, chunks, expected):
     fake = _Log()
-    monkeypatch.setattr(arbeitnow, "log", fake)
-    arbeitnow._warn_if_hole([5, 6, 7], chunks)
+    monkeypatch.setattr(base, "log", fake)
+    base.warn_if_hole([5, 6, 7], chunks, source="arbeitnow")
     assert len(fake.warnings) == expected
 
 
 def test_arbeitnow_hole_warning_names_the_empty_page_and_the_page_after_it(monkeypatch):
     fake = _Log()
-    monkeypatch.setattr(arbeitnow, "log", fake)
-    arbeitnow._warn_if_hole([5, 6, 7], [[{}], [], [{}]])
+    monkeypatch.setattr(base, "log", fake)
+    base.warn_if_hole([5, 6, 7], [[{}], [], [{}]], source="arbeitnow")
     assert fake.warnings == [
         "arbeitnow: обход оборван на ПУСТОЙ странице 6, но страница 7 той же пачки отдала "
         "данные — выдача НЕ кончилась, часть вакансий не собрана"]
@@ -153,15 +155,15 @@ def test_arbeitnow_exhausted_crawl_does_not_warn_about_the_limit(monkeypatch):
 ])
 def test_themuse_reports_a_break_on_a_hole_only(monkeypatch, chunks, expected):
     fake = _Log()
-    monkeypatch.setattr(themuse, "log", fake)
-    themuse._warn_if_hole("category=IT", [5, 6, 7], chunks)
+    monkeypatch.setattr(base, "log", fake)
+    base.warn_if_hole([5, 6, 7], chunks, source="themuse", query="category=IT")
     assert len(fake.warnings) == expected
 
 
 def test_themuse_hole_warning_names_the_query_it_happened_in(monkeypatch):
     fake = _Log()
-    monkeypatch.setattr(themuse, "log", fake)
-    themuse._warn_if_hole("category=IT", [5, 6, 7], [[{}], [], [{}]])
+    monkeypatch.setattr(base, "log", fake)
+    base.warn_if_hole([5, 6, 7], [[{}], [], [{}]], source="themuse", query="category=IT")
     assert fake.warnings == [
         "themuse [category=IT]: обход оборван на ПУСТОЙ странице 6, но страница 7 той же "
         "пачки отдала данные — выдача НЕ кончилась, часть вакансий не собрана"]

@@ -135,11 +135,6 @@ class JsonVacancyRepository:
         }
 
 
-def record_from_vacancy(vacancy: Vacancy, **payload: Any) -> VacancyRecord:
-    """Хелпер для источников (F2b): собрать record из уже смапленной Vacancy + payload."""
-    return VacancyRecord(vacancy=vacancy, **payload)
-
-
 def vacancy_repository() -> VacancyRepository:
     """Единая точка создания репозитория (DIP): потребители зовут её, а не конкретный класс —
     подмена бэкенда (Postgres) остаётся правкой ровно этой функции (аудит 2026-07-22:

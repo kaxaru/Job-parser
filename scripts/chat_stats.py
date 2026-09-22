@@ -16,6 +16,11 @@ from pathlib import Path
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # запуск из scripts/
 
+from hrwork.config import ACCOUNT  # noqa: E402
+
+if not ACCOUNT.is_main:     # пути ниже — данные основного аккаунта (RFC-004)
+    raise SystemExit(f"Аккаунт {ACCOUNT.code}: scripts/chat_stats.py только для основного аккаунта")
+
 from hrwork.application.apply import chat, session  # noqa: E402
 from hrwork.config import DATA_DIR, log  # noqa: E402
 from hrwork.infrastructure.storage import atomic_write_json, read_json_or  # noqa: E402
