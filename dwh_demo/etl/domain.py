@@ -70,7 +70,10 @@ REMOTE_MARKERS = (
 # (см. `detect_skills`). Пин, а не вычисление: посчитать сигнатуру можно только по
 # `hrwork.config.TECH_PATTERNS`, которого в контейнере нет. Протухание пина ловит
 # страж-тест `tests/test_domain.py::test_parent_detect_sig_pin_is_current`.
-PARENT_DETECT_SIG = "7c2e86237020"
+# Пин обновлён 25.09.2026: словарь родителя вырос (в нём появились Airflow и Celery),
+# поэтому сменилась и сигнатура. Пока пин не совпадает, свежий кеш `_techs` отвергается
+# и стенд молча считает теги своим урезанным набором — ровно то, что ловит стража.
+PARENT_DETECT_SIG = "73a2fd2f847d"
 
 # ── словарь стека ──
 # Стек берём из кеша родителя, свой словарь нужен для двух разных вещей — поэтому он
@@ -78,12 +81,14 @@ PARENT_DETECT_SIG = "7c2e86237020"
 
 # (1) Аналитические теги стенда: их в словаре родителя НЕТ, поэтому считаются ВСЕГДА —
 # и поверх кеша, и в фолбэке. Ключи обязаны не пересекаться с родительскими, иначе это
+# вторая версия его тегов (стража `test_etl_specific_tags_do_not_shadow_parent_tags`).
+# Airflow и Celery отсюда УБРАНЫ 25.09.2026: родитель добавил их себе (со своими,
+# более строгими паттернами) — свой список обязан остаться дополнением, а не копией.
 # будет второе определение одного тега (страж-тест
 # `test_etl_specific_tags_do_not_shadow_parent_tags`).
 ETL_SKILL_PATTERNS = {
     "SQL": r"\bsql\b",
     "ETL": r"\betl\b",
-    "Airflow": r"airflow",
     "Airbyte": r"airbyte",
     "dbt": r"\bdbt\b",
     "Greenplum": r"greenplum",
@@ -95,7 +100,6 @@ ETL_SKILL_PATTERNS = {
     "Power BI": r"power\s?bi",
     "Tableau": r"tableau",
     "Bash": r"\bbash\b",
-    "Celery": r"\bcelery\b",
     "Git": r"\bgit\b",
     "Linux": r"\blinux\b",
     "REST/API": r"\brest\b|\bapi\b",
@@ -104,7 +108,7 @@ ETL_SKILL_PATTERNS = {
 # (2) Фолбэк общего стека — для записей без валидного кеша (старый срез, фикстуры, чужой
 # источник). Паттерны скопированы ДОСЛОВНО из `hrwork/config.py::TECH_PATTERNS`, страж-тест
 # `test_stack_patterns_are_verbatim_copies_of_parent` сверяет их посимвольно. Это
-# ПОДМНОЖЕСТВО (19 тегов из 55): полный словарь не копируем — на реальном срезе кеш валиден
+# ПОДМНОЖЕСТВО (21 тег из 55): полный словарь не копируем — на реальном срезе кеш валиден
 # у всех записей, а лишняя копия данных живёт только чтобы разойтись с оригиналом.
 STACK_SKILL_PATTERNS = {
     "Python": r"\bpython\b",
@@ -131,6 +135,13 @@ STACK_SKILL_PATTERNS = {
     "Kubernetes": r"\bkubernetes\b|\bk8s\b",
     "Kafka": r"\bkafka\b",
     "RabbitMQ": r"\brabbitmq\b",
+    # Родитель добавил их себе 25.09.2026 (со своими, более строгими паттернами) — здесь они
+    # лежат как ЧАСТЬ КОПИИ его словаря, а не как теги стенда: в кеш-пути их приносит `_techs`
+    # родителя, в фолбэке — этот поднабор. Паттерны дословно родительские (стража
+    # `test_stack_patterns_are_verbatim_copies_of_parent`), поэтому Airflow у нас с границей
+    # слова, а не прежним вольным `airflow`.
+    "Celery": r"\bcelery\b",
+    "Airflow": r"\bairflow\b|\bapache\s+air\s?flow\b",
 }
 
 SKILL_PATTERNS = {**STACK_SKILL_PATTERNS, **ETL_SKILL_PATTERNS}

@@ -90,13 +90,14 @@ admin_password: MB_ADMIN_PASSWORD -> DwhDemo2026!
 - `postgres.py::BATCH_SIZE = 1000` — строк в многострочном INSERT
 - `clickhouse.py::BATCH = 2000` — строк в одном `JSONEachRow`
 - `mssql.py::BATCH_SIZE = 1000` — размер `executemany`
-- `domain.py::STACK_SKILL_PATTERNS` — 19 тегов общего стека, **дословная копия** части
+- `domain.py::STACK_SKILL_PATTERNS` — 21 тег общего стека, **дословная копия** части
   `hrwork/config.py::TECH_PATTERNS` (там их 55). Копия, а не импорт: `etl/` монтируется
   в контейнер Airflow без пакета `hrwork`. Посимвольное совпадение стережёт
   `tests/test_domain.py::test_stack_patterns_are_verbatim_copies_of_parent`
-- `domain.py::ETL_SKILL_PATTERNS` — 18 аналитических тегов самого стенда (SQL, ETL, Airflow,
-  dbt, BI-инструменты…). У родителя их нет, поэтому они считаются всегда — и поверх его
-  кеша тоже; непересечение ключей стережёт `test_etl_specific_tags_do_not_shadow_parent_tags`
+- `domain.py::ETL_SKILL_PATTERNS` — 16 аналитических тегов самого стенда (SQL, ETL, dbt,
+  BI-инструменты…). У родителя их нет, поэтому они считаются всегда — и поверх его кеша тоже;
+  непересечение ключей стережёт `test_etl_specific_tags_do_not_shadow_parent_tags`
+  (Airflow и Celery отсюда убраны 25.09.2026 — родитель добавил их себе)
 - `domain.py::PARENT_DETECT_SIG` — пин сигнатуры словаря стека родителя
   (`hrwork/domain/parsing.py::DETECT_SIG`). Совпала с полем `_dv` записи -> стек берётся
   из готового `_techs`, не совпала -> размечаем сами по двум словарям выше. Именно пин,

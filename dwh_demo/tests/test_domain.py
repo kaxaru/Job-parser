@@ -248,7 +248,9 @@ def test_skills_taken_from_parent_cache_when_signature_matches():
     # чтобы потребители не считали его своим словарём и витрина сходилась с лентой
     rec = {**FULL, "name": "Data Engineer", "description_html": "",
            "snippet": {"requirement": "Airflow, dbt, Python"},
-           "_techs": ["ML/AI", "AWS", "1С"], "_dv": PARENT_DETECT_SIG}
+           # Airflow приезжает В КЕШЕ родителя (25.09.2026 он его знает и размечает сам) —
+           # стенд докладывает поверх только свои теги, здесь dbt
+           "_techs": ["ML/AI", "AWS", "1С", "Airflow"], "_dv": PARENT_DETECT_SIG}
     assert Vacancy.from_raw(rec, fx=FX).skills == ("ML/AI", "AWS", "1С", "Airflow", "dbt")
 
 
@@ -260,7 +262,7 @@ def test_skills_recomputed_when_dictionary_signature_is_stale():
 
 
 def test_analytics_tags_added_on_top_of_parent_cache():
-    # теги стенда (Airflow/dbt/Greenplum/…) родителю неизвестны и обязаны считаться всегда
+    # теги стенда (dbt/Greenplum/BI-инструменты…) родителю неизвестны и обязаны считаться всегда
     rec = {**FULL, "name": "BI-разработчик", "description_html": "",
            "snippet": {"requirement": "Superset, Metabase, Power BI"},
            "_techs": ["Python"], "_dv": PARENT_DETECT_SIG}
