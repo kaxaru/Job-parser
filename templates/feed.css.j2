@@ -41,8 +41,18 @@ header {
   align-items: baseline;
   gap: 16px;
   flex-wrap: wrap;
+  /* Выше липкой полосы поиска (.filter-toolbar, 101): меню профиля раскрывается ИЗ шапки вниз,
+     поверх полосы, и при z-index 20 внутри корневого контекста уходило под неё — закрывало
+     первую строку меню (24.09.2026). Шапка не липкая и при прокрутке уезжает, так что поверх
+     полосы оказывается только раскрытое меню. Модалка (200) остаётся выше всего. */
+  position: relative;
+  z-index: 102;
 }
 header h1 { font-size: var(--fs-xl); color: var(--title); }
+/* Переключатель профиля в шапке (24.09.2026): подпись и выпадашка в строку, по центру шапки
+   по вертикали (у шапки baseline — под заголовок, а выпадашке нужен центр). */
+.acc-slot { display: flex; align-items: center; gap: 8px; align-self: center; }
+.acc-slot:empty { display: none; }
 #counter { font-size: 0.85rem; color: var(--muted); }
 
 /* Экспорт/импорт отметок + индикатор синхронизации */
@@ -237,6 +247,16 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
   cursor: pointer;
   white-space: nowrap;
 }
+/* «Язык»/«Роль» — выпадашки с пилюлями внутри (24.09.2026): тело — сетка пилюль в строку с
+   переносом, а не столбец, как у списка валют (14/18 пилюль столбцом — это экран высоты).
+   Подпись выбранного — заливкой, как у активной пилюли: иначе свёрнутый фильтр не виден. */
+.pick-sel > .multi-sel-body { flex-direction: row; flex-wrap: wrap; width: 440px; max-width: calc(100vw - 32px); }
+.pick-sel > summary.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pick-row { display: flex; align-items: center; gap: 8px; }
+/* Строка периода «Мои» появляется только в режиме «Мои»: display:flex у .sched-btns иначе
+   перебил бы атрибут hidden (UA-стиль слабее). */
+.mine-period { margin-top: 6px; }
+.mine-period[hidden] { display: none; }
 /* Город: тот же инпут, но узкий как прежний select (input+datalist = список с поиском) */
 .city-input { width: 180px; }
 
@@ -317,6 +337,18 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
 .acc-opt input { cursor: pointer; }
 .acc-mini { color: var(--muted); font-size: 0.76rem; }
 .acc-warn { color: #E0863A; font-size: 0.76rem; margin-left: 4px; }
+/* Панель профилей (24.09.2026): пульс аккаунта второй строкой, «ждут ответа», блок A/B.
+   Меню шире прежних 240px: строка пульса с паузой окна и датами — ~70 символов; при 340px она
+   ломалась посреди даты («синк 23.09 / 23:50»), поэтому 420px и запрет переноса. */
+.acc-menu { min-width: 420px; max-width: calc(100vw - 24px); }
+.acc-pulse { display: block; color: var(--muted); font-size: 0.74rem; margin-top: 2px; white-space: nowrap; }
+.acc-wait { color: var(--accent); font-size: 0.76rem; margin-left: 4px; font-weight: 600; }
+.acc-ab {
+  margin-top: 6px; padding: 6px 8px; border-top: 1px solid var(--grid);
+  font-size: 0.8rem; color: var(--text); display: flex; flex-direction: column; gap: 2px;
+}
+.acc-ab-head { color: var(--muted); font-size: 0.74rem; }
+.acc-ab-note { color: #E0863A; font-size: 0.74rem; }
 .acc-clear {
   margin-top: 4px; border-radius: 4px; color: var(--muted); padding: 4px 8px; font-size: 0.78rem;
 }
@@ -339,6 +371,12 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   transition: background .12s, color .12s;
 }
 .sched-btn + .sched-btn { border-left: 1px solid var(--grid); }
+/* Телефон: сегментированная группа переносится, а не выталкивает страницу вбок. 24.09.2026
+   «Мои отклики за период» (8 контролов в строку) давали ширину документа 895px на экране 400px —
+   горизонтально ездила вся лента, а не только строка. */
+@media (max-width: 600px) {
+  .sched-btns { flex-wrap: wrap; }
+}
 .sched-btn:hover { background: var(--grid); color: var(--text); }
 .sched-btn.active { background: var(--accent); color: #fff; }
 

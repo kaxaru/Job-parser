@@ -325,6 +325,59 @@ GET /api/chats
 
 ---
 
+### GET /api/accounts
+
+**Назначение.** Аккаунты hh.ru (RFC-004) и «пульс» каждого: состоялись ли сегодня отклики, во
+что упрётся следующий прогон, когда был синк. Читают метка профиля на карточке, фильтр и панель
+«👥 Профили» ленты (`main.js::renderAccountsPanel`, `model.js::pulseLine`).
+
+**Request**
+
+```
+GET /api/accounts
+```
+
+**Response** `200` — всегда хотя бы основной (реальный срез 24.09.2026, 01:11):
+
+```json
+[
+  {"code": "main", "label": "основной", "session": "ok",
+   "session_checked": "2026-09-24T00:29:01", "applied": 4964,
+   "today": 0, "window24": 0, "window_cap": 45, "window_free_at": null,
+   "last_applied": "2026-09-21T14:38:34+04:00", "last_sync": "2026-09-23T19:50:48+00:00"},
+  {"code": "acc2", "label": "Резюме B", "session": "ok",
+   "session_checked": "2026-09-23T17:45:16", "applied": 166,
+   "today": 0, "window24": 22, "window_cap": 45, "window_free_at": null,
+   "last_applied": "2026-09-23T17:53:16+04:00", "last_sync": "2026-09-23T14:00:34+00:00"}
+]
+```
+
+**Поля**
+
+- `code`, `label` — код аккаунта и подпись (`account.json::label`; у основного — «основной»)
+- `session` — `ok` | `expired` | `foreign` | `unknown` (`session_status.json`; `unknown` — файла нет)
+- `session_checked` — когда прогон в последний раз проверял вход (метка файла как есть, местное
+  время без смещения) или `null`
+- `applied` — строк в журнале аккаунта (за всё время, с дублями каналов)
+- `today` — РАЗНЫХ вакансий с местной датой отклика = сегодня
+- `window24` / `window_cap` — разных вакансий за скользящие 24 ч и потолок
+  `config.HH_APPLY_ROLLING_CAP`: тот же счёт, что у прогона (`quota.applied_in_window`), поэтому
+  здесь видно ровно то, во что упрётся следующий слот
+- `window_free_at` — когда окно снова пустит прогон (`quota.window_free_at`); `null` — место есть
+- `last_applied` — последний отклик по журналу (ISO со смещением) или `null`
+- `last_sync` — mtime `response_status.json` в UTC (последний синк статусов) или `null`
+
+**Status Codes.** `200`
+
+**Implementation.** `_Handler._accounts_get` -> `crm.accounts` -> `crm._pulse`
+
+**Почему так.** Пульс считается по журналу и mtime, а не по `apply_quota.json`: квота привязана к
+аккаунту ПРОЦЕССА (`quota.QUOTA_FILE` от `ACCOUNT_DIR`), а `serve` один и читает все аккаунты.
+`last_sync` в UTC, а не местным: строку переводит в свой пояс браузер. Поля добавлены 24.09.2026 —
+фронт на сервере старой версии (без них) просто не рисует строку пульса (`pulseLine` -> `''`).
+
+---
+
 ### POST /api/apply
 
 **Назначение.** Отклик на вакансию в фоне через Playwright. Кнопка «🚀 Откликнуться
@@ -568,7 +621,11 @@ GET /api/search?q=python&city=Москва&sal=150000&limit=20&offset=0
 
 ### GET /* — статика
 
-**Назначение.** Артефакты ленты и дашборда из `data/`; `/` -> `feed.html`.
+**Назначение.** Артефакты ленты и дашборда из `data/`. Короткие адреса страниц
+(`server.py::_PAGE_ALIASES`): `/` -> `feed.html`, `/dashboard` -> `dashboard.html` (с 24.09.2026:
+владелец набрал `/dashboard` и получил 404). Query и хвостовой `/` у алиаса игнорируются.
+Дашборд пересобирается раз в сутки шагом `cron_collect.bat` (`hh.py dashboard`), так что он
+отстаёт не больше чем на сутки. Живые данные по аккаунтам — в панели «👥 Профили» ленты.
 
 **Белый список, а не весь каталог** (`_Handler::_static_allowed`, `_ALLOWED_STATIC`):
 `feed.html`, `feed.css`, `feed.js`, `feed-data.js`, `feed-desc.js`, `dashboard.html`,

@@ -8,9 +8,9 @@ import {
   pullJson, pushServer, saveLocal,
 } from './marks.js';
 import {
-  APPLY_LABELS, appliedInRange, cardPaint, convert, countActiveFilters, crmStats,
+  APPLY_LABELS, abCompare, abText, appliedInRange, cardPaint, convert, countActiveFilters, crmStats,
   effectiveApplied, effectiveChat, effectiveStatus, esc, fmtK, isPersonalChat, journalById,
-  staleNow, syntheticCard,
+  pickSummary, pulseLine, staleNow, syntheticCard, waitingByAccount,
 } from './model.js';
 import { createStore } from './store.js';
 import {
@@ -175,6 +175,21 @@ for (const [selector, key] of CHECK_GROUPS) {
   });
 }
 
+/* Подписи свёрнутых выпадашек «Язык»/«Роль» (24.09.2026: пилюли ушли в выпадающие списки).
+   Порядок — разметки; источник выбора — стор, поэтому подпись верна и после сброса фильтров. */
+const PICK_SUMMARIES = [['lang-summary', '.lang-cb:not(.exp-cb):not(.emp-cb)', 'langs'],
+                        ['role-summary', '.role-cb', 'roles']];
+for (const [id, selector, key] of PICK_SUMMARIES) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  const order = [...document.querySelectorAll(selector)].map(cb => cb.value);
+  let last = '';
+  store.subscribe(s => {
+    const text = pickSummary(s[key], order);
+    if (text !== last) { last = text; el.textContent = text; el.classList.toggle('active', text !== 'все'); }
+  });
+}
+
 const nonitBtn = document.getElementById('nonit-toggle');
 if (nonitBtn) nonitBtn.addEventListener('click', () => {
   const showNonIt = !store.get().showNonIt;
@@ -253,12 +268,12 @@ function activate(btn) {
    зажигается, и ключ состояния ленты. Раньше дефолты были закодированы дважды (разметка +
    resetFilters против store), а два селектора из пяти брались без null-guard: удаление кнопки
    из разметки роняло сброс TypeError-ом (аудит 2026-09-22, §5). */
-const UI_DEFAULTS = [['data-sort', 'none', 'sort'], ['data-status', 'all', 'status'],
-                     ['data-source', 'all', 'source']];
-/* Группы-СЕЛЕКТЫ (Формат): тот же контракт, что у пилюль — id элемента, ключ состояния, дефолт.
-   Отдельный список, потому что пилюли зажигаются классом `active`, а селект — значением
-   элемента; роль и та, и другая одна: ОДИН список дефолтов на разметку и сброс. */
-const SELECT_GROUPS = [['sched-sel', 'schedule', 'all']];
+const UI_DEFAULTS = [['data-sort', 'none', 'sort'], ['data-status', 'all', 'status']];
+/* Группы-СЕЛЕКТЫ (Формат, Портал): тот же контракт, что у пилюль — id элемента, ключ состояния,
+   дефолт. Отдельный список, потому что пилюли зажигаются классом `active`, а селект — значением
+   элемента; роль и та, и другая одна: ОДИН список дефолтов на разметку и сброс. «Портал» был
+   рядом из 13 пилюль до 24.09.2026 (решение владельца, по образцу «Формата» 23.09). */
+const SELECT_GROUPS = [['sched-sel', 'schedule', 'all'], ['source-sel', 'source', 'all']];
 
 /* Сброс группы к дефолту: зажечь дефолтную пилюлю, а если её нет в разметке — просто снять
    активность со всей группы (единый null-guard вместо падения). */
@@ -287,12 +302,12 @@ for (const [id, key] of SELECT_GROUPS) {
   if (sel) sel.addEventListener('change', () => store.update({ [key]: sel.value }));
 }
 
-/* Пилюли-переключатели: группы `[data-sort]`/`[data-status]`/`[data-source]` отличались только
-   атрибутом и ключом состояния (аудит 2026-09-22, §3.3). Атрибут и есть ключ `dataset`,
-   второй столбец — ключ состояния.
+/* Пилюли-переключатели: группы `[data-sort]`/`[data-status]` отличались только атрибутом и
+   ключом состояния (аудит 2026-09-22, §3.3). Атрибут и есть ключ `dataset`, второй столбец —
+   ключ состояния.
    ЛОВУШКА: `#mine-toggle` (инжектится оверлеем ПОЗЖЕ, несёт `data-status="mine"`) — свой
    тоггл-обработчик; общий цикл идёт по разметке на старте и доинжектенных кнопок не видит. */
-const PILL_GROUPS = [['sort', 'sort'], ['status', 'status'], ['source', 'source']];
+const PILL_GROUPS = [['sort', 'sort'], ['status', 'status']];
 for (const [attr, key] of PILL_GROUPS) {
   document.querySelectorAll(`[data-${attr}]`).forEach(btn => {
     btn.addEventListener('click', () => {
@@ -606,7 +621,11 @@ let _accSubscribed = false;
 function renderAccountsPanel() {
   const { accounts, applied, statuses } = _accData || {};
   if (!accounts || accounts.length < 2) return;
-  const g = filterGroup('acc-group');
+  /* Главный переключатель страницы — В ШАПКЕ (`#acc-slot`, решение владельца 24.09.2026): от
+     профиля зависят статусы, чаты, даты и все счётчики, и свёрнутая панель фильтров его прятать
+     не должна. Фолбэк — группа в панели: старый feed.html без слота (бандл новее каркаса). */
+  const slot = document.getElementById('acc-slot');
+  const g = slot || filterGroup('acc-group');
   if (!g) return;
   if (!_accSubscribed) {     /* выбор профиля -> перерисовать сводку/чекбоксы (render уже отфильтрует) */
     _accSubscribed = true;
@@ -616,6 +635,10 @@ function renderAccountsPanel() {
     });
   }
   const stats = crmStats(applied, statuses);
+  /* «Ждут ответа» — по чату КАЖДОГО профиля, мимо фильтра: чипы «Чаты» считают только выбранный
+     профиль, а у второго резюме автоответов нет — его письма нельзя прятать за переключателем. */
+  const waiting = waitingByAccount(VACANCIES);
+  const waitAll = Object.values(waiting).reduce((n, k) => n + k, 0);
   const sel = store.get().accountFilter || new Set();
   const anyWarn = accounts.some(a => a.session && a.session !== 'ok');
   const summary = sel.size === 0 ? 'все' : accounts.filter(a => sel.has(a.code))
@@ -623,17 +646,30 @@ function renderAccountsPanel() {
   const row = a => {
     const s = stats[a.code] || { applied: 0, invited: 0, rejected: 0, other: 0 };
     const warn = a.session && a.session !== 'ok' ? ` ⚠ ${SESSION_WORD[a.session] || a.session}` : '';
-    return `<label class="acc-opt" title="Приглашений ${s.invited}, отказов ${s.rejected}, без исхода ${s.other}${warn}">`
+    const wait = waiting[a.code] || 0;
+    const pulse = pulseLine(a);          /* сегодня / окно 24ч / последний отклик / синк */
+    return `<label class="acc-opt" title="За всё время: приглашений ${s.invited}, отказов ${s.rejected}, без исхода ${s.other}${warn}">`
          + `<input type="checkbox" data-acc="${esc(a.code)}"${sel.has(a.code) ? ' checked' : ''}>`
          + `<span>${esc(a.label)} · ${s.applied} <span class="acc-mini">📩${s.invited} ✖${s.rejected}</span>`
-         + `${warn ? `<span class="acc-warn">${esc(warn)}</span>` : ''}</span></label>`;
+         + `${wait ? `<span class="acc-wait" title="Живой человек написал последним — ждёт ответа (как чип «👤 Личные»)">💬 ${wait}</span>` : ''}`
+         + `${warn ? `<span class="acc-warn">${esc(warn)}</span>` : ''}`
+         + `${pulse ? `<span class="acc-pulse">${esc(pulse)}</span>` : ''}</span></label>`;
   };
+  /* A/B резюме за ОБЩИЙ период (crmStats выше — за всё время, у профилей оно несопоставимо). */
+  const ab = abCompare(applied, statuses);
+  let abHtml = '';
+  if (ab) {
+    const t = abText(ab, accounts);
+    abHtml = `<div class="acc-ab"><div class="acc-ab-head">${esc(t.head)}</div>`
+      + t.lines.map(l => `<div>${esc(l)}</div>`).join('')
+      + `${t.note ? `<div class="acc-ab-note">${esc(t.note)}</div>` : ''}</div>`;
+  }
   const wasOpen = g.querySelector('details')?.open || false;
-  g.innerHTML = '<span class="filter-label">👥 Профили</span>'
+  g.innerHTML = `<span class="filter-label">👥 ${slot ? 'Профиль' : 'Профили'}</span>`
     + `<details class="acc-dd"${wasOpen ? ' open' : ''}>`
     + `<summary class="acc-summary${sel.size ? ' active' : ''}">${anyWarn ? '⚠ ' : ''}`
-    + `${esc(summary)} ▾</summary>`
-    + `<div class="acc-menu">${accounts.map(row).join('')}`
+    + `${esc(summary)}${waitAll ? ` · 💬${waitAll}` : ''} ▾</summary>`
+    + `<div class="acc-menu">${accounts.map(row).join('')}${abHtml}`
     + '<button class="acc-clear" id="acc-clear">Сбросить</button></div></details>';
   for (const box of g.querySelectorAll('input[data-acc]')) {
     box.addEventListener('change', () => {
@@ -677,17 +713,35 @@ function injectChatFilter(count, personal, contacts) {
   });
 }
 
-/* Инъекция контрола «Мои отклики за период» (кнопка + два date-инпута + пресеты).
-   Числа на кнопке здесь нет: параметр `count` сразу перезаписывался подпиской тем же числом
-   из другого источника (аудит 2026-09-22, §3.3) — единственный источник числа это подписка. */
+/* «📮 Мои» — режим статуса отклика (решение владельца 24.09.2026). Раньше это была отдельная
+   группа «Мои отклики за период» из 8 контролов первой строкой панели (на телефоне она и
+   распирала страницу вбок), хотя по смыслу это ещё одно значение `status` — фильтр разбирает
+   его тем же ключом. Теперь пилюля живёт в группе «Статус отклика», а строка периода (даты +
+   пресеты) появляется только в режиме «Мои». Фолбэк — своя группа, если статусной в каркасе
+   нет (`has_status` = false). Числа на кнопке при инжекте нет: единственный источник числа —
+   подписка ниже (аудит 2026-09-22, §3.3). */
 function injectAppliedControl() {
-  if (document.getElementById('applied-group')) return;
-  const g = filterGroup('applied-group');
-  if (!g) return;
-  g.innerHTML =
-    '<span class="filter-label">📮 Мои отклики за период</span>' +
-    '<div class="sched-btns">' +
-    '<button class="sched-btn" id="mine-toggle" data-status="mine">📮 Показать</button>' +
+  if (document.getElementById('mine-toggle')) return;
+  let pills = document.querySelector('.sched-btns [data-status="all"]')?.parentElement || null;
+  let g = pills?.closest('.filter-group') || null;
+  if (!g) {
+    g = filterGroup('applied-group');
+    if (!g) return;
+    g.innerHTML = '<span class="filter-label">📮 Мои отклики</span><div class="sched-btns"></div>';
+    pills = g.querySelector('.sched-btns');
+  }
+  const mineBtn = document.createElement('button');
+  mineBtn.className = 'sched-btn';
+  mineBtn.id = 'mine-toggle';
+  mineBtn.dataset.status = 'mine';
+  mineBtn.title = 'Мои отклики; период — строкой ниже';
+  mineBtn.textContent = '📮 Мои';
+  pills.appendChild(mineBtn);
+  const period = document.createElement('div');
+  period.className = 'sched-btns mine-period';
+  period.id = 'mine-period';
+  period.hidden = true;
+  period.innerHTML =
     '<input type="date" id="date-from" class="date-input" title="С даты">' +
     '<span class="date-dash">—</span>' +
     '<input type="date" id="date-to" class="date-input" title="По дату">' +
@@ -695,17 +749,17 @@ function injectAppliedControl() {
     '<button class="sched-btn" data-preset="7">7 дней</button>' +
     '<button class="sched-btn" data-preset="30">30 дней</button>' +
     '<button class="sched-btn" data-preset="all">Все</button>' +
-    '<button class="sched-btn" data-preset="reset" title="Сбросить диапазон">⨯</button>' +
-    '</div>';
+    '<button class="sched-btn" data-preset="reset" title="Сбросить диапазон">⨯</button>';
+  g.appendChild(period);
 
-  document.getElementById('mine-toggle').addEventListener('click', () => {
+  mineBtn.addEventListener('click', () => {
     store.update({ status: store.get().status === 'mine' ? 'all' : 'mine' });
   });
   const df = document.getElementById('date-from');
   const dt = document.getElementById('date-to');
   df.addEventListener('change', () => store.update({ dateFrom: df.value, status: 'mine' }));
   dt.addEventListener('change', () => store.update({ dateTo: dt.value, status: 'mine' }));
-  g.querySelectorAll('[data-preset]').forEach(b => {
+  period.querySelectorAll('[data-preset]').forEach(b => {
     b.addEventListener('click', () => {
       const p = b.dataset.preset;
       // «Все» и «⨯» — снять границы дат и показать все отклики (режим «Мои отклики»)
@@ -723,18 +777,15 @@ function injectAppliedControl() {
      Снимок откликов берётся ЗДЕСЬ, на каждом тике: журнал дописывает вакансии-«призраки»
      в VACANCIES уже после первого инжекта, и снимок, снятый один раз, их не считал. */
   store.subscribe(state => {
-    const btn = document.getElementById('mine-toggle');
-    if (btn) {
-      const n = VACANCIES.filter(v => v.applied && appliedInRange(v, state.dateFrom, state.dateTo)).length;
-      btn.textContent = `📮 Показать (${n})`;
-      btn.classList.toggle('active', state.status === 'mine');
-    }
+    const n = VACANCIES.filter(v => v.applied && appliedInRange(v, state.dateFrom, state.dateTo)).length;
+    mineBtn.textContent = `📮 Мои (${n})`;
+    period.hidden = state.status !== 'mine';
     if (df.value !== state.dateFrom) df.value = state.dateFrom;
     if (dt.value !== state.dateTo) dt.value = state.dateTo;
-    if (state.status === 'mine') {
-      document.querySelectorAll('.sched-btns [data-status]:not(#mine-toggle)')
-        .forEach(b => { b.classList.remove('active'); });
-    }
+    /* Подсветка статусных пилюль — ПО СОСТОЯНИЮ: выход из «Мои» повторным кликом ставит
+       status='all' мимо общего обработчика пилюль, и без этого «Все» оставалась погашенной. */
+    document.querySelectorAll('.sched-btns [data-status]')
+      .forEach(b => { b.classList.toggle('active', b.dataset.status === state.status); });
   });
 }
 
@@ -764,7 +815,8 @@ async function initOverlay() {
   if (Array.isArray(accounts) && accounts.length) {
     setAccounts(accounts);
     _accData = { accounts, applied, statuses };   /* снимок для перерисовки панели при выборе */
-    renderAccountsPanel();
+    /* Сама панель рисуется в КОНЦЕ оверлея: ей нужны чаты профилей (v.chatByAcct) для «ждут
+       ответа», а они раскладываются ниже. */
   }
   /* Журнал — ПЕРВЫМ: applyJournal синтезирует карточки-призраки для вакансий, выпавших из
      выдачи; формы/статусы/чаты, обработанные ДО него, призраков не находили и терялись
@@ -800,6 +852,7 @@ async function initOverlay() {
   const rec = recomputeForAccounts();
   if (rec.changed || rec.any) changed = true;
   if (refreshChatFilter()) changed = true;
+  if (_accData) renderAccountsPanel();   /* после чатов: «ждут ответа» считается по v.chatByAcct */
   if (changed) store.update({});   /* ре-рендер с обновлёнными CRM-бейджами */
 }
 

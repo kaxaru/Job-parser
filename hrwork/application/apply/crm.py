@@ -4,9 +4,13 @@
 объединяются с полем `account`, статусы и переписка — тоже (у каждой вакансии на карточке
 может быть отклик от обоих аккаунтов). Всё только на чтение.
 """
+import datetime
+from pathlib import Path
 from typing import Any
 
 from hrwork.application.apply import account_session, taken
+from hrwork.application.apply.runtime import quota
+from hrwork.config import HH_APPLY_ROLLING_CAP
 from hrwork.domain.account import MAIN_CODE
 from hrwork.infrastructure.storage import followup, read_json_or
 
@@ -18,17 +22,56 @@ def _label(code: str) -> str:
     return str(meta.get("label") or code) if isinstance(meta, dict) else code
 
 
-def accounts() -> list[dict[str, Any]]:
-    """[{code, label, session, applied}] по всем аккаунтам — для баннера и фильтра ленты.
+def _mtime_utc(path: Path) -> str | None:
+    """Время последней записи файла (ISO, UTC) или None, если файла нет. UTC, а не местное:
+    строку разбирает браузер и сам переводит в свой пояс; местная метка сервера сделала бы
+    ответ зависимым от пояса машины, где крутится `serve`."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return None
+    return datetime.datetime.fromtimestamp(mtime, tz=datetime.timezone.utc).isoformat(timespec="seconds")
 
-    session — состояние входа (`session_status.json`): ok / expired / foreign / unknown.
-    Основной свой статус тоже пишет с каждого прогона; «unknown» — файла ещё нет."""
+
+def _pulse(rows: list[dict[str, Any]], folder: Path, now: datetime.datetime) -> dict[str, Any]:
+    """«Отклики были? синк был? почему мало?» одной записью (панель профилей, 24.09.2026).
+
+    Всё считается по журналу и mtime файлов, а не по `apply_quota.json`: квота привязана к
+    аккаунту процесса (`quota.QUOTA_FILE` от `ACCOUNT_DIR`), а `serve` читает ВСЕ аккаунты.
+    `today` — разные вакансии с местной датой отклика = сегодня; окно — тот же счёт, что у
+    прогона (`quota.applied_in_window`), поэтому лента показывает ровно то, во что упрётся
+    следующий слот."""
+    stamps = [(str(r.get("id")), ts) for r in rows
+              if (ts := quota.journal_ts(str(r.get("ts") or ""))) is not None]
+    today = now.astimezone().date()
+    free_at = quota.window_free_at(rows, HH_APPLY_ROLLING_CAP, moment=now)
+    return {
+        "today": len({vid for vid, ts in stamps if ts.astimezone().date() == today}),
+        "window24": quota.applied_in_window(rows, moment=now),
+        "window_cap": HH_APPLY_ROLLING_CAP,
+        "window_free_at": free_at.isoformat() if free_at else None,
+        "last_applied": max(ts for _, ts in stamps).isoformat() if stamps else None,
+        "last_sync": _mtime_utc(folder / followup.RESPONSE_STATUS_FILE.name),
+    }
+
+
+def accounts(moment: datetime.datetime | None = None) -> list[dict[str, Any]]:
+    """[{code, label, session, session_checked, applied, …пульс}] по всем аккаунтам — для
+    баннера, фильтра и панели профилей ленты.
+
+    session — состояние входа (`session_status.json`): ok / expired / foreign / unknown,
+    session_checked — когда прогон его в последний раз проверял (метка файла как есть).
+    Основной свой статус тоже пишет с каждого прогона; «unknown» — файла ещё нет.
+    Поля пульса — `_pulse`; `moment` — для тестов (по умолчанию «сейчас»)."""
+    now = moment if moment is not None else datetime.datetime.now(datetime.timezone.utc)
     out = []
     for code, folder in taken.account_dirs().items():
         st = read_json_or(folder / account_session.SESSION_STATUS_FILE_NAME, {})
-        n = len(followup.load_applied_log(folder / followup.APPLIED_LOG_FILE.name))
+        rows = followup.load_applied_log(folder / followup.APPLIED_LOG_FILE.name)
         out.append({"code": code, "label": _label(code),
-                    "session": str(st.get("state") or "unknown"), "applied": n})
+                    "session": str(st.get("state") or "unknown"),
+                    "session_checked": st.get("ts") or None,
+                    "applied": len(rows), **_pulse(rows, folder, now)})
     return out
 
 

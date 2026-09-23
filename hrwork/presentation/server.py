@@ -63,6 +63,9 @@ _ALLOWED_STATIC = frozenset({
     "dashboard.html", "dashboard.css", "dashboard.js",
 })
 _ALLOWED_STATIC_RX = re.compile(r"^plotly-[\d.]+\.min\.js$")   # качается _ensure_plotly
+# Короткие адреса страниц -> файл из белого списка. `/dashboard` добавлен 24.09.2026: владелец
+# набрал его и получил 404 — дашборд отдавался только как `/dashboard.html`.
+_PAGE_ALIASES = {"/": "/feed.html", "/dashboard": "/dashboard.html"}
 
 # Петлевые имена. Сервер слушает 127.0.0.1, но браузер приходит с тем Host, который набрали:
 # при DNS-rebinding это будет домен атакующего, и тогда его страница становится same-origin
@@ -345,8 +348,9 @@ class _Handler(SimpleHTTPRequestHandler):
 
     # ──────────── статика data/: gzip+ETag, иначе стрим через super() ────────────
     def _serve_static(self) -> None:
-        if self.path in ("/", ""):
-            self.path = "/feed.html"
+        alias = _PAGE_ALIASES.get(self._path())    # _path(): без query и хвостового «/»
+        if alias:
+            self.path = alias
         if not self._static_allowed():
             # 404, а не 403: не подтверждаем существование файла в data/
             return self._write(Resp(404, b"not found"))

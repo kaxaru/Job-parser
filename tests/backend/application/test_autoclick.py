@@ -620,6 +620,47 @@ def test_rolling_window_ignores_rows_without_a_readable_date():
     assert quota.applied_in_window(rows, moment=_WINDOW_MOMENT) == 0
 
 
+# ── Когда окно снова пустит отклик (панель профилей, 24.09.2026) ─────────────────────────
+# Отвечает на «почему сейчас не откликается»: окно заполнено -> прогон не начинается, и
+# владелец видит в ленте, до какого часа пауза, а не гадает по логу.
+
+def test_window_free_at_is_none_while_the_window_has_room():
+    rows = _journal("2026-09-23T11:00:00+00:00", "2026-09-22T13:00:00+00:00")
+    assert quota.window_free_at(rows, 3, moment=_WINDOW_MOMENT) is None
+
+
+def test_full_window_frees_when_its_oldest_application_turns_24_hours_old():
+    rows = _journal("2026-09-23T11:00:00+00:00", "2026-09-22T13:00:00+00:00")
+    assert quota.window_free_at(rows, 2, moment=_WINDOW_MOMENT) == datetime.datetime(
+        2026, 9, 23, 13, 0, tzinfo=datetime.timezone.utc)
+
+
+def test_overfilled_window_frees_only_after_enough_applications_leave_it():
+    # 3 отклика при потолке 2: чтобы прогон начался, окно должно опуститься до 1 — уйти обязаны
+    # ДВА самых старых, то есть свобода наступает, когда 24 часа исполнится второму из них.
+    rows = _journal("2026-09-23T11:00:00+00:00", "2026-09-22T13:00:00+00:00",
+                    "2026-09-22T15:00:00+00:00")
+    assert quota.window_free_at(rows, 2, moment=_WINDOW_MOMENT) == datetime.datetime(
+        2026, 9, 23, 15, 0, tzinfo=datetime.timezone.utc)
+
+
+def test_vacancy_journaled_twice_holds_the_window_until_its_latest_record_leaves():
+    # applied_in_window считает вакансию, пока в окне ЛЮБАЯ её запись, — значит, она держит
+    # место до выхода ПОСЛЕДНЕЙ (13:00 -> 10:00 следующего дня), а не первой.
+    rows = [{"id": "7", "ts": "2026-09-22T13:00:00+00:00"},
+            {"id": "7", "ts": "2026-09-23T10:00:00+00:00"},
+            {"id": "8", "ts": "2026-09-22T14:00:00+00:00"}]
+    assert quota.window_free_at(rows, 2, moment=_WINDOW_MOMENT) == datetime.datetime(
+        2026, 9, 23, 14, 0, tzinfo=datetime.timezone.utc)
+
+
+def test_zero_cap_window_never_frees():
+    # потолок 0 = прогоны выключены совсем (`autoclick._apply_batch`: room <= 0); момента
+    # освобождения у такого окна нет.
+    rows = _journal("2026-09-23T11:00:00+00:00")
+    assert quota.window_free_at(rows, 0, moment=_WINDOW_MOMENT) is None
+
+
 def test_quota_is_raised_when_the_click_never_reached_the_counter(monkeypatch):
     got = []
     monkeypatch.setattr(autoclick.store, "applied_today", lambda: 35)
@@ -1830,6 +1871,64 @@ def test_click_without_confirmation_is_unconfirmed_not_skip(monkeypatch):
     cand = autoclick.Candidate(id="1", name="Python-разработчик", url="https://hh.ru/vacancy/1")
     assert autoclick.apply_one(page, cand) is autoclick.ApplyOutcome.UNCONFIRMED
     assert button.clicks == 1
+
+
+# ═══════ Неподтверждённый клик перепроверяется перезагрузкой вакансии (24.09.2026) ═══════════
+# Сверка логов с журналом: из «НЕ подтверждён» у acc2 5 из 131, у основного 49 из 400 на самом
+# деле ушли — синк потом дожурналил их из чатов с временем HH, совпадающим с кликом (±3 мин),
+# у всех диагностика «сабмит=нет». Прогон не засчитывал такие отклики в цель и слал ещё один
+# сверх лимита; квота догоняла факт только на синке («Квота расходится с журналом»).
+
+class _ReloadPage(_VacancyPage):
+    """Вакансия, у которой после перезагрузки маркер «Вы откликнулись» есть (`registered`) или нет."""
+
+    def __init__(self, button: _FakeEl, registered: bool):
+        super().__init__(button)
+        self.registered, self.reloaded = registered, False
+
+    def locator(self, selector: str) -> _FakeEl:
+        if self.reloaded and self.registered and "view-topic" in selector:
+            return _FakeEl(count=1)
+        return super().locator(selector)
+
+    def get_by_text(self, text: str) -> _FakeEl:
+        return _FakeEl()
+
+
+def _reload_env(monkeypatch, registered: bool):
+    gotos: list[str] = []
+    button = _FakeEl(text="Откликнуться", count=1)
+    page = _ReloadPage(button, registered)
+
+    def goto(p, url, tries=3):
+        gotos.append(url)
+        p.reloaded = len(gotos) > 1           # первый заход — открыть вакансию, второй — перезагрузка
+        return True
+    monkeypatch.setattr(browser, "_goto", goto)
+    monkeypatch.setattr(browser, "is_captcha", lambda page: False)
+    monkeypatch.setattr(selectors, "wait_response_confirmed", lambda page: False)
+    # диагностика обязана сниматься ДО перезагрузки: после неё страница уже другая
+    monkeypatch.setattr(autoclick, "_submit_diag", lambda p: f"сабмит=нет, перезагружена={p.reloaded}")
+    cand = autoclick.Candidate(id="1", name="Python-разработчик", url="https://hh.ru/vacancy/1")
+    return page, button, gotos, cand
+
+
+def test_unconfirmed_click_that_hh_registered_is_counted_after_reload(monkeypatch, log_lines):
+    page, button, gotos, cand = _reload_env(monkeypatch, registered=True)
+    assert autoclick.apply_one(page, cand) is autoclick.ApplyOutcome.APPLIED
+    assert (button.clicks, gotos) == (1, ["https://hh.ru/vacancy/1", "https://hh.ru/vacancy/1"])
+    assert ("1: подтверждение не пришло за 12с (сабмит=нет, перезагружена=False), но после "
+            "перезагрузки вакансия показывает отклик — засчитан") in log_lines
+
+
+def test_click_refused_by_hh_stays_unconfirmed_after_reload(monkeypatch, log_lines):
+    """Упор в потолок 24ч: после перезагрузки маркера нет -> UNCONFIRMED, как и было (серию
+    по-прежнему рвёт APPLY_UNCONFIRMED_STREAK_MAX), второго клика нет, диагностика — до
+    перезагрузки."""
+    page, button, gotos, cand = _reload_env(monkeypatch, registered=False)
+    assert autoclick.apply_one(page, cand) is autoclick.ApplyOutcome.UNCONFIRMED
+    assert (button.clicks, gotos) == (1, ["https://hh.ru/vacancy/1", "https://hh.ru/vacancy/1"])
+    assert "1: отклик НЕ подтверждён за 12с — сабмит=нет, перезагружена=False" in log_lines
 
 
 def test_apply_worker_logs_a_failed_drain(monkeypatch, log_lines):

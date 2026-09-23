@@ -13,6 +13,7 @@ import {
   safeUrl,
   isDiscard, isInvited,
   crmStats, effectiveApplied, effectiveChat, effectiveStatus, journalById, portalSite, resolveCur, statusInfo, syntheticCard, tagClr, tagInk,
+  abCompare, abText, pickSummary, pulseLine, waitingByAccount,
   comparableSalary,
   employmentLabel,
   hrReplyTime,
@@ -1313,6 +1314,149 @@ describe('crmStats — статистика откликов по аккаунт
       main: { applied: 1, invited: 0, rejected: 1, other: 0 },
       acc2: { applied: 1, invited: 0, rejected: 0, other: 1 },
     });
+  });
+});
+
+/* ── Панель профилей (24.09.2026): A/B резюме, пульс аккаунта, «ждут ответа» ──────────────
+   Владелец неделю спрашивал в чат «отклики были? синк был? почему мало?» и «какое резюме
+   работает» — лента на это не отвечала. Время форматируется в ЯВНОМ поясе (Europe/Samara,
+   +04:00), иначе тесты разъехались бы на CI в UTC. */
+const TZ = 'Europe/Samara';
+
+describe('abCompare — сравнение резюме за ОБЩИЙ период', () => {
+  const NOW = Date.parse('2026-09-24T12:00:00Z');   /* зрелость 3 дн -> граница 21.09 12:00Z */
+  it('окно — от первого отклика младшего профиля до «старше 3 дней»; статус — свой у каждого', () => {
+    const applied = [
+      { id: 'm0', account: 'main', ts: '2026-09-10T08:00:00Z' },   /* до старта B — вне сравнения */
+      { id: 'm1', account: 'main', ts: '2026-09-16T10:00:00Z' },
+      { id: 'm2', account: 'main', ts: '2026-09-18T10:00:00Z' },
+      { id: 'm3', account: 'main', ts: '2026-09-22T10:00:00Z' },   /* моложе 3 дней — ответа ещё не ждём */
+      { id: 'a1', account: 'acc2', ts: '2026-09-15T10:00:00Z' },   /* старт B = начало окна */
+      { id: 'a2', account: 'acc2', ts: '2026-09-17T10:00:00Z' },
+      { id: 'a3', account: 'acc2', ts: '2026-09-23T10:00:00Z' },
+    ];
+    const statuses = { m1: { main: 'INTERVIEW' }, m2: { main: 'DISCARD' },
+      a1: { acc2: 'DISCARD' }, a2: { acc2: 'RESPONSE' } };
+    assert.deepEqual(abCompare(applied, statuses, NOW), {
+      fromMs: Date.parse('2026-09-15T10:00:00Z'),
+      toMs: Date.parse('2026-09-21T12:00:00Z'),
+      thin: true,
+      rows: {
+        main: { applied: 2, invited: 1, rejected: 1, other: 0, invitedPct: 50, rejectedPct: 50 },
+        acc2: { applied: 2, invited: 0, rejected: 1, other: 1, invitedPct: 0, rejectedPct: 50 },
+      },
+    });
+  });
+  it('вакансия с откликом от обоих: каждому — его статус, а не общий', () => {
+    const applied = [
+      { id: 'p', account: 'main', ts: '2026-09-14T10:00:00Z' },    /* до окна */
+      { id: 'q', account: 'acc2', ts: '2026-09-15T00:00:00Z' },    /* старт B */
+      { id: 'x', account: 'main', ts: '2026-09-16T10:00:00Z' },
+      { id: 'x', account: 'acc2', ts: '2026-09-16T11:00:00Z' },
+    ];
+    const statuses = { x: { main: 'DISCARD', acc2: 'INTERVIEW' } };
+    assert.deepEqual(abCompare(applied, statuses, NOW).rows, {
+      main: { applied: 1, invited: 0, rejected: 1, other: 0, invitedPct: 0, rejectedPct: 100 },
+      acc2: { applied: 2, invited: 1, rejected: 0, other: 1, invitedPct: 50, rejectedPct: 0 },
+    });
+  });
+  it('30 зрелых откликов на профиль — выборка уже не «мало данных»', () => {
+    const day = i => `2026-09-16T${String(i % 24).padStart(2, '0')}:00:00Z`;
+    const applied = [
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `m${i}`, account: 'main', ts: day(i) })),
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `a${i}`, account: 'acc2', ts: day(i) })),
+    ];
+    assert.equal(abCompare(applied, {}, NOW).thin, false);
+  });
+  it('один профиль — сравнивать не с чем: null', () => {
+    assert.equal(abCompare([{ id: '1', account: 'main', ts: '2026-09-16T10:00:00Z' }], {}, NOW), null);
+  });
+  it('второй профиль начал 2 дня назад — зрелых откликов нет: null', () => {
+    const applied = [
+      { id: '1', account: 'main', ts: '2026-09-16T10:00:00Z' },
+      { id: '2', account: 'acc2', ts: '2026-09-22T10:00:00Z' },
+    ];
+    assert.equal(abCompare(applied, {}, NOW), null);
+  });
+});
+
+describe('abText — подписи блока A/B', () => {
+  it('период в датах пояса, доли в процентах, предупреждение о малой выборке', () => {
+    const ab = { fromMs: Date.parse('2026-09-15T10:00:00Z'), toMs: Date.parse('2026-09-21T12:00:00Z'),
+      thin: true,
+      rows: {
+        main: { applied: 2, invited: 1, rejected: 1, other: 0, invitedPct: 50, rejectedPct: 50 },
+        acc2: { applied: 2, invited: 0, rejected: 1, other: 1, invitedPct: 0, rejectedPct: 50 },
+      } };
+    const accounts = [{ code: 'main', label: 'основной' }, { code: 'acc2', label: 'Резюме B' }];
+    assert.deepEqual(abText(ab, accounts, TZ), {
+      head: 'A/B · отклики 15.09–21.09, старше 3 дн',
+      lines: ['основной: 2 · 📩 1 (50%) · ✖ 1 (50%)', 'Резюме B: 2 · 📩 0 (0%) · ✖ 1 (50%)'],
+      note: 'мало данных (<30 на профиль) — разница может быть случайной',
+    });
+  });
+});
+
+describe('pulseLine — строка состояния аккаунта', () => {
+  const NOW = Date.parse('2026-09-24T09:00:00Z');   /* 13:00 по Самаре */
+  it('сегодняшние события — только время', () => {
+    const acc = { today: 10, window24: 28, window_cap: 45, window_free_at: null,
+      last_applied: '2026-09-24T06:52:14+00:00', last_sync: '2026-09-24T07:33:01+00:00' };
+    assert.equal(pulseLine(acc, NOW, TZ), 'сегодня 10 · 24ч 28/45 · отклик 10:52 · синк 11:33');
+  });
+  it('окно заполнено — пауза до часа, когда HH снова примет отклик', () => {
+    const acc = { today: 12, window24: 45, window_cap: 45, window_free_at: '2026-09-24T13:10:00+00:00',
+      last_applied: '2026-09-24T08:40:00+00:00', last_sync: null };
+    assert.equal(pulseLine(acc, NOW, TZ), 'сегодня 12 · 24ч 45/45 ⏸ до 17:10 · отклик 12:40');
+  });
+  it('пауза через полночь и события прошлых дней — с датой', () => {
+    const acc = { today: 0, window24: 46, window_cap: 45, window_free_at: '2026-09-24T21:30:00+00:00',
+      last_applied: '2026-09-23T13:53:16+00:00', last_sync: '2026-09-22T07:33:01+00:00' };
+    assert.equal(pulseLine(acc, NOW, TZ),
+      'сегодня 0 · 24ч 46/45 ⏸ до 25.09 01:30 · отклик 23.09 17:53 · синк 22.09 11:33');
+  });
+  it('сервер старой версии (без пульса) — пустая строка, а не «undefined»', () => {
+    assert.equal(pulseLine({ code: 'main', label: 'основной', session: 'ok', applied: 3 }, NOW, TZ), '');
+  });
+});
+
+describe('waitingByAccount — «ждут ответа» по каждому профилю', () => {
+  /* Считается как чип «👤 Личные» (isPersonalChat), а не по голому needs_reply: тот ложен только
+     у отказа, и первая версия панели показала «💬 747» — боты и заглушки «свяжемся» вперемешку
+     с живыми письмами (замер на живой ленте 24.09.2026). Счётчик, который всегда сотни, не
+     сигнал. */
+  const human = { needs_reply: true, sender: 'human' };
+  it('живое письмо, ждущее ответа, — по чату СВОЕГО профиля, мимо фильтра профилей', () => {
+    const vs = [
+      { chatByAcct: { main: human, acc2: { needs_reply: false, sender: 'human' } } },
+      { chatByAcct: { acc2: human } },
+      {},
+    ];
+    assert.deepEqual(waitingByAccount(vs), { main: 1, acc2: 1 });
+  });
+  it('бот, заглушка-фриз и закрытый чат ответа не ждут', () => {
+    const vs = [
+      { chatByAcct: { acc2: { needs_reply: true, sender: 'bot' } } },
+      { chatByAcct: { acc2: { needs_reply: true, sender: 'human', kind: 'ack' } } },
+      { chatByAcct: { acc2: { needs_reply: true, sender: 'human', can_write: false } } },
+    ];
+    assert.deepEqual(waitingByAccount(vs), {});
+  });
+});
+
+/* Подпись свёрнутой выпадашки «Язык»/«Роль» (24.09.2026: 14 + 18 пилюль ушли в выпадающие
+   списки — решение владельца). Порядок — порядок разметки, а не кликов: иначе подпись
+   прыгала бы при каждом выборе. */
+describe('pickSummary — подпись свёрнутого мультивыбора', () => {
+  const ORDER = ['Go', 'Python', 'Rust'];
+  it('ничего не выбрано — «все»', () => {
+    assert.equal(pickSummary(new Set(), ORDER), 'все');
+  });
+  it('один-два — перечислением в порядке разметки', () => {
+    assert.equal(pickSummary(new Set(['Rust', 'Go']), ORDER), 'Go, Rust');
+  });
+  it('больше двух — два первых и сколько ещё', () => {
+    assert.equal(pickSummary(new Set(['Rust', 'Python', 'Go']), ORDER), 'Go, Python +1');
   });
 });
 

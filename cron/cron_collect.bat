@@ -26,6 +26,11 @@ set CACHE_TTL_HOURS=20
 rem UTF-8 stdout: шаги ниже (search-loader, ETL) печатают кириллицу обычным print(); при
 rem cp1251-редиректе в лог это роняет прогон UnicodeEncodeError. Задаём один раз на весь .bat.
 set PYTHONIOENCODING=utf-8
+rem 0') Уборка logs/ (24.09.2026): cron_*.log > 20 МБ -> *.1 (одно поколение) и per-PID
+rem     логи loguru старше 14 дней (hrwork/infrastructure/storage/logfiles.py). Вывод НЕ в
+rem     cron_collect.log: cmd открывает файл редиректа ДО старта процесса, и ротировать
+rem     занятый собственным редиректом лог Windows не даст. Итог — в per-PID логе loguru.
+"%PY%" -m hrwork.infrastructure.storage.logfiles >nul 2>&1
 "%PY%" hh.py collect >> logs\cron_collect.log 2>&1
 
 rem ── Пересборка статистики ПОСЛЕ сбора (все шаги ниже — best-effort; читают уже записанный

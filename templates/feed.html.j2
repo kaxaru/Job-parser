@@ -38,6 +38,11 @@
 
 <header>
   <h1>Лента вакансий</h1>
+  <!-- Переключатель профиля hh.ru (RFC-004) — В ШАПКЕ, а не в панели фильтров (решение владельца
+       24.09.2026): от выбранного профиля зависят статусы, чаты, даты откликов и все счётчики
+       страницы, то есть это главный переключатель, а не один фильтр из пятнадцати, и панель
+       фильтров его прятать не должна. Наполняет main.js::renderAccountsPanel (при >=2 профилях). -->
+  <div class="acc-slot" id="acc-slot"></div>
   <span class="hdr-actions">
     <span id="sync-status" class="sync-status"></span>
     {% with toggle_class = "hdr-btn theme-toggle" %}{% include "theme-toggle.html.j2" %}{% endwith %}
@@ -71,22 +76,32 @@
 </div>
 
 <div class="filter-bar" id="filter-bar">
-  <!-- Languages -->
+  <!-- Languages / Roles — ВЫПАДАШКИ-мультивыбор (решение владельца 24.09.2026): 14 и 18 пилюль
+       занимали две строки панели. Пилюли те же (chip_grid, те же классы и id — фильтр их
+       различает по классу), просто лежат в раскрывающемся теле. Подпись свёрнутого —
+       main.js по model.js::pickSummary. -->
   <div class="filter-group">
     <span class="filter-label">Язык</span>
-    <div class="lang-grid">
+    <details class="multi-sel pick-sel" id="lang-sel">
+      <summary id="lang-summary">все</summary>
+      <div class="multi-sel-body lang-grid">
       {{ chip_grid(langs, langs, 'lang-cb', 'lang-', 1) }}
-    </div>
+      </div>
+    </details>
   </div>
 
-  <!-- Roles -->
   <div class="filter-group">
     <span class="filter-label">Роль</span>
-    <div class="lang-grid">
+    <div class="pick-row">
+    <details class="multi-sel pick-sel" id="role-sel">
+      <summary id="role-summary">все</summary>
+      <div class="multi-sel-body lang-grid">
       {{ chip_grid(roles, roles, 'role-cb', 'role-', 1) }}
-    </div>
+      </div>
+    </details>
     <button class="sched-btn" id="nonit-toggle"
             title="Показать вакансии без IT-роли (продажи, инженеры-конструкторы и т.п.)">+ не-IT ({{ nonit }})</button>
+    </div>
   </div>
 
   <!-- Currency (валюты показа зарплат). МУЛЬТИВЫБОР (решение владельца 23.09.2026): вилка
@@ -131,15 +146,17 @@
   </div>
 
   {% if sources|length > 1 %}
-  <!-- Portal (источник-агрегатор) -->
+  <!-- Portal (источник-агрегатор). Селект вместо ряда из 13 пилюль (решение владельца
+       24.09.2026, по образцу «Формата» 23.09): значения — те же коды источника, что разбирает
+       `model.js::filterVacancies`; дефолт `selected` здесь и в `main.js::SELECT_GROUPS`. -->
   <div class="filter-group">
     <span class="filter-label">Портал</span>
-    <div class="sched-btns">
-      <button class="sched-btn active" data-source="all">Все</button>
+    <select class="filter-select" id="source-sel" aria-label="Портал-источник">
+      <option value="all" selected>Все</option>
       {% for s in sources %}
-      <button class="sched-btn" data-source="{{ s }}">{{ s }}</button>
+      <option value="{{ s }}">{{ s }}</option>
       {% endfor %}
-    </div>
+    </select>
   </div>
   {% endif %}
 

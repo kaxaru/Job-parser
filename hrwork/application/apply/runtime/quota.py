@@ -64,6 +64,31 @@ def applied_in_window(rows: list[Any], *, hours: int = ROLLING_WINDOW_H,
     return len(seen)
 
 
+def window_free_at(rows: list[Any], cap: int, *, hours: int = ROLLING_WINDOW_H,
+                   moment: datetime.datetime | None = None) -> datetime.datetime | None:
+    """Когда окно снова пустит прогон: момент, в который число разных вакансий в нём опустится
+    НИЖЕ `cap` (`autoclick._apply_batch` начинает прогон только при `rolling < cap`). None —
+    окно не заполнено или потолок выключен (`cap <= 0`: прогонов нет вовсе).
+
+    Вакансия держит место до выхода ПОСЛЕДНЕЙ своей записи: `applied_in_window` считает её,
+    пока в окне любая из них (дубль ручного отклика и подхвата из чата). Читается лентой
+    (панель профилей), боевой путь откликов её не вызывает."""
+    if cap <= 0:
+        return None
+    now = moment if moment is not None else datetime.datetime.now(datetime.timezone.utc)
+    edge = now - datetime.timedelta(hours=hours)
+    latest: dict[str, datetime.datetime] = {}
+    for e in rows:
+        ts = journal_ts(str(e.get("ts") or ""))
+        if ts is not None and edge < ts <= now:
+            key = str(e.get("id"))
+            if key not in latest or ts > latest[key]:
+                latest[key] = ts
+    if len(latest) < cap:
+        return None
+    return sorted(latest.values())[len(latest) - cap] + datetime.timedelta(hours=hours)
+
+
 def _today() -> str:
     return datetime.date.today().isoformat()
 

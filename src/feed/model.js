@@ -520,6 +520,124 @@ export function crmStats(applied, statusesByAcct) {
   return acc;
 }
 
+/* ── Панель профилей: A/B резюме, пульс аккаунта, «ждут ответа» (24.09.2026) ─────────────
+   Отвечает на вопросы, которые владелец неделю задавал в чат: «какое резюме работает»,
+   «отклики были? синк был? почему мало?», «кто мне написал». Всё чистое; время — в поясе `tz`
+   (в браузере undefined = местный, в тестах — явный, чтобы CI в UTC не разъезжался). */
+
+/* Отклик моложе — работодатель ещё не успел ответить; без отсечки свежий профиль проигрывал бы
+   сравнение по долям только потому, что его отклики моложе. */
+export const AB_MATURE_DAYS = 3;
+/* Меньше откликов на профиль — разница долей в пару пунктов неотличима от случая. */
+export const AB_THIN = 30;
+
+/* Сравнение резюме за ОБЩИЙ период: {fromMs, toMs, thin, rows: {account: {applied, invited,
+   rejected, other, invitedPct, rejectedPct}}} либо null — сравнивать нечего.
+
+   Общий период — от первого отклика МЛАДШЕГО профиля до «сейчас минус AB_MATURE_DAYS». crmStats
+   считает за всё время, а у основного это месяцы против недели второго — такие доли
+   несопоставимы. Отклик профиля берётся по ЕГО ранней записи, статус — его собственный
+   (у вакансии с откликом от обоих исходы разные, как в crmStats). null — профиль один, окно
+   пустое или в нём у кого-то ноль зрелых откликов. */
+export function abCompare(applied, statusesByAcct, nowMs = Date.now(), matureDays = AB_MATURE_DAYS) {
+  const st = statusesByAcct || {};
+  const first = {};                         /* account -> ms первого отклика */
+  const own = {};                           /* account -> {id: ms РАННЕЙ записи этого аккаунта} */
+  for (const e of applied || []) {
+    const t = tsMs(e?.ts);
+    if (!e?.id || t === null) continue;
+    const acc = e.account || 'main';        /* легаси-строки — основной (как journalById) */
+    if (first[acc] === undefined || t < first[acc]) first[acc] = t;
+    if (!own[acc]) own[acc] = {};
+    if (own[acc][e.id] === undefined || t < own[acc][e.id]) own[acc][e.id] = t;
+  }
+  const codes = Object.keys(first);
+  if (codes.length < 2) return null;
+  const fromMs = Math.max(...codes.map(c => first[c]));
+  const toMs = nowMs - matureDays * 864e5;
+  if (fromMs >= toMs) return null;
+  const rows = {};
+  for (const code of codes) {
+    const r = { applied: 0, invited: 0, rejected: 0, other: 0 };
+    for (const [id, t] of Object.entries(own[code])) {
+      if (t < fromMs || t > toMs) continue;
+      r.applied += 1;
+      r[stateKind(st[id]?.[code])] += 1;
+    }
+    if (!r.applied) return null;
+    rows[code] = { ...r, invitedPct: Math.round((100 * r.invited) / r.applied),
+      rejectedPct: Math.round((100 * r.rejected) / r.applied) };
+  }
+  return { fromMs, toMs, thin: Object.values(rows).some(r => r.applied < AB_THIN), rows };
+}
+
+/* Форматтеры времени в поясе tz (кэш: Intl.DateTimeFormat дорогой, а панель перерисовывается
+   каждые 5 минут и на каждую смену фильтра). */
+const _fmts = new Map();
+function fmtIn(tz, opts) {
+  const key = `${tz || ''}|${JSON.stringify(opts)}`;
+  if (!_fmts.has(key)) _fmts.set(key, new Intl.DateTimeFormat('ru-RU', { ...opts, timeZone: tz }));
+  return _fmts.get(key);
+}
+const ddmm = (ms, tz) => fmtIn(tz, { day: '2-digit', month: '2-digit' }).format(ms);
+const hhmm = (ms, tz) => fmtIn(tz, { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(ms);
+const dayOf = (ms, tz) => fmtIn(tz, { year: 'numeric', month: '2-digit', day: '2-digit' }).format(ms);
+/* Сегодняшнее — только время; иное — с датой (иначе «синк 11:33» позавчера читается как свежий). */
+const whenShort = (ms, nowMs, tz) =>
+  (dayOf(ms, tz) === dayOf(nowMs, tz) ? hhmm(ms, tz) : `${ddmm(ms, tz)} ${hhmm(ms, tz)}`);
+
+/* Подписи блока A/B: {head, lines, note}. Порядок строк — порядок `accounts` (/api/accounts). */
+export function abText(ab, accounts, tz) {
+  const head = `A/B · отклики ${ddmm(ab.fromMs, tz)}–${ddmm(ab.toMs, tz)}, старше ${AB_MATURE_DAYS} дн`;
+  const lines = (accounts || []).filter(a => ab.rows[a.code]).map(a => {
+    const r = ab.rows[a.code];
+    return `${a.label}: ${r.applied} · 📩 ${r.invited} (${r.invitedPct}%) · ✖ ${r.rejected} (${r.rejectedPct}%)`;
+  });
+  const note = ab.thin ? `мало данных (<${AB_THIN} на профиль) — разница может быть случайной` : '';
+  return { head, lines, note };
+}
+
+/* Строка состояния аккаунта из /api/accounts: «сегодня N · 24ч W/CAP [⏸ до …] · отклик … · синк …».
+   Окно заполнено -> пауза до часа, когда HH снова примет отклик (`quota.window_free_at`): ровно
+   в это упирается следующий слот, и без подсказки «почему не откликается» читалось как поломка.
+   Сервер старой версии (нет полей пульса) -> '' — панель просто без строки. */
+export function pulseLine(acc, nowMs = Date.now(), tz = undefined) {
+  if (!acc || typeof acc.today !== 'number') return '';
+  let win = `24ч ${acc.window24}/${acc.window_cap}`;
+  const free = tsMs(acc.window_free_at);
+  if (acc.window24 >= acc.window_cap && free !== null) win += ` ⏸ до ${whenShort(free, nowMs, tz)}`;
+  const parts = [`сегодня ${acc.today}`, win];
+  const la = tsMs(acc.last_applied);
+  if (la !== null) parts.push(`отклик ${whenShort(la, nowMs, tz)}`);
+  const ls = tsMs(acc.last_sync);
+  if (ls !== null) parts.push(`синк ${whenShort(ls, nowMs, tz)}`);
+  return parts.join(' · ');
+}
+
+/* Подпись свёрнутой выпадашки-мультивыбора («Язык», «Роль»): «все» / «Go, Rust» / «Go, Python +1».
+   Порядок — порядок разметки (`ordered`), а не кликов: иначе подпись прыгала бы при каждом
+   выборе. Больше двух имён строка не вмещает — остальное числом. */
+export function pickSummary(selected, ordered) {
+  const picked = (ordered || []).filter(v => selected?.has(v));
+  if (!picked.length) return 'все';
+  return picked.length <= 2 ? picked.join(', ') : `${picked.slice(0, 2).join(', ')} +${picked.length - 2}`;
+}
+
+/* «Живой человек ждёт ответа» по КАЖДОМУ профилю, независимо от фильтра профилей: чипы «Чаты»
+   считают только выбранный профиль, и письмо второму резюме (у него нет автоответов) было видно,
+   лишь если специально переключиться на него. Условие — то же, что у чипа «👤 Личные»
+   (isPersonalChat), а не голый needs_reply: тот ложен только у отказа, и первая версия панели
+   показала «💬 747» вперемешку с ботами и заглушками (живая лента, 24.09.2026). */
+export function waitingByAccount(vacancies) {
+  const out = {};
+  for (const v of vacancies || []) {
+    for (const [code, info] of Object.entries(v?.chatByAcct || {})) {
+      if (isPersonalChat(info)) out[code] = (out[code] || 0) + 1;
+    }
+  }
+  return out;
+}
+
 /* Время последнего ЖИВОГО ответа работодателя — ключ сортировки «Ответы HR».
    Приоритет у ЖИВОГО чата (`v.chat`, его подливает оверлей serve), и только потом
    `v.hr_ts`, испечённый при сборке ленты.

@@ -233,6 +233,20 @@ def test_feed_and_dashboard_assets_are_served(name, tmp_path):
     assert gzip.decompress(r.body) == f"/* {name} */".encode()
 
 
+@pytest.mark.parametrize(("path", "page"), [
+    ("/", "feed.html"),
+    ("/dashboard", "dashboard.html"),
+    ("/dashboard/", "dashboard.html"),
+    ("/dashboard?tab=1", "dashboard.html"),
+])
+def test_short_page_address_serves_the_page(path, page, tmp_path):
+    """Короткие адреса страниц. Владелец набрал `/dashboard` и получил 404 (24.09.2026):
+    дашборд отдавался только как `/dashboard.html`."""
+    (tmp_path / page).write_text(f"<!-- {page} -->", encoding="utf-8")
+    r = _get(path, directory=str(tmp_path), headers={"Accept-Encoding": "gzip"})
+    assert (r.status, gzip.decompress(r.body)) == (200, f"<!-- {page} -->".encode())
+
+
 # ─────────── страница поиска: опции портала из config.SOURCES (аудит dwh_demo F62) ───────────
 
 def test_search_page_options_cover_every_configured_source():

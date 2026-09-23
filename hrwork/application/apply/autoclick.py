@@ -226,9 +226,39 @@ def apply_one(page: Any, cand: Candidate, cover_text: str = "",
             page.locator(selectors.RESPONSE_SUBMIT).first.click(timeout=3_000)
     if selectors.wait_response_confirmed(page):
         return ApplyOutcome.APPLIED
-    log.warning("{}: отклик НЕ подтверждён за {}с — {}", cand.id,
-                selectors.CONFIRM_BUDGET_S, _submit_diag(page))
+    diag = _submit_diag(page)           # ДО перезагрузки: после неё страница уже другая
+    if _confirmed_after_reload(page, cand.url):
+        log.info("{}: подтверждение не пришло за {}с ({}), но после перезагрузки вакансия "
+                 "показывает отклик — засчитан", cand.id, selectors.CONFIRM_BUDGET_S, diag)
+        return ApplyOutcome.APPLIED
+    log.warning("{}: отклик НЕ подтверждён за {}с — {}", cand.id, selectors.CONFIRM_BUDGET_S, diag)
     return ApplyOutcome.UNCONFIRMED
+
+
+def _confirmed_after_reload(page: Any, url: str) -> bool:
+    """Перепроверка неподтверждённого клика: открыть вакансию заново и поискать маркер
+    «Вы откликнулись» — тот же, по которому прогон узнаёт «уже откликались».
+
+    Зачем (сверка логов с журналом 24.09.2026): из «НЕ подтверждён» у acc2 5 из 131, у основного
+    49 из 400 на самом деле УШЛИ — синк дожурналил их из чатов с временем HH, совпадающим с
+    кликом, у всех диагностика «сабмит=нет» (поп-ап не появился, HH принял отклик сразу, но
+    карточку за бюджет не перерисовал). Прогон не засчитывал их в цель и слал ещё один отклик
+    сверх лимита, а квота догоняла факт только на синке.
+
+    Только GET той же страницы, повторного клика нет. Упор в потолок 24ч маркера не даёт, и
+    исход остаётся UNCONFIRMED: серию по-прежнему рвёт APPLY_UNCONFIRMED_STREAK_MAX, то есть
+    лишних перезагрузок не больше пяти подряд. Любой сбой навигации — False (как было).
+    После `_goto` гарантирован только корень приложения, а блок отклика HH дорисовывает позже:
+    ждём кнопку ИЛИ маркер до 8 с — то же ожидание, что у распознавания «уже откликались» на
+    входе в `apply_one`."""
+    try:
+        browser._goto(page, url)
+    except Exception:
+        return False
+    with contextlib.suppress(Exception):
+        page.locator(f'{selectors.RESPONSE_DONE_MARKER}, '
+                     '[data-qa="vacancy-response-link-top"]').first.wait_for(timeout=8_000)
+    return selectors.response_confirmed(page)
 
 
 def _sync_applied_from_chats(ctx: Any, page: Any) -> int:
