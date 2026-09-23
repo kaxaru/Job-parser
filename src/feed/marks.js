@@ -30,18 +30,6 @@ export async function pushServer(marks) {
   if (!r.ok) throw new Error(`marks save: HTTP ${r.status}`);
 }
 
-/** GET отметок с сервера. Возвращает объект отметок или null (file:// / нет сервера). */
-export async function pullServer() {
-  try {
-    const r = await fetch('api/marks', { cache: 'no-store' });
-    if (!r.ok) return null;
-    const disk = await r.json();
-    return (disk && typeof disk === 'object') ? disk : {};
-  } catch {
-    return null;   /* file:// — сервера нет */
-  }
-}
-
 /** Отклик в фоне через локальный сервер (serve-режим): сервер сам жмёт «Откликнуться»
     в Playwright и шлёт письмо в чат. Возвращает {status, letter}. Бросает на HTTP-ошибке.
     Медленно (браузер + DDoS-Guard) — вызывающий показывает индикатор.

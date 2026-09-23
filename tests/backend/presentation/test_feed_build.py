@@ -452,8 +452,9 @@ def test_state_labels_bridge_carries_every_status_label(feed_globals):
 def test_apply_labels_bridge_carries_the_feed_button_labels(feed_globals):
     """Подписи кнопки «Откликнуться в фоне» едут ЦЕЛИКОМ и дословно (`apply/outcome.py::APPLY_LABELS`).
 
-    Ключи — коды `ApplyOutcome` (applied|already|form|skip|captcha) И `TransportStatus`
-    (queued|busy|no-session|taken|error): и то, что отдаёт воркер, и то, что сервер пишет сам.
+    Ключи — коды `ApplyOutcome` (applied|already|form|skip|unconfirmed|captcha) И
+    `TransportStatus` (queued|busy|no-session|taken|error): и то, что отдаёт воркер, и то,
+    что сервер пишет сам.
     До 23.09.2026 этот словарь был единственным в ленте БЕЗ моста, и дрейф уже случился —
     `taken` в нём отсутствовал, и `main.js` показывал сырое `taken` вместо подписи
     (аудит `2026-09-22-quality.md`, §3.2). Литералы, а не сверка с `APPLY_LABELS`: инжект
@@ -463,6 +464,7 @@ def test_apply_labels_bridge_carries_the_feed_button_labels(feed_globals):
         "already":    "уже откликались",
         "form":       "📝 нужна форма — в очереди",
         "skip":       "✖ пропущено (внешний/архив/опросник)",
+        "unconfirmed": "⚠ не подтвердилось — клик ушёл, ответа HH нет",
         "captcha":    "⛔ капча HH — нужен вход руками",
         "queued":     "➕ в очереди крона",
         "busy":       "⏳ занято — идёт крон-отклик, попробуйте через пару минут",

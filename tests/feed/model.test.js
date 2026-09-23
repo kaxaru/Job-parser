@@ -7,8 +7,8 @@ import { describe, it } from 'node:test';
 import {
   APPLY_LABELS,
   SCHED_LABELS,
-  ageColor, appliedInRange, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
-  countActiveFilters, esc, filterVacancies, fmtK, fmtSal, hashId, isFrozenChat, isRemoteLike,
+  ageColor, appliedInRange, cardPaint, cardColor, cardTone, chatAgeLabel, cityMatches, convert,
+  countActiveFilters, esc, filterVacancies, fmtK, fmtSal, fmtSalMulti, hashId, isFrozenChat, isRemoteLike,
   matchColor, matchInk,
   safeUrl,
   isDiscard, isInvited,
@@ -37,7 +37,7 @@ function flt(over = {}) {
     search: [], resumeOnly: false, langs: new Set(), roles: new Set(),
     showNonIt: false, exps: new Set(), emps: new Set(),
     minSal: 0, maxSal: 1_000_000, salMax: 1_000_000,
-    city: '', schedule: 'all', status: 'all', source: 'all', displayCur: 'RUB',
+    city: '', schedule: 'all', status: 'all', source: 'all', displayCurs: ['RUB'],
     dateFrom: '', dateTo: '', sort: 'none', matchSort: false,
     ...over,
   };
@@ -213,6 +213,27 @@ describe('cardTone — тон рамки: жёлтое бот-интервью �
   });
 });
 
+/* Контракт кнопки ✓/✕: «ручная отметка против CRM-статуса» — одно правило на рендер ленты и
+   на живой клик. `status` красит тело и активную кнопку, `tone` — рамку. Ожидания записаны
+   по правилу `cardColor(v)`/`cardTone(v)` важнее отметки, отметка важнее пустоты. */
+describe('cardPaint — ручная отметка против CRM-статуса', () => {
+  it('ручная отметка без терминального статуса идёт и в тело, и в рамку', () => {
+    assert.deepEqual(cardPaint(vac({ status: 'RESPONSE' }), 'applied'),
+                     { status: 'applied', tone: 'applied' });
+  });
+  it('терминальный статус HH сильнее ручной отметки', () => {
+    assert.deepEqual(cardPaint(vac({ status: 'DISCARD' }), 'applied'),
+                     { status: 'rejected', tone: 'rejected' });
+  });
+  it('две роли разведены: бот-интервью даёт жёлтую рамку при зелёном теле', () => {
+    assert.deepEqual(cardPaint(vac({ status: 'INTERVIEW', chat: { kind: 'bot_interview' } }), null),
+                     { status: 'applied', tone: 'botiv' });
+  });
+  it('ни статуса, ни отметки -> null в обоих полях, а не undefined', () => {
+    assert.deepEqual(cardPaint(vac({ status: null }), null), { status: null, tone: null });
+  });
+});
+
 describe('cityMatches — выпадающий список городов с поиском внутри', () => {
   it('точный выбор из списка не тянет однокоренные города', () => {
     assert.equal(cityMatches('Москва', 'Москва', true), true);
@@ -305,6 +326,38 @@ describe('fmtSal — форматирование зарплаты (месячн
   });
 });
 
+/* Зарплата в НЕСКОЛЬКИХ валютах показа (мультивыбор, 23.09.2026): владелец выбрал несколько
+   валют — вилка печатается в каждой. Порядок частей = порядок набора (он же порядок чекбоксов
+   в разметке), а не порядок валют в данных: пользователь видит свой выбор как выбрал. */
+describe('fmtSalMulti — вилка в нескольких валютах показа', () => {
+  it('один рубль — ровно как fmtSal, без лишнего разделителя', () => {
+    assert.equal(ws(fmtSalMulti(vac({ sal_from: 150000 }), ['RUB'])), 'от 150 000 ₽/мес');
+  });
+  it('рубль + доллар: две части через « · », порядок набора сохранён', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(ws(fmtSalMulti(vac({ sal_from: 180000 }), ['RUB', 'USD'])),
+      'от 180 000 ₽/мес · от 2 000 $/мес');
+    delete globalThis.FX_RATES;
+  });
+  it('порядок набора важен и обратный тоже работает', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(ws(fmtSalMulti(vac({ sal_from: 180000 }), ['USD', 'RUB'])),
+      'от 2 000 $/мес · от 180 000 ₽/мес');
+    delete globalThis.FX_RATES;
+  });
+  it('вакансия без вилки — пустая строка, а не « · » из разделителей', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };
+    assert.equal(fmtSalMulti(vac(), ['RUB', 'USD']), '');
+    delete globalThis.FX_RATES;
+  });
+  it('в наборе валюта без курса — она печатается в оригинале, остальные сконвертированы', () => {
+    globalThis.FX_RATES = { USD: 1, RUB: 90 };           // курса EUR нет
+    assert.equal(ws(fmtSalMulti(vac({ sal_from: 180000 }), ['RUB', 'EUR'])),
+      'от 180 000 ₽/мес · от 180 000 ₽/мес');
+    delete globalThis.FX_RATES;
+  });
+});
+
 describe('convert / resolveCur — валюты', () => {
   it('resolveCur — алиасы RUR/USDT/BYR + upper', () => {
     assert.equal(resolveCur('RUR'), 'RUB');
@@ -325,14 +378,14 @@ describe('convert / resolveCur — валюты', () => {
 });
 
 describe('filterVacancies — зарплата в выбранной валюте', () => {
-  it('фильтр minSal сравнивает в displayCur', () => {
+  it('фильтр minSal сравнивает в первой валюте показа', () => {
     globalThis.FX_RATES = { USD: 1, RUB: 90 };
     const data = [
       vac({ id: 'ru', sal_mid: 180000, currency: 'RUR' }),   // = $2000
       vac({ id: 'us', sal_mid: 1000, currency: 'USD' }),     // = $1000
     ];
     const ids = filterVacancies(data,
-      flt({ displayCur: 'USD', minSal: 1500, maxSal: 100000, salMax: 100000 })).map(v => v.id);
+      flt({ displayCurs: ['USD'], minSal: 1500, maxSal: 100000, salMax: 100000 })).map(v => v.id);
     assert.deepEqual(ids, ['ru']);                            // только >$1500
     delete globalThis.FX_RATES;
   });
@@ -409,11 +462,17 @@ describe('countActiveFilters — счётчик на свёрнутой пане
     assert.equal(countActiveFilters(flt2({ langs: new Set(['Python']), city: 'Москва' })), 2);
   });
   it('сортировка, валюта и сортировка по совпадению фильтрами не считаются', () => {
-    assert.equal(countActiveFilters(flt2({ sort: 'desc', matchSort: true, displayCur: 'USD' })), 0);
+    assert.equal(countActiveFilters(flt2({ sort: 'desc', matchSort: true, displayCurs: ['USD'] })), 0);
   });
   it('суженная вилка зарплаты — активный фильтр', () => {
     assert.equal(countActiveFilters(flt2({ minSal: 50_000 })), 1);
     assert.equal(countActiveFilters(flt2({ maxSal: 100_000, salMax: 1_000_000 })), 1);
+  });
+  /* Незаполненный ползунок (`maxSal` ещё null) — не суженная вилка. Правило «зарплатный фильтр
+     включён» одно на счётчик и на фильтрацию; именно на этом входе две прежние копии
+     расходились — выдача резалась бы, а бейдж фильтров молчал (аудит 2026-09-23). */
+  it('незаполненный ползунок фильтром не считается', () => {
+    assert.equal(countActiveFilters(flt2({ maxSal: null })), 0);
   });
 });
 
@@ -652,6 +711,19 @@ describe('filterVacancies — сортировка по дате появлен�
   });
   it('date_old — старые первыми, без даты в конце', () => {
     assert.deepEqual(ids('date_old'), ['old', 'mid', 'new', 'nodate']);
+  });
+  /* age: 0 — «вакансия сегодня». Общая фабрика компараторов считает пустым только
+     null/undefined/'', поэтому ноль остаётся валидным ключом: с проверкой на `!age`
+     сегодняшняя уезжала бы в конец к «без даты», то есть «Свежие» начинались бы
+     не со свежей вакансии. */
+  it('age 0 — «сегодня», а не «без даты»: у свежих первым, в хвост уходит только nodate', () => {
+    const withToday = [...data, vac({ id: 'today', age: 0 })];
+    assert.deepEqual(
+      filterVacancies(withToday, flt({ sort: 'date_new' })).map(v => v.id),
+      ['today', 'new', 'mid', 'old', 'nodate']);
+    assert.deepEqual(
+      filterVacancies(withToday, flt({ sort: 'date_old' })).map(v => v.id),
+      ['old', 'mid', 'new', 'today', 'nodate']);
   });
 });
 
@@ -898,7 +970,7 @@ describe('comparableSalary — сравнимая вилка или null', () =>
     globalThis.FX_RATES = { USD: 1, RUB: 90 };
     const noCur = vac({ id: 'w3', sal_mid: 10000, currency: '' });
     const cheap = vac({ id: 'ru', sal_mid: 10000, currency: 'RUR' });
-    const f = flt({ minSal: 0, maxSal: 5000, salMax: 2090000, displayCur: 'RUB' });
+    const f = flt({ minSal: 0, maxSal: 5000, salMax: 2090000, displayCurs: ['RUB'] });
     const ids = filterVacancies([noCur, cheap], f).map(v => v.id);
     assert.deepEqual(ids, ['w3']);   // рублёвые 10 000 не проходят потолок 5 000, безвалютная — не сравнивается
     delete globalThis.FX_RATES;
@@ -1182,7 +1254,6 @@ describe('journalById — набор аккаунтов на вакансию (R
   it('легаси-строка без account относится к основному', () => {
     const j = journalById([{ id: '1', ts: '2026-09-15T10:00:00+04:00' }]);
     assert.deepEqual(j['1'].accounts, ['main']);
-    assert.equal(j['1'].account, 'main');
   });
   it('две записи от разных аккаунтов на одну вакансию — конфликт (оба в accounts)', () => {
     const j = journalById([
@@ -1248,7 +1319,7 @@ describe('crmStats — статистика откликов по аккаунт
 describe('filterVacancies — фильтр по аккаунту (RFC-004)', () => {
   const base = { search: [], roles: new Set(), langs: new Set(), exps: new Set(), emps: new Set(),
     status: 'all', schedule: 'all', source: 'all', minSal: 0, maxSal: 1e9, salMax: 1e9,
-    showNonIt: true, displayCur: 'RUB' };
+    showNonIt: true, displayCurs: ['RUB'] };
   const vs = [
     { id: '1', name: 'A', employer: '', techs: [], role: 'Backend', applied: { accounts: ['main'] } },
     { id: '2', name: 'B', employer: '', techs: [], role: 'Backend', applied: { accounts: ['acc2'] } },
@@ -1283,6 +1354,7 @@ describe('APPLY_LABELS — подписи исхода отклика (офла�
     ['already', 'уже откликались'],
     ['form', '📝 нужна форма — в очереди'],
     ['skip', '✖ пропущено (внешний/архив/опросник)'],
+    ['unconfirmed', '⚠ не подтвердилось — клик ушёл, ответа HH нет'],
     ['captcha', '⛔ капча HH — нужен вход руками'],
     ['queued', '➕ в очереди крона'],
     ['busy', '⏳ занято — идёт крон-отклик, попробуйте через пару минут'],
@@ -1296,7 +1368,7 @@ describe('APPLY_LABELS — подписи исхода отклика (офла�
     });
   }
 
-  it('словарь полон: ровно десять кодов и ни одного лишнего', () => {
+  it('словарь полон: ровно одиннадцать кодов и ни одного лишнего', () => {
     assert.deepEqual(Object.keys(APPLY_LABELS), cases.map(([code]) => code));
   });
 });

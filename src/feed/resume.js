@@ -94,9 +94,11 @@ const EXP_FIT_UNKNOWN = 0.5;   /* поля нет у arbeitnow/web3 — это �
 /* Доля ИХ требований, которую я закрываю, и доля МОЕГО ядра, которую вакансия задействует.
    Сводятся гармоническим средним: высокий балл требует ОБОИХ. Одна только первая доля
    поощряла бы вакансии с одним-единственным знакомым тегом, одна вторая — вернула бы
-   портальную многословность. */
+   портальную многословность.
+   Обе доли нужны ТОЛЬКО чтобы свести их в `fit`, поэтому наружу уходит одно число: `resumeMatch`
+   отдавал ещё `covered`/`core` «для отладки и тестов формулы», а не читал их никто. */
 function stackFit(techs) {
-  if (!techs?.length) return { fit: 0, covered: 0, core: 0 };
+  if (!techs?.length) return 0;
   let gain = 0, core = 0;
   for (const t of techs) {
     const w = TIERS[t] || 0;
@@ -105,8 +107,7 @@ function stackFit(techs) {
   }
   const covered = gain / techs.length;
   const engaged = Math.min(1, core / CORE_SAT);
-  const fit = (covered + engaged) ? (2 * covered * engaged) / (covered + engaged) : 0;
-  return { fit, covered, core };
+  return (covered + engaged) ? (2 * covered * engaged) / (covered + engaged) : 0;
 }
 
 /* ЯЗЫК — первая проверка, и она главнее стека.
@@ -131,8 +132,7 @@ function langFit(v) {
 }
 
 export function resumeMatch(v) {
-  const s = stackFit(v.techs);
-  const stack = 60 * s.fit;
+  const stack = 60 * stackFit(v.techs);
   const exp = 25 * (v.exp_id in EXP_FIT ? EXP_FIT[v.exp_id] : EXP_FIT_UNKNOWN);
   const remote = v.remote_any ? 15 : 0;
   const role = v.role in ROLE_FIT ? ROLE_FIT[v.role] : ROLE_FIT_UNKNOWN;
@@ -142,6 +142,5 @@ export function resumeMatch(v) {
     pct,
     stack: Math.round(stack), exp: Math.round(exp), remote,
     lang, role,                            /* множители — показываются в подсказке бейджа */
-    covered: s.covered, core: s.core,      /* для отладки и тестов формулы */
   };
 }

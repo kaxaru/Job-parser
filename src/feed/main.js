@@ -5,11 +5,11 @@
 
 import {
   applyVacancy, exportMarks, importMarks, loadInitialMarks,
-  pullJson, pullServer, pushServer, saveLocal,
+  pullJson, pushServer, saveLocal,
 } from './marks.js';
 import {
-  APPLY_LABELS, appliedInRange, cardTone, convert, countActiveFilters, crmStats,
-  effectiveApplied, effectiveChat, effectiveStatus, esc, fmtK, isFrozenChat, journalById,
+  APPLY_LABELS, appliedInRange, cardPaint, convert, countActiveFilters, crmStats,
+  effectiveApplied, effectiveChat, effectiveStatus, esc, fmtK, isPersonalChat, journalById,
   staleNow, syntheticCard,
 } from './model.js';
 import { createStore } from './store.js';
@@ -22,6 +22,8 @@ const V_MAP = Object.fromEntries(VACANCIES.map(v => [v.id, v]));
 /* Канон городов из выдачи: отличает выбор из списка (точное совпадение) от набранной вручную
    подстроки — иначе выбранная «Москва» тянула бы ещё и «Московский». */
 const CITY_SET = new Set(VACANCIES.map(v => v.city).filter(Boolean));
+
+const CUR_DEFAULT = 'RUB';   /* дефолтный набор валют показа — одна валюта; см. блок «Валюты» ниже */
 
 const store = createStore({
   vacancies: VACANCIES,
@@ -40,7 +42,7 @@ const store = createStore({
   schedule: 'all',
   status: 'all',
   source: 'all',
-  displayCur: 'RUB',
+  displayCurs: [CUR_DEFAULT],
   dateFrom: '',
   dateTo: '',
   sort: 'none',
@@ -71,8 +73,14 @@ function setStatus(id, st, card) {
   const marks = { ...store.get().marks };
   if (st) marks[id] = st; else delete marks[id];
   store.update({ marks }, false);     /* без полного ре-рендера — карточку красим точечно */
-  /* тон рамки переживает ручной тоггл: жёлтое бот-интервью не должно позеленеть от «✓ Отклик» */
-  if (card) applyCardStatus(card, st, cardTone(V_MAP[id]) || st);
+  /* Кнопку и тон считает то же правило, что и рендер (model.js::cardPaint): CRM-статус важнее
+     ручной отметки, поэтому «✓» по вакансии с отказом работодателя НЕ подсвечивает кнопку —
+     иначе она возвращалась к CRM-статусу на ближайшем тике оверлея, и клик «не срабатывал».
+     Тон рамки при этом переживает ручной тоггл: жёлтое бот-интервью не зеленеет от «✓ Отклик». */
+  if (card) {
+    const { status, tone } = cardPaint(V_MAP[id], st);
+    applyCardStatus(card, status, tone);
+  }
   persist();
 }
 
@@ -107,7 +115,7 @@ document.getElementById('modal-overlay').addEventListener('click', e => {
 });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
-/* ── Кнопка «Откликнуться в фоне» в модалке (serve-режим) → POST /api/apply ──
+/* ── Кнопка «Откликнуться в фоне» в модалке (serve-режим) -> POST /api/apply ──
    Подписи исхода — из моста Python (`model.js::APPLY_LABELS` ← `APPLY_LABELS_PY`), словаря
    здесь нет: локальная копия уже разъехалась с сервером (не было метки `taken`, которую отдаёт
    server.py::_apply_post, и `captcha`) — аудит 2026-09-22, §3.2. */
@@ -145,38 +153,27 @@ document.getElementById('modal-box').addEventListener('click', async e => {
   }
 });
 
-/* ── Фильтры ── */
-/* `.lang-cb` — общий класс разметки чипа-галочки, поэтому языковой обработчик обязан
-   исключить ВСЕ специализированные чипы (опыт, оформление), иначе код формы попал бы
-   в набор языков и обнулил выдачу. */
-document.querySelectorAll('.lang-cb:not(.exp-cb):not(.emp-cb)').forEach(cb => {
-  cb.addEventListener('change', () => {
-    const langs = store.get().langs;
-    if (cb.checked) langs.add(cb.value); else langs.delete(cb.value);
-    store.update({ langs });
+/* ── Фильтры ──
+   Чипы-галочки: четыре группы отличались только селектором и ключом состояния (аудит
+   2026-09-22, §3.3) — таблица разводит их одним циклом.
+   ЛОВУШКА: `.lang-cb` — общий класс разметки чипа-галочки, поэтому языковой селектор обязан
+   исключить ВСЕ специализированные чипы (опыт, оформление), иначе код формы попал бы в набор
+   языков и обнулил выдачу. */
+const CHECK_GROUPS = [
+  ['.lang-cb:not(.exp-cb):not(.emp-cb)', 'langs'],
+  ['.exp-cb', 'exps'],
+  ['.emp-cb', 'emps'],
+  ['.role-cb', 'roles'],
+];
+for (const [selector, key] of CHECK_GROUPS) {
+  document.querySelectorAll(selector).forEach(cb => {
+    cb.addEventListener('change', () => {
+      const set = store.get()[key];
+      if (cb.checked) set.add(cb.value); else set.delete(cb.value);
+      store.update({ [key]: set });
+    });
   });
-});
-document.querySelectorAll('.exp-cb').forEach(cb => {
-  cb.addEventListener('change', () => {
-    const exps = store.get().exps;
-    if (cb.checked) exps.add(cb.value); else exps.delete(cb.value);
-    store.update({ exps });
-  });
-});
-document.querySelectorAll('.emp-cb').forEach(cb => {
-  cb.addEventListener('change', () => {
-    const emps = store.get().emps;
-    if (cb.checked) emps.add(cb.value); else emps.delete(cb.value);
-    store.update({ emps });
-  });
-});
-document.querySelectorAll('.role-cb').forEach(cb => {
-  cb.addEventListener('change', () => {
-    const roles = store.get().roles;
-    if (cb.checked) roles.add(cb.value); else roles.delete(cb.value);
-    store.update({ roles });
-  });
-});
+}
 
 const nonitBtn = document.getElementById('nonit-toggle');
 if (nonitBtn) nonitBtn.addEventListener('click', () => {
@@ -207,22 +204,46 @@ salMaxEl.addEventListener('input', () => {
 salMinVal.textContent = fmtK(0);
 salMaxVal.textContent = fmtK(SAL_MAX);
 
-/* ── Переключатель валюты: зарплаты приводятся к выбранной валюте (курсы FX_RATES).
-   При смене — пересчитать масштаб слайдера и сбросить диапазон.
+/* ── Валюты показа зарплат — МУЛЬТИВЫБОР: вилка печатается в КАЖДОЙ выбранной валюте
+   (`model.js::fmtSalMulti`), свёрнуто набор видно в подписи `<summary>`.
+   ПЕРВАЯ выбранная (порядок разметки) — валюта ШКАЛЫ ползунка и сортировки: вилки
+   сравниваются в одной валюте, и это же число уходит в `comparableSalary`.
    ИНВАРИАНТ: SAL_MAX приходит из Python уже В РУБЛЯХ (feed.py::_salary_slider_max), поэтому
-   здесь ровно одна конверсия RUB -> выбранная. Раньше это число было максимумом по СЫРЫМ
+   здесь ровно одна конверсия RUB -> валюта шкалы. Раньше это число было максимумом по СЫРЫМ
    вилкам разных валют, и та же строка конвертировала узбекские сумы как рубли. ── */
-function rescaleSalary(cur) {
+const curBoxes = [...document.querySelectorAll('.cur-cb')];
+
+function pickedCurs() {
+  return curBoxes.filter(cb => cb.checked).map(cb => cb.value);
+}
+
+/* Подпись свёрнутой группы — выбранные валюты в порядке разметки. */
+function curSummary(curs) {
+  const el = document.getElementById('cur-summary');
+  if (!el) return;
+  el.textContent = curBoxes.filter(cb => curs.includes(cb.value))
+    .map(cb => cb.parentElement.textContent.trim()).join(' ') || CUR_DEFAULT;
+}
+
+function rescaleSalary(curs) {
+  const cur = curs[0];
   const max = Math.round(convert(SAL_MAX, 'RUR', cur));
   salMinEl.max = max; salMaxEl.max = max;
   salMinEl.value = 0; salMaxEl.value = max;
   salMinVal.textContent = fmtK(0);
   salMaxVal.textContent = fmtK(max);
-  store.update({ minSal: 0, maxSal: max, salMax: max, displayCur: cur });
+  store.update({ minSal: 0, maxSal: max, salMax: max, displayCurs: curs });
+}
+
+/* Сброс набора к дефолту (рубль) — из `resetFilters`, чтобы дефолт не был закодирован дважды. */
+function resetCurs() {
+  curBoxes.forEach(cb => { cb.checked = cb.value === CUR_DEFAULT; });
+  curSummary([CUR_DEFAULT]);
 }
 /* Активация пилюли: `active` — ровно на одной кнопке группы (снять с соседей, зажечь нажатой).
-   Блок был скопирован пять раз подряд (`[data-cur]`/`[data-sched]`/`[data-sort]`/`[data-status]`/
-   `[data-source]`, аудит 2026-09-22, §3.3): теперь одна функция на все группы. */
+   Блок был скопирован пять раз подряд (`[data-cur]`/`[data-sort]`/`[data-status]`/`[data-source]`,
+   аудит 2026-09-22, §3.3): теперь одна функция на все группы. Группы-селекты и мультивыбор
+   валют в подсветке не нуждаются — состояние видно по самой выпадашке/набору галочек. */
 function activate(btn) {
   btn.closest('.sched-btns')?.querySelectorAll('.sched-btn').forEach(b => { b.classList.remove('active'); });
   btn.classList.add('active');
@@ -232,9 +253,12 @@ function activate(btn) {
    зажигается, и ключ состояния ленты. Раньше дефолты были закодированы дважды (разметка +
    resetFilters против store), а два селектора из пяти брались без null-guard: удаление кнопки
    из разметки роняло сброс TypeError-ом (аудит 2026-09-22, §5). */
-const UI_DEFAULTS = [['data-cur', 'RUB', 'displayCur'], ['data-sched', 'all', 'schedule'],
-                     ['data-sort', 'none', 'sort'], ['data-status', 'all', 'status'],
+const UI_DEFAULTS = [['data-sort', 'none', 'sort'], ['data-status', 'all', 'status'],
                      ['data-source', 'all', 'source']];
+/* Группы-СЕЛЕКТЫ (Формат): тот же контракт, что у пилюль — id элемента, ключ состояния, дефолт.
+   Отдельный список, потому что пилюли зажигаются классом `active`, а селект — значением
+   элемента; роль и та, и другая одна: ОДИН список дефолтов на разметку и сброс. */
+const SELECT_GROUPS = [['sched-sel', 'schedule', 'all']];
 
 /* Сброс группы к дефолту: зажечь дефолтную пилюлю, а если её нет в разметке — просто снять
    активность со всей группы (единый null-guard вместо падения). */
@@ -244,12 +268,39 @@ function resetPills(attr, value) {
   document.querySelectorAll(`[${attr}]`).forEach(b => { b.classList.remove('active'); });
 }
 
-document.querySelectorAll('[data-cur]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    activate(btn);
-    rescaleSalary(btn.dataset.cur);
+/* Смена набора: пустым он быть НЕ МОЖЕТ (печатать нечего) — последнюю галочку возвращаем на
+   месте, ровно как прежние пилюли не давали снять единственную активную валюту. */
+curBoxes.forEach(cb => {
+  cb.addEventListener('change', () => {
+    if (!curBoxes.some(b => b.checked)) cb.checked = true;
+    const curs = pickedCurs();
+    curSummary(curs);
+    rescaleSalary(curs);
   });
 });
+curSummary(pickedCurs());   /* подпись при загрузке: набор уже проставлен `checked` в разметке */
+
+/* Группы-селекты: смена значения сразу пишет код фильтра в состояние (ре-фильтр идёт по всей
+   выдаче). Селект отдельного класса-подсветки не требует — видно выбранную опцию. */
+for (const [id, key] of SELECT_GROUPS) {
+  const sel = document.getElementById(id);
+  if (sel) sel.addEventListener('change', () => store.update({ [key]: sel.value }));
+}
+
+/* Пилюли-переключатели: группы `[data-sort]`/`[data-status]`/`[data-source]` отличались только
+   атрибутом и ключом состояния (аудит 2026-09-22, §3.3). Атрибут и есть ключ `dataset`,
+   второй столбец — ключ состояния.
+   ЛОВУШКА: `#mine-toggle` (инжектится оверлеем ПОЗЖЕ, несёт `data-status="mine"`) — свой
+   тоггл-обработчик; общий цикл идёт по разметке на старте и доинжектенных кнопок не видит. */
+const PILL_GROUPS = [['sort', 'sort'], ['status', 'status'], ['source', 'source']];
+for (const [attr, key] of PILL_GROUPS) {
+  document.querySelectorAll(`[data-${attr}]`).forEach(btn => {
+    btn.addEventListener('click', () => {
+      activate(btn);
+      store.update({ [key]: btn.dataset[attr] });
+    });
+  });
+}
 
 /* Город: выбор из datalist даёт ТОЧНОЕ имя (cityExact), свободный ввод — поиск по подстроке
    («сан» -> Санкт-Петербург). Дебаунс как у поиска: ре-фильтр идёт по всей выдаче. */
@@ -266,31 +317,6 @@ document.querySelectorAll('[data-cur]').forEach(btn => {
   });
 })();
 
-document.querySelectorAll('[data-sched]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    activate(btn);
-    store.update({ schedule: btn.dataset.sched });
-  });
-});
-document.querySelectorAll('[data-sort]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    activate(btn);
-    store.update({ sort: btn.dataset.sort });
-  });
-});
-document.querySelectorAll('[data-status]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    activate(btn);
-    store.update({ status: btn.dataset.status });
-  });
-});
-document.querySelectorAll('[data-source]').forEach(btn => {
-  btn.addEventListener('click', () => {
-    activate(btn);
-    store.update({ source: btn.dataset.source });
-  });
-});
-
 const resumeBtn = document.getElementById('resume-toggle');
 resumeBtn.addEventListener('click', () => {
   const resumeOnly = !store.get().resumeOnly;
@@ -306,13 +332,17 @@ if (matchBtn) matchBtn.addEventListener('click', () => {
 });
 
 function resetFilters() {
-  recomputeStatuses(new Set());   /* до store.update: ре-рендер должен увидеть общие статусы */
+  /* Один проход по выдаче пересчитывает ВСЕ профильные поля (статус, чат, отклик), а не только
+     статусы: сброс профилей оставлял чаты и отклики от прежнего аккаунта до следующего тика
+     оверлея. До store.update — ре-рендер должен увидеть уже общие значения. */
+  recomputeForAccounts(new Set());
   /* Состояние сброса: ключи пилюль дописывает цикл ниже (из UI_DEFAULTS) — так значение
      дефолта не разъезжается между разметкой, UI и стором. */
   const state = {
     minSal: 0, maxSal: SAL_MAX, salMax: SAL_MAX, city: '', cityExact: false,
     dateFrom: '', dateTo: '', matchSort: false, resumeOnly: false, search: [],
     showNonIt: false, chatFilter: '', accountFilter: new Set(),
+    displayCurs: [CUR_DEFAULT],          /* валюты показа — галочки ставит resetCurs ниже */
   };
   store.get().langs.clear();
   store.get().exps.clear();
@@ -324,32 +354,30 @@ function resetFilters() {
   salMinEl.value = 0; salMaxEl.value = SAL_MAX;
   salMinVal.textContent = fmtK(0); salMaxVal.textContent = fmtK(SAL_MAX);
   for (const [attr, value, key] of UI_DEFAULTS) { resetPills(attr, value); state[key] = value; }
+  for (const [id, key, def] of SELECT_GROUPS) {           /* селекты: дефолт — значением */
+    const sel = document.getElementById(id);
+    if (sel) sel.value = def;
+    state[key] = def;
+  }
+  resetCurs();                                            /* валюты: дефолт — набором галочек */
   const ci = document.getElementById('city-inp');
   if (ci) ci.value = '';
   resumeBtn.classList.remove('active');
   if (matchBtn) matchBtn.classList.remove('active');
-  const si = document.getElementById('search-input');
-  if (si) si.value = '';
+  /* `#search-input` живёт в разметке липкой полосы (templates/feed.html.j2), поэтому guard
+     на его отсутствие больше не нужен. */
+  document.getElementById('search-input').value = '';
   store.update(state);
 }
 window.resetFilters = resetFilters;   /* вызывается из onclick в feed.html.j2 */
 
 /* ── Поиск по названию/компании — живёт в ЛИПКОЙ полосе, а не в панели фильтров:
-      панель сворачивается, а поиск нужен всегда. Фолбэк на панель — если полосы нет. ── */
+      панель сворачивается, а поиск нужен всегда. Сам `#search-input` — в разметке полосы
+      (templates/feed.html.j2, перед .toolbar-spacer): поле, созданное из JS, жило только до
+      первой полосы с разметкой и требовало фолбэка на сворачиваемую панель. Здесь остаётся
+      только привязка дебаунса: ре-фильтр идёт по всей выдаче. ── */
 (function initSearch() {
-  const toolbar = document.getElementById('filter-toolbar');
-  const bar = document.querySelector('.filter-bar');
-  const host = toolbar || bar;
-  if (!host) return;
-  const inp = document.createElement('input');
-  inp.type = 'search';
-  inp.id = 'search-input';
-  inp.className = 'search-input';
-  inp.placeholder = '🔍 напр. альфа-банк или python backend';
-  inp.autocomplete = 'off';
-  inp.setAttribute('aria-label', 'Поиск: вакансия или компания');
-  if (toolbar) toolbar.insertBefore(inp, toolbar.querySelector('.toolbar-spacer'));
-  else bar.insertBefore(inp, bar.firstChild);
+  const inp = document.getElementById('search-input');
   let t = null;
   inp.addEventListener('input', () => {
     clearTimeout(t);
@@ -434,9 +462,11 @@ if (impInput) impInput.addEventListener('change', async e => {
   persist();
 });
 
-/* ── Подхватить marks.json с сервера (serve-режим) ── */
+/* ── Подхватить marks.json с сервера (serve-режим): GET того же эндпоинта, что и pushServer.
+   Прежний отдельный GET-хелпер отметок был второй реализацией marks.js::pullJson (тела
+   совпадали символ в символ, различался только путь) — аудит 2026-09-22, §3.4. ── */
 async function initSync() {
-  const disk = await pullServer();
+  const disk = await pullJson('api/marks');
   if (disk === null) { setSync('local'); return; }
   /* слияние: локальные-только отметки не теряем, диск — приоритет */
   const merged = { ...store.get().marks, ...disk };
@@ -475,48 +505,42 @@ function applyJournal(applied) {
    по профилю. Рисуется только при ≥2 аккаунтах — с одним лента прежняя. Идемпотентна:
    ре-полл оверлея перерисовывает её на месте. */
 const SESSION_WORD = { ok: '', expired: 'нужен вход', foreign: 'чужая сессия', unknown: 'вход не проверен' };
-/* Выпадающий список профилей с чекбоксами — можно выбрать один или несколько (RFC-004).
-   `<details>` даёт открытие/закрытие без своего JS. Идемпотентна: ре-полл оверлея перерисовывает
-   на месте, сохраняя выбор (из store) и открытость (запоминаем перед перерисовкой). */
-/* Пересчитать показываемый статус карточек под выбранные профили (RFC-004). Статусы хранятся
-   по аккаунтам (v.statusByAcct); под фильтром acc2 берём статус acc2, а не общий. */
-function recomputeStatuses(filter = store.get().accountFilter) {
-  let changed = false;
-  for (const v of VACANCIES) {
-    if (!v.statusByAcct) continue;
-    const st = effectiveStatus(v.statusByAcct, filter);
-    if (v.status !== st) { v.status = st; bustCard(v.id); changed = true; }
-  }
-  return changed;
-}
+/* Пересчитать показываемые по выбранным профилям поля карточек (RFC-004): статус, чат и отклик
+   у вакансии берутся у профиля из фильтра, а не у основного аккаунта. Было три копии одного
+   прохода по всей выдаче (статусы / чаты / отклики, аудит 2026-09-22, §3.3), причём отклики
+   пересчитывались построчно тем же effectiveApplied, что вызывающий (applyJournal) уже применил.
 
-/* То же для ПЕРЕПИСКИ (RFC-004): под фильтром acc2 показываем чат и его дату у acc2, а не у
-   основного (иначе на бейдже отказа светилась бы дата main). Чат — объект (на ре-полле новый
-   инстанс), поэтому просто переустанавливаем и бустим карточку, как делал прежний оверлей. */
-function recomputeChats(filter = store.get().accountFilter) {
-  let any = false;
+   Флаги для вызывающих: `changed` — изменился хоть один показываемый СТАТУС (нужен ре-рендер
+   бейджей), `any` — нашлась хоть одна вакансия с чатом или откликом по аккаунтам (на первом
+   полле это тоже повод перерисовать список). */
+function recomputeForAccounts(filter = store.get().accountFilter) {
+  let changed = false, any = false;
   for (const v of VACANCIES) {
-    if (!v.chatByAcct) continue;
-    v.chat = effectiveChat(v.chatByAcct, filter);
-    bustCard(v.id); any = true;
+    if (v.statusByAcct) {
+      const st = effectiveStatus(v.statusByAcct, filter);
+      if (v.status !== st) { v.status = st; bustCard(v.id); changed = true; }
+    }
+    /* Чат — объект (на ре-полле новый инстанс), поэтому переустанавливаем и бустим карточку
+       безусловно: под фильтром acc2 показываем чат и его дату у acc2, а не у основного
+       (иначе на бейдже отказа светилась бы дата main). */
+    if (v.chatByAcct) {
+      v.chat = effectiveChat(v.chatByAcct, filter);
+      bustCard(v.id); any = true;
+    }
+    /* Отклик: дата и via на бейдже 📮, счётчик «Показать (N)» и фильтр по периоду — по
+       выбранному профилю, а не по самому раннему среди всех. */
+    if (v.appliedByAcct) {
+      v.applied = effectiveApplied(v.appliedByAcct, filter, v.appliedAccounts);
+      bustCard(v.id); any = true;
+    }
   }
-  return any;
-}
-
-/* То же для ОТКЛИКА (RFC-004): дата и via на бейдже 📮, счётчик «Показать (N)» и фильтр по
-   периоду — по выбранному профилю, а не по самому раннему среди всех. */
-function recomputeApplied(filter = store.get().accountFilter) {
-  let any = false;
-  for (const v of VACANCIES) {
-    if (!v.appliedByAcct) continue;
-    v.applied = effectiveApplied(v.appliedByAcct, filter, v.appliedAccounts);
-    bustCard(v.id); any = true;
-  }
-  return any;
+  return { changed, any };
 }
 
 /* Счётчики чипов «Чаты» из ЭФФЕКТИВНОГО чата (под текущим фильтром профиля): ждут ответа,
-   личные (живой человек, открыт), с контактами. Под фильтром acc2 считаются чаты acc2. */
+   личные (живой человек, открыт), с контактами. Под фильтром acc2 считаются чаты acc2.
+   «Личный» считает model.js::isPersonalChat — то же правило, что отбирает ветка
+   `chatFilter === 'personal'` в filterVacancies, иначе счётчик на чипе расходился бы с выдачей. */
 function chatCounts() {
   let count = 0, personal = 0, contacts = 0;
   for (const v of VACANCIES) {
@@ -525,21 +549,31 @@ function chatCounts() {
     if (info.contact) contacts++;
     if (info.needs_reply) {
       count++;
-      if (info.sender === 'human' && info.can_write !== false && !isFrozenChat(info)) personal++;
+      if (isPersonalChat(info)) personal++;
     }
   }
   return { count, personal, contacts };
+}
+
+/* Единый конвейер «пересчёт -> chatCounts -> injectChatFilter»: он был написан дважды
+   (setAccountFilter и initOverlay) и условия вставки уже разъехались — `|| count` против
+   `waiting || contacts`. Условие одно: группа нужна, если есть что показать (ждут ответа или
+   есть контакты). Существующую группу injectChatFilter освежает на месте (идемпотентен),
+   поэтому счётчики не застревают на числах прежнего профиля, когда чатов стало ноль.
+   Возвращает «есть что показать» — по нему initOverlay решает, перерисовывать ли список. */
+function refreshChatFilter() {
+  const { count, personal, contacts } = chatCounts();
+  const show = !!(count || contacts);
+  if (show || document.getElementById('chat-group')) injectChatFilter(count, personal, contacts);
+  return show;
 }
 
 /* Сменить фильтр профилей: СНАЧАЛА пересчитать статусы/чаты/отклики под новый набор, обновить
    счётчики чипов «Чаты», потом обновить стор — чтобы ре-рендер списка и подписчики (счётчик
    «Показать (N)») увидели уже верные значения (подписчик render зарегистрирован раньше). */
 function setAccountFilter(next) {
-  recomputeStatuses(next);
-  recomputeChats(next);
-  recomputeApplied(next);
-  const { count, personal, contacts } = chatCounts();
-  if (document.getElementById('chat-group') || count || contacts) injectChatFilter(count, personal, contacts);
+  recomputeForAccounts(next);
+  refreshChatFilter();
   store.update({ accountFilter: next });
 }
 
@@ -560,19 +594,25 @@ function filterGroup(id) {
   return g;
 }
 
-let _accData = null;         /* последние {accounts, applied, statuses} — для перерисовки при выборе */
+/* Последний снимок данных оверлея {accounts, applied, statuses}: по нему панель профилей
+   перерисовывается при смене выбора (подписка ниже). */
+let _accData = null;
 let _accSubscribed = false;
-function renderAccountsPanel(accounts, applied, statuses) {
+/* Выпадающий список профилей с чекбоксами — можно выбрать один или несколько (RFC-004).
+   `<details>` даёт открытие/закрытие без своего JS. Идемпотентна: ре-полл оверлея перерисовывает
+   на месте, сохраняя выбор (из store) и открытость (запоминаем перед перерисовкой).
+   Аргументов нет: данные — тот же `_accData`, который заполняет вызывающий; три параметра
+   дублировали его поля (аудит 2026-09-22, §3.3). */
+function renderAccountsPanel() {
+  const { accounts, applied, statuses } = _accData || {};
   if (!accounts || accounts.length < 2) return;
   const g = filterGroup('acc-group');
   if (!g) return;
-  _accData = { accounts, applied, statuses };
   if (!_accSubscribed) {     /* выбор профиля -> перерисовать сводку/чекбоксы (render уже отфильтрует) */
     _accSubscribed = true;
     let prev = store.get().accountFilter;
     store.subscribe(s => {
-      if (s.accountFilter !== prev) { prev = s.accountFilter; if (_accData) renderAccountsPanel(
-        _accData.accounts, _accData.applied, _accData.statuses); }
+      if (s.accountFilter !== prev) { prev = s.accountFilter; if (_accData) renderAccountsPanel(); }
     });
   }
   const stats = crmStats(applied, statuses);
@@ -637,15 +677,17 @@ function injectChatFilter(count, personal, contacts) {
   });
 }
 
-/* Инъекция контрола «Мои отклики за период» (кнопка + два date-инпута + пресеты). */
-function injectAppliedControl(count) {
+/* Инъекция контрола «Мои отклики за период» (кнопка + два date-инпута + пресеты).
+   Числа на кнопке здесь нет: параметр `count` сразу перезаписывался подпиской тем же числом
+   из другого источника (аудит 2026-09-22, §3.3) — единственный источник числа это подписка. */
+function injectAppliedControl() {
   if (document.getElementById('applied-group')) return;
   const g = filterGroup('applied-group');
   if (!g) return;
   g.innerHTML =
     '<span class="filter-label">📮 Мои отклики за период</span>' +
     '<div class="sched-btns">' +
-    `<button class="sched-btn" id="mine-toggle" data-status="mine">📮 Показать (${count})</button>` +
+    '<button class="sched-btn" id="mine-toggle" data-status="mine">📮 Показать</button>' +
     '<input type="date" id="date-from" class="date-input" title="С даты">' +
     '<span class="date-dash">—</span>' +
     '<input type="date" id="date-to" class="date-input" title="По дату">' +
@@ -676,14 +718,14 @@ function injectAppliedControl(count) {
     });
   });
 
-  const appliedVacs = VACANCIES.filter(v => v.applied);   /* только отклики (для счётчика) */
-
   /* Синхронизация UI контрола с состоянием: счётчик на кнопке = число откликов в ВЫБРАННОМ
-     диапазоне (пусто -> все), активность кнопки, значения дат, гашение чипов статуса. */
+     диапазоне (пусто -> все), активность кнопки, значения дат, гашение чипов статуса.
+     Снимок откликов берётся ЗДЕСЬ, на каждом тике: журнал дописывает вакансии-«призраки»
+     в VACANCIES уже после первого инжекта, и снимок, снятый один раз, их не считал. */
   store.subscribe(state => {
     const btn = document.getElementById('mine-toggle');
     if (btn) {
-      const n = appliedVacs.filter(v => appliedInRange(v, state.dateFrom, state.dateTo)).length;
+      const n = VACANCIES.filter(v => v.applied && appliedInRange(v, state.dateFrom, state.dateTo)).length;
       btn.textContent = `📮 Показать (${n})`;
       btn.classList.toggle('active', state.status === 'mine');
     }
@@ -721,13 +763,14 @@ async function initOverlay() {
      При одном аккаунте setAccounts/крон-сводка старый вид не меняют. */
   if (Array.isArray(accounts) && accounts.length) {
     setAccounts(accounts);
-    renderAccountsPanel(accounts, applied, statuses);
+    _accData = { accounts, applied, statuses };   /* снимок для перерисовки панели при выборе */
+    renderAccountsPanel();
   }
   /* Журнал — ПЕРВЫМ: applyJournal синтезирует карточки-призраки для вакансий, выпавших из
      выдачи; формы/статусы/чаты, обработанные ДО него, призраков не находили и терялись
      (чаты: инцидент «46 из 93»; формы: 52 в очереди vs 51 подсвеченных — fix.md №12). */
   const nApplied = applyJournal(applied);
-  if (nApplied) { injectAppliedControl(nApplied); changed = true; }
+  if (nApplied) { injectAppliedControl(); changed = true; }
   for (const [id, rec] of Object.entries(forms || {})) {
     const v = V_MAP[id];
     if (!v) continue;
@@ -739,22 +782,24 @@ async function initOverlay() {
   refreshFormsChip();
   /* Статусы приходят ПО АККАУНТАМ ({vid: {account: state}}, RFC-004): у вакансии с откликом от
      обоих статусы разные. Кладём карту на карточку, а показываемый статус выбираем по фильтру
-     профиля (recomputeStatuses) — иначе под фильтром acc2 светилась бы метка основного. */
+     профиля — иначе под фильтром acc2 светилась бы метка основного. */
   for (const [id, byAcct] of Object.entries(statuses || {})) {
     const v = V_MAP[id];
     if (v) { v.statusByAcct = byAcct; }
   }
-  if (recomputeStatuses()) changed = true;
   /* Чаты приходят ПО АККАУНТАМ ({vid: {account: info}}, RFC-004): у вакансии с откликом от обоих
-     чат и ДАТА разные. Кладём карту, показываемый чат выбираем по фильтру профиля
-     (recomputeChats) — иначе под фильтром acc2 светились бы чат и дата основного. */
+     чат и ДАТА разные. Кладём карту, показываемый чат выбираем по фильтру профиля — иначе под
+     фильтром acc2 светились бы чат и дата основного. Обе карты раскладываются ДО пересчёта:
+     один проход (recomputeForAccounts) читает их вместе и сразу. */
   for (const [id, byAcct] of Object.entries(chats || {})) {
     const v = V_MAP[id];
     if (v) v.chatByAcct = byAcct;
   }
-  if (recomputeChats()) changed = true;
-  const { count: waiting, personal, contacts } = chatCounts();   /* из эффективного чата под фильтром */
-  if (waiting || contacts) { injectChatFilter(waiting, personal, contacts); changed = true; }
+  /* Один проход по выдаче вместо трёх (статусы/чаты/отклики); флаги — те же, что были у
+     прежних трёх функций: смена статуса и наличие профильных чатов/откликов. */
+  const rec = recomputeForAccounts();
+  if (rec.changed || rec.any) changed = true;
+  if (refreshChatFilter()) changed = true;
   if (changed) store.update({});   /* ре-рендер с обновлёнными CRM-бейджами */
 }
 

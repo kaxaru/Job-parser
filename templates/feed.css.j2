@@ -1,20 +1,13 @@
-/* Токены темы. Палитра приходит из Python (config.py::BG/PAPER/GRID/TEXT/ACCENT) — здесь она
-   один раз кладётся в переменные, чтобы дальше в файле не было россыпи хардкод-серых
-   (их было девять: #444…#ddd) и чтобы дашборд мог опираться на те же имена.
-   Приглушённые тона подобраны по контрасту, а не на глаз: #868686 даёт 4.62:1 на карточке,
-   #7C7C7C — 4.52:1 на фоне; прежние #666/#444 давали 2.93:1 и 1.94:1 (ниже нормы AA). */
+{# Общую часть темы (токены палитры, сброс, видимый фокус, анимация смены темы и кнопка
+   #theme-toggle) лента делит с дашбордом — она вынесена в templates/theme.css.j2, чтобы
+   две копии не расходились молча (аудит 2026-09-22, §3.3). Здесь остаются токены, которые
+   нужны только ленте: подложки и тень карточки, приглушённый тон на фоне страницы, шкала
+   размеров и радиус пилюли. #}
+{% include "theme.css.j2" %}
+
+/* Тона, которых у дашборда нет: карточек и пилюль-счётчиков там не бывает. */
 :root {
-  color-scheme: dark;              /* нативные списки (datalist города), скроллбары, календари */
-  --bg: {{ bg }};
-  --paper: {{ paper }};
-  --grid: {{ grid }};
-  --text: {{ text }};
-  --accent: {{ accent }};
-  --title: #fff;                   /* заголовки: в тёмной теме белые, в светлой почти чёрные */
-  --muted: #868686;                /* второстепенный текст на карточке (4.62:1) */
-  --muted-strong: #a9a9a9;         /* подписи, которые должны читаться легко */
   --muted-on-bg: #7C7C7C;          /* то же, но на тёмном фоне страницы (4.52:1) */
-  --ink: #0b0d12;                  /* тёмный текст поверх светлых плашек */
   --tint-applied: #15241b;         /* заливка карточки по состоянию отклика */
   --tint-rejected: #251618;
   --tint-botiv: #241f10;
@@ -25,86 +18,21 @@
   --fs-md: 0.88rem;
   --fs-lg: 1rem;
   --fs-xl: 1.3rem;
-  --radius: 8px;
   --radius-pill: 999px;
 }
 
-/* Светлая тема. Не инверсия тёмной, а отдельно подобранный набор: приглушённые тона
-   пересчитаны под белую подложку (#767676 даёт 4.54:1 на карточке, #707070 — на фоне),
-   акцент оставлен тот же — он проходит и как текст (4.61:1), и как заливка под белым.
-   Заливки бейджей НЕ меняются: они самодостаточные плашки, белый текст на них читается
-   в обеих темах. На светлом карточку отделяет не рамка (1.3:1), а мягкая тень. */
+/* Светлая тема ленты. Общие токены — в общем фрагменте; здесь то, что есть только у ленты:
+   заливки карточек пересчитаны под белую подложку, а саму карточку отделяет мягкая тень —
+   рамка на светлом даёт 1.3:1. */
 :root[data-theme="light"] {
-  color-scheme: light;
-  --bg: #F4F5F7;
-  --paper: #FFFFFF;
-  --grid: #DDE1E7;
-  --text: #1B1F27;
-  --title: #0E1116;
-  --muted: #767676;
-  --muted-strong: #5D6470;
   --muted-on-bg: #707070;
-  --ink: #0b0d12;
   --tint-applied: #E9F6EE;
   --tint-rejected: #FDECEC;
   --tint-botiv: #FBF3DC;
   --tint-frozen: #EAF2F8;
   --card-shadow: 0 1px 2px rgba(16, 24, 40, .07), 0 1px 3px rgba(16, 24, 40, .05);
 }
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  background: var(--bg);
-  color: var(--text);
-  /* системный стек вместо Arial: родные метрики Windows/mac, цифры не пляшут по ширине */
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-  font-variant-numeric: tabular-nums;   /* зарплаты и проценты выравниваются в колонку */
-  min-height: 100vh;
-}
 
-/* Видимый фокус для всего интерактивного: раньше он был только у пилюль-чекбоксов,
-   остальные элементы полагались на браузерный дефолт, невидимый на тёмном фоне. */
-:where(button, a, input, select, textarea, [tabindex]):focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: .01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: .01ms !important;
-  }
-}
-
-/* ── Анимация смены темы ──
-   Основной эффект — круговой раскрыв новой темы из кнопки-переключателя (View Transitions).
-   Штатные анимации снимка глушим: движение задаёт clip-path из JS, иначе поверх нашего
-   раскрытия наложится браузерное растворение и получится каша. */
-::view-transition-old(root),
-::view-transition-new(root) { animation: none; mix-blend-mode: normal; }
-::view-transition-old(root) { z-index: 1; }
-::view-transition-new(root) { z-index: 2; }
-
-/* Во время View-перехода собственные transition элементов ГЛУШИМ. Иначе они стартуют внутри
-   замороженного снимка и после перехода остаются со старым значением: у вкладки, активной
-   на момент переключения, --title/--bg уже светлые, а вычисленные color/background — ещё
-   тёмные (белым по белому). Проверено A/B: без View Transitions бага нет. Движение перехода
-   даёт clip-path, поэтому терять здесь нечего. */
-:root.theme-swap,
-:root.theme-swap *,
-:root.theme-swap *::before,
-:root.theme-swap *::after { transition: none !important; }
-
-/* Фолбэк для браузеров без View Transitions: плавно переливаем сами цвета. Класс висит
-   только на время перехода — постоянные transition на всех узлах тормозили бы ленту
-   и мешали собственным анимациям ховеров. */
-:root.theme-anim,
-:root.theme-anim *,
-:root.theme-anim *::before,
-:root.theme-anim *::after {
-  transition: background-color .32s ease, color .32s ease, border-color .32s ease,
-              box-shadow .32s ease, fill .32s ease, stroke .32s ease !important;
-}
 header {
   background: var(--paper);
   padding: 16px 24px;
@@ -119,45 +47,46 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
 
 /* Экспорт/импорт отметок + индикатор синхронизации */
 .hdr-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+
+/* ── «Призрачные» кнопки ──
+   Рамка по сетке, заливки нет: шапка, полоса фильтров, модалка и профили рисовали этот вид
+   шестью независимыми правилами, и оттенок рамки с ховером расходились молча. Базис — одна
+   группа, в своих правилах остаётся только отличие (размер, цвет текста, габариты).
+   Переход — у тех, чей ховер меняет лишь рамку и текст: у .cover-btn в ховер входит ещё
+   opacity, а .acc-clear ховерит заливкой (там смена цвета мгновенная — так и было). */
+.hdr-btn,
+.toolbar-toggle,
+.reset-btn,
+.cover-btn,
+.modal-close,
+.acc-clear {
+  background: transparent;
+  border: 1px solid var(--grid);
+  cursor: pointer;
+}
+.hdr-btn,
+.toolbar-toggle,
+.reset-btn,
+.modal-close { transition: border-color .12s, color .12s; }
+.hdr-btn:hover,
+.toolbar-toggle:hover,
+.reset-btn:hover,
+.cover-btn:hover { border-color: var(--accent); color: var(--accent); }
+
 .hdr-btn {
   display: inline-flex;
   align-items: center;
-  background: transparent;
-  border: 1px solid var(--grid);
   color: var(--muted-strong);
   padding: 4px 11px;
   border-radius: 6px;
   font-size: 0.78rem;
-  cursor: pointer;
-  transition: border-color .12s, color .12s;
 }
-.hdr-btn:hover { border-color: var(--accent); color: var(--accent); }
 
-/* Переключатель темы: две иконки лежат друг на друге и меняются поворотом с растворением —
-   солнце уезжает вправо-вниз, луна приходит на его место. Показывается ТЕКУЩАЯ тема
-   (луна = сейчас тёмная), поэтому подпись у кнопки говорит, что произойдёт по клику. */
-.theme-toggle {
-  position: relative;
-  width: 34px;
-  height: 28px;
-  padding: 0;
-  justify-content: center;
-  overflow: hidden;
-}
-.theme-toggle svg {
-  position: absolute;
-  width: 16px;
-  height: 16px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  transition: transform .38s cubic-bezier(.34, 1.3, .5, 1), opacity .22s ease;
-}
-.theme-toggle .i-sun  { opacity: 0; transform: rotate(-120deg) scale(.35); }
-.theme-toggle .i-moon { opacity: 1; transform: rotate(0) scale(1); }
-:root[data-theme="light"] .theme-toggle .i-sun  { opacity: 1; transform: rotate(0) scale(1); }
-:root[data-theme="light"] .theme-toggle .i-moon { opacity: 0; transform: rotate(120deg) scale(.35); }
+/* Кнопка темы приходит из общего фрагмента (theme.css.j2), но в шапке ленты она несёт ещё
+   и .hdr-btn: это правило стоит ниже, поэтому отступ фрагмента перебивает — возвращаем его
+   здесь. Иначе padding .hdr-btn сдвинул бы обе иконки из центра кнопки. */
+.theme-toggle { padding: 0; }
+
 .sync-status { font-size: 0.74rem; color: var(--muted); white-space: nowrap; }
 .sync-status.ok    { color: #3fae6b; }
 .sync-status.busy  { color: var(--accent); }
@@ -177,7 +106,6 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
   font-size: 0.82rem;
   line-height: 1.45;
 }
-.stale-banner[hidden] { display: none; }   /* hidden против display:flex у соседей */
 
 /* ── Панель управления ────────────────────────────────
    Липкой оставлена только узкая полоса (~48px). Раньше липким был весь бар с фильтрами:
@@ -200,20 +128,17 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  background: transparent;
-  border: 1px solid var(--grid);
   color: var(--text);
   padding: 5px 13px;
   border-radius: 6px;
   font-size: var(--fs-sm);
-  cursor: pointer;
-  transition: border-color .12s, color .12s;
 }
-.toolbar-toggle:hover { border-color: var(--accent); color: var(--accent); }
 .toolbar-toggle[aria-expanded="true"] { border-color: var(--accent); }
 .toolbar-toggle .chev { transition: transform .15s; }
 .toolbar-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
-/* Счётчик активных фильтров: свёрнутая панель не должна скрывать, что выдача урезана */
+/* Счётчик активных фильтров: свёрнутая панель не должна скрывать, что выдача урезана.
+   `[hidden]` гасит его сам: display здесь (и у .stale-banner) не объявлен, поэтому
+   правило-дубль .filters-count[hidden] было мёртвым. */
 .filters-count {
   background: var(--accent);
   color: #fff;
@@ -222,7 +147,6 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
   font-size: var(--fs-xs);
   font-weight: 700;
 }
-.filters-count[hidden] { display: none; }
 .toolbar-spacer { margin-left: auto; }
 
 .filter-bar {
@@ -257,6 +181,62 @@ header h1 { font-size: var(--fs-xl); color: var(--title); }
 }
 .search-input:focus { outline: none; border-color: var(--accent); }
 .search-input::placeholder { color: var(--muted); }
+/* Группа-селект (Формат): тот же вид, что у поля поиска, но одна строка вместо ряда кнопок.
+   Нативный `<select>` в тёмной теме полагается на `color-scheme: dark` на корне — без него
+   браузер рисует выпадающий список светлым поверх тёмной страницы. */
+.filter-select {
+  background: var(--grid);
+  color: var(--text);
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.filter-select:focus { outline: none; border-color: var(--accent); }
+
+/* Группа-МУЛЬТИВЫБОР (валюты показа зарплат): свёрнуто — одна строка, как у соседних селектов,
+   выбор разворачивается списком поверх панели. `<details>` вместо `<select multiple>`:
+   нативный множественный select рисуется списком в четыре строки и на строку панели не
+   ложится, а `<details>` даёт то же самое, но сворачиваемое и без библиотек. */
+.multi-sel { position: relative; }
+.multi-sel > summary {
+  list-style: none;
+  background: var(--grid);
+  color: var(--text);
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 0.8rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.multi-sel > summary::-webkit-details-marker { display: none; }   /* Safari/Chrome: свой треугольник */
+.multi-sel > summary::after { content: ' \25BE'; color: var(--muted); }   /* ▾ */
+.multi-sel[open] > summary { border-color: var(--accent); }
+.multi-sel-body {
+  position: absolute;
+  z-index: 20;                       /* панель фильтров идёт ПОД карточки — список должен лечь поверх */
+  margin-top: 4px;
+  min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  background: var(--paper);
+  border: 1px solid var(--grid);
+  border-radius: 6px;
+  padding: 7px 9px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .35);
+}
+.multi-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+}
 /* Город: тот же инпут, но узкий как прежний select (input+datalist = список с поиском) */
 .city-input { width: 180px; }
 
@@ -338,8 +318,7 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
 .acc-mini { color: var(--muted); font-size: 0.76rem; }
 .acc-warn { color: #E0863A; font-size: 0.76rem; margin-left: 4px; }
 .acc-clear {
-  margin-top: 4px; background: transparent; border: 1px solid var(--grid);
-  border-radius: 4px; color: var(--muted); padding: 4px 8px; cursor: pointer; font-size: 0.78rem;
+  margin-top: 4px; border-radius: 4px; color: var(--muted); padding: 4px 8px; font-size: 0.78rem;
 }
 .acc-clear:hover { background: var(--grid); color: var(--text); }
 
@@ -377,17 +356,12 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
 
 /* Reset */
 .reset-btn {
-  background: transparent;
-  border: 1px solid var(--grid);
   color: var(--muted);
   padding: 5px 13px;
   border-radius: 4px;
-  cursor: pointer;
   font-size: 0.78rem;
   align-self: flex-end;
-  transition: border-color .12s, color .12s;
 }
-.reset-btn:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ── Cards ────────────────────────────────────────── */
 .cards-grid {
@@ -426,12 +400,19 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   opacity: .9;
 }
 .card:hover .tag { opacity: 1; }
-.card-title {
+/* Заголовок карточки и заголовок модалки — один и тот же текст-ссылка: держим их общие
+   объявления в одной группе, а .modal-title дальше по файлу добавляет только своё. */
+.card-title,
+.modal-title {
   color: var(--title);
   text-decoration: none;
-  font-size: var(--fs-lg);
   font-weight: 700;
   line-height: 1.35;
+}
+.card-title:hover,
+.modal-title:hover { color: var(--accent); }
+.card-title {
+  font-size: var(--fs-lg);
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -439,16 +420,17 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   position: relative;
   z-index: 1;        /* sits above card click area so link still works */
 }
-.card-title:hover { color: var(--accent); }
 .card-sub { font-size: 0.78rem; color: var(--muted); }
-.card-sal {
-  font-size: 0.8rem;
+
+/* Строка зарплаты карточки и модалки: та же раскладка «текст — сумма», разные кегль и зазор */
+.card-sal,
+.modal-sal {
   color: var(--muted-strong);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
 }
+.card-sal { font-size: 0.8rem; gap: 10px; }
 
 /* Панель статусов под карточкой. margin-top:auto прижимает её к низу: содержимое карточек
    разной длины (0–2 ряда тегов, есть/нет зарплаты) разносило кнопки по вертикали на 35px
@@ -494,32 +476,32 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
 .card.st-dead { opacity: .72; }
 .card.st-dead:hover { opacity: 1; }
 
-/* Совпадение с резюме: цвет от тёплого (100%) к холодному (0%) задаётся inline. */
-.match-badge {
-  flex-shrink: 0;
-  padding: 2px 9px;
-  border-radius: 999px;
+/* Совпадение с резюме (цвет от тёплого 100% к холодному 0% задаётся inline) и статус
+   отклика — одна и та же плашка с белым текстом; различаются только кегль и внутренние
+   отступы, поэтому общее держим в группе. */
+.match-badge,
+.status-badge {
+  border-radius: var(--radius-pill);
   color: #fff;
-  font-size: 0.74rem;
   font-weight: 700;
-  line-height: 1.6;
   white-space: nowrap;
   text-shadow: 0 1px 1px rgba(0,0,0,.35);
   cursor: help;
+}
+.match-badge {
+  flex-shrink: 0;
+  padding: 2px 9px;
+  font-size: 0.74rem;
+  line-height: 1.6;
 }
 .card-status { display: flex; flex-wrap: wrap; gap: 5px; margin: 2px 0; }
 .card-status:empty { display: none; }
 .status-badge {
   padding: 1px 8px;
-  border-radius: 999px;
-  color: #fff;
   font-size: 0.7rem;
-  font-weight: 700;
   line-height: 1.7;
-  white-space: nowrap;
-  text-shadow: 0 1px 1px rgba(0,0,0,.35);
-  cursor: help;
 }
+
 /* Первая отрисовка: feed-data.js весит ~50 МБ, и пока браузер его парсит, сетка пуста —
    раньше это выглядело как зависшая страница. :empty снимает заглушку сам, как только
    вставлена первая карточка (или .no-results), без единой строки JS. */
@@ -532,14 +514,18 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   color: var(--muted-on-bg);
   font-size: var(--fs-md);
 }
-.cards-grid:empty::before {
+/* Крутилка ожидания. Вращение у заглушки пустой сетки и у индикатора в модалке (.m-loading)
+   было одним и тем же набором из четырёх объявлений (а в дашборде для этого есть класс
+   .spinner) — держим его одним правилом, у каждого места остаётся только свой размер. */
+.cards-grid:empty::before,
+.m-loading::before {
   content: '';
-  width: 16px; height: 16px;
   border: 2px solid var(--grid);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin .7s linear infinite;
 }
+.cards-grid:empty::before { width: 16px; height: 16px; }
 .cards-grid:empty::after { content: 'Загружаем вакансии…'; }
 
 .no-results {
@@ -590,42 +576,22 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   position: absolute;
   top: 14px;
   right: 16px;
-  background: transparent;
-  border: 1px solid var(--grid);
   color: var(--muted);
   font-size: 1.2rem;
   line-height: 1;
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: border-color .12s, color .12s;
 }
 .modal-close:hover { border-color: #e05; color: #e05; }
 
 .modal-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; padding-right: 36px; }
-.modal-title {
-  color: var(--title);
-  text-decoration: none;
-  font-size: 1.15rem;
-  font-weight: 700;
-  line-height: 1.35;
-  display: block;
-  margin-bottom: 8px;
-}
-.modal-title:hover { color: var(--accent); }
+.modal-title { font-size: 1.15rem; display: block; margin-bottom: 8px; }
 .modal-meta { font-size: 0.82rem; color: var(--muted); margin-bottom: 4px; }
-.modal-sal  {
-  font-size: 0.9rem;
-  color: var(--muted-strong);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
+.modal-sal  { font-size: 0.9rem; gap: 12px; }
 
 .modal-body { padding: 20px 24px; }
 
@@ -648,16 +614,12 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
 .cover-title { font-size: 0.85rem; font-weight: 700; color: var(--title); }
 .cover-actions { display: flex; gap: 6px; }
 .cover-btn {
-  background: transparent;
-  border: 1px solid var(--grid);
   color: var(--muted-strong);
   padding: 4px 10px;
   border-radius: 6px;
-  cursor: pointer;
   font-size: 0.75rem;
-  transition: border-color .12s, color .12s, opacity .12s;
+  transition: border-color .12s, color .12s, opacity .12s;   /* opacity — для .cover-copy */
 }
-.cover-btn:hover { border-color: var(--accent); color: var(--accent); }
 .cover-copy { background: var(--accent); border-color: var(--accent); color: #fff; }
 .cover-copy:hover { color: #fff; opacity: .85; }
 .cover-text {
@@ -700,13 +662,9 @@ input[type=range] { width: 160px; accent-color: var(--accent); cursor: pointer; 
   font-size: 0.82rem;
   padding: 4px 0;
 }
+/* Вращение ::before — в общей крутилке рядом с .cards-grid:empty, здесь только размер */
 .m-loading::before {
-  content: '';
   width: 14px; height: 14px;
-  border: 2px solid var(--grid);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin .7s linear infinite;
   flex-shrink: 0;
 }
 @keyframes spin { to { transform: rotate(360deg); } }

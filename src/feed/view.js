@@ -3,7 +3,7 @@
 
 import { coverLetter, coverTemplates } from './cover.js';
 import { loadDescriptions } from './marks.js';
-import {ageColor, cardColor, cardTone, chatAgeLabel, employmentLabel, esc, filterVacancies, fmtSal, hashId, isBotInterview, isFrozenChat, matchColor, matchInk, portalSite,
+import {ageColor, cardPaint, chatAgeLabel, employmentLabel, esc, filterVacancies, fmtSalMulti, hashId, isBotInterview, isFrozenChat, matchColor, matchInk, portalSite,
   SCHED_LABELS, STATUS_BTNS, safeUrl, statusInfo, tagClr, tagInk,
 } from './model.js';
 import { resumeMatch } from './resume.js';
@@ -159,7 +159,7 @@ export function statusBadge(v) {
    Пусто, если тайминга нет (старый кеш до пере-сбора). */
 function freshBadge(v) {
   if (v.age == null) return '';
-  const color = ageColor(v.age, _paper);      /* температура: свежая горячая → старая холодная */
+  const color = ageColor(v.age, _paper);      /* температура: свежая горячая -> старая холодная */
   const icon  = v.fresh === 'ghost' ? '👻 ' : (v.fresh === 'fresh' ? '🔥 ' : '');
   const gap   = (v.gap != null && v.gap > 7) ? ` · переопубл. +${v.gap}д` : '';
   const resp  = (v.resp != null) ? ` · ${v.resp} откл.` : '';
@@ -187,9 +187,11 @@ export function subLine(v) {
 
 /* `extended` — модалка: там полей НАМЕРЕННО больше (формат работы и формы оформления).
    В карточке строка несёт только зарплату и грейд — форма названа лишь у части вакансий,
-   а формат дублировал бы чип. Так текущее поведение обеих поверхностей и сохранено. */
+   а формат дублировал бы чип. Так текущее поведение обеих поверхностей и сохранено.
+   Валют показа может быть несколько (мультивыбор 23.09.2026): вилка печатается в каждой —
+   «от 150 000 ₽/мес · от 1 700 $/мес». */
 export function salLine(v, extended = false) {
-  const parts = [fmtSal(v, _displayCur), v.exp];
+  const parts = [fmtSalMulti(v, _displayCurs), v.exp];
   if (extended) parts.push(SCHED_LABELS[v.schedule] || v.schedule || '', employmentLabel(v));
   return parts.filter(Boolean).map(esc).join(' · ');
 }
@@ -211,10 +213,10 @@ function cardHTML(v) {
 </div>`;
 }
 
-/* ── Кэш разметки карточек: данные иммутабельны → строим HTML один раз на вакансию.
+/* ── Кэш разметки карточек: данные иммутабельны -> строим HTML один раз на вакансию.
    На 34k это убирает повторный пересчёт fmtSal/resumeMatch/tagClr при каждом тоггле. ── */
 const _cardCache = new Map();
-let _displayCur = 'RUB';        /* валюта показа зарплат — прокидывается из state в render */
+let _displayCurs = ['RUB'];     /* валюты показа зарплат — прокидываются из state в render */
 function cardHTMLCached(v) {
   let h = _cardCache.get(v.id);
   if (h === undefined) {
@@ -234,14 +236,17 @@ let _marks = {};
 let _sentinel = null;
 let _io = null;
 
-function applyStatuses(root, slice) {
+/* Подсветка статусов чанка сразу после вставки в DOM. Правило «ручная отметка против
+   CRM-статуса» — одно на весь фронт: model.js::cardPaint (его же зовёт main.js::setStatus),
+   поэтому клик ✓/✕ и рендер не могут разойтись. */
+function applyStatuses(slice) {
+  const root = document.getElementById('cards');
   for (const v of slice) {
     const mark = _marks[v.id];
-    const tone = cardTone(v) || mark;        /* рамка: бот-интервью жёлтое, даже если отклик есть */
+    const { status, tone } = cardPaint(v, mark);
     if (!mark && !tone) continue;            /* marks разрежены — трогаем только нужные */
-    const st = cardColor(v) || mark;         /* кнопка ✓/✕: CRM-статус важнее ручной пометки */
     const card = root.querySelector(`.card[data-id="${v.id}"]`);
-    if (card) applyCardStatus(card, st, tone);
+    if (card) applyCardStatus(card, status, tone);
   }
 }
 
@@ -250,7 +255,7 @@ function renderChunk() {
   const slice = _filtered.slice(_rendered, _rendered + CHUNK);
   if (!slice.length) return;
   el.insertAdjacentHTML('beforeend', slice.map(cardHTMLCached).join(''));
-  applyStatuses(el, slice);
+  applyStatuses(slice);
   _rendered += slice.length;
   if (_rendered >= _filtered.length && _io) _io.unobserve(_sentinel);
 }
@@ -258,7 +263,6 @@ function renderChunk() {
 function ensureSentinel(el) {
   if (_sentinel?.isConnected) return _sentinel;
   _sentinel = document.createElement('div');
-  _sentinel.className = 'cards-sentinel';
   _sentinel.setAttribute('aria-hidden', 'true');
   _sentinel.style.height = '1px';
   el.after(_sentinel);                       /* сосед ПОСЛЕ грида — не ломает grid-раскладку */
@@ -267,8 +271,8 @@ function ensureSentinel(el) {
 
 /* ── Главный рендер списка: state -> счётчик + первый чанк (остальное лениво) ── */
 export function render(state) {
-  if ((state.displayCur || 'RUB') !== _displayCur) {   /* смена валюты -> зарплаты в кэше устарели */
-    _displayCur = state.displayCur || 'RUB';
+  if ((state.displayCurs || ['RUB']).join() !== _displayCurs.join()) {   /* сменился НАБОР валют -> зарплаты в кэше устарели */
+    _displayCurs = state.displayCurs || ['RUB'];
     _cardCache.clear();
   }
   _filtered = filterVacancies(state.vacancies, state);
@@ -300,10 +304,10 @@ export function render(state) {
 }
 
 /* Точечно подсветить статус карточки без полного ре-рендера: цвет тела + активная кнопка ✓/✕.
-   Вызывающий передаёт эффективный статус (CRM важнее ручной пометки — см. applyStatuses).
-   `tone` разводит две роли, раньше склеенные в одну: цвет РАМКИ (может быть жёлтым из-за
-   бот-интервью) и активную КНОПКУ (всегда по отклику/отказу). По умолчанию = st. */
-export function applyCardStatus(card, st, tone = st) {
+   Пара приходит готовая из model.js::cardPaint, поэтому дефолта `tone = st` больше нет: он
+   склеивал две роли (цвет РАМКИ, который бывает жёлтым от бот-интервью, и активную КНОПКУ,
+   которая всегда по отклику/отказу) и на бот-интервью давал зелёную рамку. */
+export function applyCardStatus(card, st, tone) {
   card.classList.remove('st-applied', 'st-rejected', 'st-botiv', 'st-frozen');
   if (tone) card.classList.add(`st-${tone}`);
   card.querySelectorAll('.status-btn').forEach(b => {

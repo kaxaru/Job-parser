@@ -77,6 +77,15 @@ export function fmtSal(v, cur = 'RUB') {
 
 export function fmtK(n) { return n >= 1000 ? `${n / 1000 | 0}к` : String(n); }
 
+/* Зарплата в НЕСКОЛЬКИХ валютах показа (мультивыбор, решение владельца 23.09.2026):
+   «от 150 000 ₽/мес · от 1 700 $/мес». Порядок — как валюты идут в наборе (в разметке это
+   порядок чекбоксов, то есть RUB, USD, EUR, BYN), пустой набор — дефолт вызывающего.
+   Отдельная функция, а не флаг у `fmtSal`: у одиночной валюты своя цена вызова (её зовут
+   фильтр и сортировка), и склейка внутри неё заставила бы их разбирать строку обратно. */
+export function fmtSalMulti(v, curs = ['RUB']) {
+  return curs.map(c => fmtSal(v, c)).filter(Boolean).join(' · ');
+}
+
 /* Давность последнего сообщения работодателя для чат-бейджа: «сегодня»/«вчера»/«N дн».
    now инъектируется в тестах; битая/пустая метка -> '' (бейдж без хвоста, не NaN). */
 export function chatAgeLabel(ts, now = Date.now()) {
@@ -145,6 +154,7 @@ const EMP_LABELS = (typeof EMP_LABELS_PY !== 'undefined' && EMP_LABELS_PY) || {
 export const APPLY_LABELS = (typeof APPLY_LABELS_PY !== 'undefined' && APPLY_LABELS_PY) || {
   applied: '✅ Отклик отправлен', already: 'уже откликались',
   form: '📝 нужна форма — в очереди', skip: '✖ пропущено (внешний/архив/опросник)',
+  unconfirmed: '⚠ не подтвердилось — клик ушёл, ответа HH нет',
   captcha: '⛔ капча HH — нужен вход руками', queued: '➕ в очереди крона',
   busy: '⏳ занято — идёт крон-отклик, попробуйте через пару минут',
   'no-session': '⚠ нет сессии — hh.py autoclick --login',
@@ -294,6 +304,15 @@ const FROZEN_CHAT_KINDS = new Set(
   (typeof CHAT_FROZEN_PY !== 'undefined' && CHAT_FROZEN_PY) || ['ack', 'bot_interview']);
 export const isFrozenChat = c => !!c && FROZEN_CHAT_KINDS.has(c.kind);
 
+/* «Личный» чат — реальный список дел: живой человек, чат открыт для ответа и это не фриз
+   (в заглушке «резюме получено, свяжемся» и бот-интервью отвечать нечего). Правило живёт
+   здесь, а не в `filterVacancies`: тем же условием `main.js::chatCounts` считает бейдж группы
+   «Переписка», и вторая копия разъехалась бы с первой при любой правке. */
+export function isPersonalChat(chat) {
+  return !!chat?.needs_reply && chat.sender === 'human'
+    && chat.can_write !== false && !isFrozenChat(chat);
+}
+
 /* Код «интервью с ботом» — единственный фриз, который УВОДИТ во внешний мессенджер, и потому
    единственный, что красится ЖЁЛТЫМ (остальной фриз — ледяной синий). Литерал, а не вывод из
    набора: набор отвечает лишь «тупик», а какой из кодов жёлтый — отдельный факт. Единый
@@ -342,6 +361,13 @@ const INVITED = new Set(
 
 export const isDiscard = s => DISCARD.has(s);
 export const isInvited = s => INVITED.has(s);
+
+/* Троичное разбиение состояния отклика: приглашение / отказ / прочее. Одно на два места —
+   `effectiveStatus` (какой из статусов двух аккаунтов показать) и `crmStats` (в какой счётчик
+   воронки положить отклик): правило было выписано дважды и разъезжалось бы при правке. */
+function stateKind(s) {
+  return isInvited(s) ? 'invited' : isDiscard(s) ? 'rejected' : 'other';
+}
 
 /* ── Возраст среза ──────────────────────────────────────────────────────────────
    Сбор умеет отказывать МОЛЧА: санити-гейт (`hh.py::_degraded_source`) отменяет запись
@@ -404,8 +430,10 @@ export function journalById(applied) {
     const acc = e.account || 'main';             /* легаси-строки без поля — основной аккаунт */
     if (!accs[e.id]) accs[e.id] = new Set();
     accs[e.id].add(acc);
-    const entry = { ts: e.ts, via: e.via, status: e.status, name: e.name, url: e.url,
-                    employer: e.employer, account: acc };
+    /* В записи только то, что кто-то читает: `ts`/`via` — дата и способ отклика на бейдже,
+       `name`/`url`/`employer` — поля «призрака» (syntheticCard), `accounts`/`byAcct` — метка
+       профиля и выборка под фильтром. `status` и `account` записи не читал никто. */
+    const entry = { ts: e.ts, via: e.via, name: e.name, url: e.url, employer: e.employer };
     const cur = tsMs(e.ts);
     /* РАННЯЯ запись ПО КАЖДОМУ аккаунту (RFC-004): под фильтром профиля дата отклика и via —
        его, а не самого раннего среди всех (баг 16.09.2026: под acc2 показывалась дата main). */
@@ -424,21 +452,28 @@ export function journalById(applied) {
   return byId;
 }
 
+/* Кандидаты под фильтром профиля: коды аккаунтов из byAcct, сужённые выбранными (пусто = все).
+   Преамбула общая для `effectiveApplied`/`effectiveStatus`/`effectiveChat`: три копии одного
+   «взять ключи, сузить фильтром» разъезжались бы при правке любой из них. */
+function poolKeys(byAcct, filterSet) {
+  if (!byAcct) return [];
+  const codes = Object.keys(byAcct);
+  return filterSet?.size ? codes.filter(c => filterSet.has(c)) : codes;
+}
+
 /* Эффективный ОТКЛИК (дата + via) для карточки под фильтром профиля (RFC-004). `byAcct` —
    {account: запись журнала} из journalById. Под фильтром берём РАННЮЮ запись среди выбранных
    профилей; без фильтра — среди всех (прежнее «первый отклик»). `accounts` (полный набор) всегда
    переносится: метка-конфликт на бейдже от фильтра не зависит. Ни один выбранный не откликался
    -> null (карточка под этим фильтром и не покажется — filterVacancies отсекает по accounts). */
 export function effectiveApplied(byAcct, filterSet, accounts) {
-  if (!byAcct) return null;
-  let codes = Object.keys(byAcct);
-  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
   let best = null;
-  for (const c of codes) {
+  for (const c of poolKeys(byAcct, filterSet)) {
     const e = byAcct[c];
     if (!best || (tsMs(e.ts) !== null && (tsMs(best.ts) === null || tsMs(e.ts) < tsMs(best.ts)))) best = e;
   }
-  return best ? { ...best, accounts: accounts || [...Object.keys(byAcct)].sort() } : null;
+  if (!best) return null;
+  return { ...best, accounts: accounts || [...Object.keys(byAcct)].sort() };
 }
 
 /* Эффективный статус вакансии для показа на карточке (RFC-004). У вакансии, куда откликнулись
@@ -446,11 +481,9 @@ export function effectiveApplied(byAcct, filterSet, accounts) {
    {account: state} (из /api/statuses), `filterSet` — выбранные профили (пусто = все).
    Несколько профилей с разными статусами -> приоритет: приглашение > отказ > прочее. */
 export function effectiveStatus(byAcct, filterSet) {
-  if (!byAcct) return null;
-  let codes = Object.keys(byAcct);
-  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
-  const states = codes.map(c => byAcct[c]).filter(Boolean);
-  return states.find(isInvited) || states.find(isDiscard) || states[0] || null;
+  const states = poolKeys(byAcct, filterSet).map(c => byAcct[c]).filter(Boolean);
+  const first = kind => states.find(s => stateKind(s) === kind);
+  return first('invited') || first('rejected') || states[0] || null;
 }
 
 /* Эффективная ПЕРЕПИСКА (и её дата) для карточки под фильтром профиля (RFC-004). `byAcct` —
@@ -459,11 +492,9 @@ export function effectiveStatus(byAcct, filterSet) {
    дней назад» от main). Пустой фильтр -> основной (носитель ленты, прежнее main-wins-поведение);
    при отсутствии основного среди кандидатов — первый по коду (детерминированно). */
 export function effectiveChat(byAcct, filterSet) {
-  if (!byAcct) return null;
-  let codes = Object.keys(byAcct);
-  if (filterSet?.size) codes = codes.filter(c => filterSet.has(c));
+  const codes = poolKeys(byAcct, filterSet);
   if (!codes.length) return null;
-  const pick = codes.includes('main') ? 'main' : [...codes].sort()[0];
+  const pick = codes.includes('main') ? 'main' : codes.sort()[0];
   return byAcct[pick] || null;
 }
 
@@ -483,8 +514,7 @@ export function crmStats(applied, statusesByAcct) {
   for (const [id, e] of Object.entries(byId)) {
     for (const code of e.accounts) {
       const s = st[id]?.[code];
-      const key = isInvited(s) ? 'invited' : isDiscard(s) ? 'rejected' : 'other';
-      bump(code, 'applied'); bump(code, key);
+      bump(code, 'applied'); bump(code, stateKind(s));
     }
   }
   return acc;
@@ -535,7 +565,7 @@ export function statusInfo(v) {
   if (!s) return null;
   /* подложки затемнены до 4.5:1 с белым текстом бейджа (было 3.2–3.6 при 11px bold) */
   const color = isDiscard(s) ? '#DE3433' : isInvited(s) ? '#34863F' : '#717781';
-  return { code: s, label: STATE_LABELS[s] || s, color };
+  return { label: STATE_LABELS[s] || s, color };
 }
 
 /* Цвет ТЕЛА карточки: CRM-статус HH важнее ручной пометки (тот же приоритет, что у бейджа).
@@ -567,6 +597,32 @@ export function cardTone(v) {
   return cardColor(v);
 }
 
+/* Итог «ручная отметка против CRM-статуса» — ОДНА реализация на всю ленту. Правило было
+   выписано в двух местах — `view.js::applyStatuses` (цвет тела и рамки при рендере) и
+   `main.js::setStatus` (то же при клике по кнопке ✓/✕), — и копии расходились: правка одной
+   половины не доезжала до другой, поэтому карточка сразу после клика и после перезагрузки
+   выглядела по-разному. `mark` — значение кнопки ✓/✕ или null; пустой CRM-ответ оставляет
+   выбор за ручной отметкой, терминальный статус HH её перебивает (`cardColor`/`cardTone`). */
+export function cardPaint(v, mark) {
+  return { status: cardColor(v) || mark || null, tone: cardTone(v) || mark || null };
+}
+
+/* «Зарплатный фильтр включён» — одно правило на счётчик свёрнутой панели и на саму
+   фильтрацию: раньше оно было выписано дважды и расходилось на незаполненном ползунке
+   (`f.maxSal != null && f.salMax != null` против прямого сравнения) — выдача резалась, а
+   бейдж фильтров молчал. Ширина по умолчанию (`maxSal === salMax`, весь диапазон слайдера)
+   фильтром не считается: она ничего не режет. */
+export function isSalaryFilterOn(f) {
+  return (f.minSal || 0) > 0
+    || (f.maxSal != null && f.salMax != null && f.maxSal < f.salMax);
+}
+
+/* «Выбран хотя бы один профиль» — то же правило и для счётчика, и для фильтрации (счётчик
+   звал size(f.accountFilter), фильтр — (f.accountFilter?.size || 0)). */
+export function isAccountFilterOn(f) {
+  return (f.accountFilter?.size || 0) > 0;
+}
+
 /* Сколько ГРУПП фильтров сейчас отклонено от значения по умолчанию. Нужен свёрнутой панели:
    иначе легко забыть, что выдача урезана невидимыми фильтрами. Считаются именно группы, а не
    отдельные пилюли — «три языка» это один активный фильтр. Сортировка, валюта показа и
@@ -584,11 +640,11 @@ export function countActiveFilters(f = {}) {
     (f.status || 'all') !== 'all',
     (f.source || 'all') !== 'all',
     !!f.chatFilter,
-    size(f.accountFilter) > 0,
+    isAccountFilterOn(f),
     !!f.resumeOnly,
     !!f.showNonIt,
     !!(f.dateFrom || f.dateTo),
-    (f.minSal || 0) > 0 || (f.maxSal != null && f.salMax != null && f.maxSal < f.salMax),
+    isSalaryFilterOn(f),
   ].filter(Boolean).length;
 }
 
@@ -602,6 +658,19 @@ export function cityMatches(city, query, exact = false) {
   return exact ? c === q : c.includes(q);
 }
 
+/* Компаратор «пустые в конец» — одна фабрика на три ключа сортировки, где правило было
+   выписано трижды (зарплата, дата появления вакансии, ответ HR). `pick` достаёт ключ записи,
+   `cmp` сравнивает два НЕПУСТЫХ ключа. Пусто — это `null`/`undefined` или '', но НЕ валидный
+   ноль: `age: 0` значит «вакансия сегодня» и обязан идти первым у свежих, поэтому проверка
+   именно `x == null || x === ''`, а не `!x` (с `!x` сегодняшняя вакансия уезжала бы в хвост
+   к «без даты»). Записи с ключом фабрика не переставляет: пустые только уходят за них. */
+const emptyLast = (pick, cmp) => (a, b) => {
+  const x = pick(a), y = pick(b);
+  const ex = x == null || x === '', ey = y == null || y === '';
+  if (ex || ey) return ex && ey ? 0 : (ex ? 1 : -1);
+  return cmp(x, y);
+};
+
 /* Фильтрация + сортировка — чистая: (вакансии, состояние фильтров) -> массив. */
 export function filterVacancies(vacancies, f) {
   /* Режим «Мои отклики» (status='mine') — НЕ отдельный вид, а ЛУПА: ограничивает выдачу твоими
@@ -610,6 +679,25 @@ export function filterVacancies(vacancies, f) {
      владельца 16.09.2026: под «Показать (N)» фильтры и сортировка не действовали). Без явной
      сортировки — по дате отклика ↓ (в конце функции). Синтетические (призраки) в этом режиме
      показываются: это журнал откликов и по выпавшим из выдачи вакансиям. */
+
+  /* Валюта показа — ОДНО выражение на функцию: из неё считается зарплатный ключ и для фильтра,
+     и для сортировки (выражение стояло дважды). Валют показа может быть НЕСКОЛЬКО (мультивыбор
+     23.09.2026), но вилки сравниваются в ОДНОЙ — берём первую выбранную; тем же числом
+     считается шкала зарплатного ползунка (`main.js::rescaleSalary`). Ключ мемоизируется в Map:
+     `comparableSalary` резолвит валюту, а компаратор звал его на КАЖДОЕ сравнение — O(n log n)
+     резолвов вместо O(n); рядом `pct` для `resumeMatch` считается так же. Заполняется по
+     требованию: без зарплатного фильтра и без сортировки по зарплате (`date_new`/`reply_new`
+     уходят раньше) резолвить нечего. */
+  const dispCur = (f.displayCurs?.length ? f.displayCurs : ['RUB'])[0];
+  const salMid = new Map();
+  const midOf = v => {
+    if (!salMid.has(v)) salMid.set(v, comparableSalary(v, dispCur));
+    return salMid.get(v);
+  };
+  const salOn = isSalaryFilterOn(f);
+  const salDir = f.sort === 'desc' ? -1 : f.sort === 'asc' ? 1 : 0;
+  const salCmp = emptyLast(midOf, (x, y) => salDir * (x - y));
+
   const filtered = vacancies.filter(v => {
     /* карточки-«призраки» (отклик на выпавшую из выдачи вакансию): в общем списке скрыты,
        но показываем в чат-фильтрах — по ним висят живые чаты, на которые надо ответить.
@@ -619,7 +707,7 @@ export function filterVacancies(vacancies, f) {
        догадается добавить ещё и чат-фильтр. Показываем ТОЛЬКО призраков С ОТВЕТОМ: без
        этого условия в выдачу высыпался бы весь журнал откликов по выпавшим вакансиям,
        и они пустым ключом осели бы в хвосте — шум вместо ответов. */
-    const accSel = (f.accountFilter?.size || 0) > 0;
+    const accSel = isAccountFilterOn(f);
     const mineMode = f.status === 'mine';
     if (v._synthetic && !f.chatFilter && !accSel && !mineMode
         && !(f.sort === 'reply_new' && hrReplyTime(v))) return false;
@@ -650,8 +738,8 @@ export function filterVacancies(vacancies, f) {
       const ids = v.emp_ids || [];
       if (!(ids.length ? ids.some(e => f.emps.has(e)) : f.emps.has(''))) return false;
     }
-    if (f.minSal > 0 || f.maxSal < f.salMax) {
-      const mid = comparableSalary(v, f.displayCur || 'RUB');
+    if (salOn) {
+      const mid = midOf(v);
       if (mid === null) {
         if (f.minSal > 0) return false;
       } else if (mid < f.minSal || mid > f.maxSal) {
@@ -660,10 +748,10 @@ export function filterVacancies(vacancies, f) {
     }
     if (f.source && f.source !== 'all' && v.source !== f.source) return false;  /* портал-источник */
     if (f.city && !cityMatches(v.city, f.city, f.cityExact)) return false;
-    /* «Удалённо»/«Офис» — по домену (REMOTE_LIKE = remote + гибрид), а не по литералу
+    /* «Удалённо»/«Офис» — по домену (`isRemoteLike` = remote + гибрид), а не по литералу
        'remote': иначе flexible попадал в офисный бакет, а отчёты считали его удалёнкой */
-    if (f.schedule === 'remote' && !REMOTE_LIKE.has(v.schedule)) return false;
-    if (f.schedule === 'office' && REMOTE_LIKE.has(v.schedule)) return false;
+    if (f.schedule === 'remote' && !isRemoteLike(v.schedule)) return false;
+    if (f.schedule === 'office' && isRemoteLike(v.schedule)) return false;
     /* Статус отклика (API): all | invited | discard | response | form */
     if (f.status === 'invited' && !isInvited(v.status)) return false;
     if (f.status === 'discard' && !isDiscard(v.status)) return false;
@@ -676,41 +764,19 @@ export function filterVacancies(vacancies, f) {
     /* 'personal' — живой человек И чат открыт для ответа: реальный список дел,
        без шаблонной рассылки, без чатов, куда HH писать не даст, и БЕЗ фризов
        (заглушка «резюме получено, свяжемся» и бот-интервью в чужом мессенджере —
-       диалога там нет) */
-    if (f.chatFilter === 'personal'
-        && !(v.chat?.needs_reply && v.chat.sender === 'human'
-             && v.chat.can_write !== false && !isFrozenChat(v.chat))) {
-      return false;
-    }
+       диалога там нет). Условие — `isPersonalChat`: им же считается бейдж группы. */
+    if (f.chatFilter === 'personal' && !isPersonalChat(v.chat)) return false;
     /* 'contact' — рекрутёр оставил телефон/телеграм в переписке (независимо от needs_reply:
        контакт ценен и после нашего ответа) */
     if (f.chatFilter === 'contact' && !v.chat?.contact) return false;
     return true;
   });
 
-  /* Составная сортировка: % совпадения — ОСНОВНОЙ ключ (matchSort), зарплата —
-     ВТОРИЧНЫЙ (или единственный, если совпадение выключено). Можно врубить вместе.
-     pct кэшируем по вакансии — resumeMatch раз на запись, а не на каждое сравнение. */
-  const salDir = f.sort === 'desc' ? -1 : f.sort === 'asc' ? 1 : 0;
-  const salVal = v => comparableSalary(v, f.displayCur || 'RUB');
-  const salCmp = (a, b) => {
-    const am = salVal(a), bm = salVal(b);
-    if (am === null && bm === null) return 0;
-    if (am === null) return 1;               /* nulls always last */
-    if (bm === null) return -1;
-    return salDir * (am - bm);
-  };
-
   /* Сортировка по дате появления вакансии (age = дней с создания; без даты -> в конец).
      date_new — свежие первыми (малый age), date_old — старые первыми. Самостоятельный ключ. */
   if (f.sort === 'date_new' || f.sort === 'date_old') {
     const dir = f.sort === 'date_new' ? 1 : -1;
-    filtered.sort((a, b) => {
-      if (a.age == null && b.age == null) return 0;
-      if (a.age == null) return 1;
-      if (b.age == null) return -1;
-      return dir * (a.age - b.age);
-    });
+    filtered.sort(emptyLast(v => v.age, (x, y) => dir * (x - y)));
     return filtered;
   }
 
@@ -718,18 +784,16 @@ export function filterVacancies(vacancies, f) {
      Отдельный ключ от date_new — та смотрит на дату публикации вакансии, поэтому ответ по
      старой вакансии тонул внизу и его можно было не заметить. Без ответа -> в конец. */
   if (f.sort === 'reply_new') {
-    filtered.sort((a, b) => {
-      const at = hrReplyTime(a), bt = hrReplyTime(b);
-      if (!at && !bt) return 0;
-      if (!at) return 1;
-      if (!bt) return -1;
-      return bt.localeCompare(at);           /* ISO-8601 -> лексикографика = хронология */
-    });
+    /* ISO-8601 -> лексикографика = хронология, поэтому свежий ответ идёт первым */
+    filtered.sort(emptyLast(hrReplyTime, (x, y) => y.localeCompare(x)));
     return filtered;
   }
 
   const wantMatch = f.matchSort || (f.sort === 'none' && f.resumeOnly);
 
+  /* Составная сортировка: % совпадения — ОСНОВНОЙ ключ (matchSort), зарплата — ВТОРИЧНЫЙ
+     (или единственный, если совпадение выключено). Можно врубить вместе. `pct` кэшируем
+     по вакансии — resumeMatch раз на запись, а не на каждое сравнение. */
   if (wantMatch) {
     const pct = new Map();
     for (const v of filtered) pct.set(v, resumeMatch(v).pct);

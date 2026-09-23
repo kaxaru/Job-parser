@@ -24,17 +24,7 @@
     <h1>HR Market Dashboard &mdash; рынок труда разработчиков</h1>
     <p>Источников: {{ source_count }} &nbsp;|&nbsp; {{ total_vacancies }} вакансий &nbsp;|&nbsp; {{ total_cities }} городов &nbsp;|&nbsp; {{ year }}</p>
   </div>
-  <button id="theme-toggle" class="theme-toggle" type="button"
-          title="Переключить тему" aria-label="Включить светлую тему">
-    <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
-    </svg>
-    <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
-      <circle cx="12" cy="12" r="4.2"/>
-      <path d="M12 2.6v2.2M12 19.2v2.2M4.4 12H2.2M21.8 12h-2.2
-               M6.3 6.3 4.8 4.8M19.2 19.2l-1.5-1.5M17.7 6.3l1.5-1.5M4.8 19.2l1.5-1.5"/>
-    </svg>
-  </button>
+  {% with toggle_class = "theme-toggle" %}{% include "theme-toggle.html.j2" %}{% endwith %}
 </header>
 
 {% if sources|length > 1 %}

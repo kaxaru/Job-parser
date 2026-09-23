@@ -1,3 +1,30 @@
+{#- Панель фильтров: чипы-пилюли и ползунки зарплаты. Четыре сетки чипов (языки, роли, опыт,
+    оформление) — одно полотно `<input type=checkbox>` + `<label class="lang-label">`,
+    различающееся только классом чекбокса, префиксом id и обёрткой значения: у языков и
+    ролей значение и подпись совпадают, у опыта и оформления подпись приходит из домена
+    вместе с кодом. Классы в разметке остаются — по ним JS различает группы
+    (`.lang-cb:not(.exp-cb)` = языки), поэтому склеивать их в один нельзя.
+    Печать обязана совпасть с прежней разметкой ПОСИМВОЛЬНО: тег чекбокса остаётся одной
+    строкой в порядке type->class->id->value (пины tests/backend/presentation/
+    test_feed_build.py), а `start` задаёт базу нумерации id — у языков и ролей она 1,
+    у опыта и оформления 0. -#}
+{% macro chip_grid(codes, labels, cb_class, id_prefix, start) -%}
+      {% for code in codes %}
+      <input type="checkbox" class="{{ cb_class }}" id="{{ id_prefix }}{{ loop.index0 + start }}" value="{{ code }}">
+      <label class="lang-label" for="{{ id_prefix }}{{ loop.index0 + start }}">{{ labels[loop.index0] }}</label>
+      {% endfor %}
+{%- endmacro -%}
+{#- Ползунки «Зарплата /мес»: две строки одного вида, различаются подписью, id и значением
+    (левый — 0, правый — верх шкалы). Верх и шаг шкалы считает Python
+    (`feed.py::_salary_slider_max`, `SALARY_STEP`): в шаблоне их дублировать нельзя, иначе
+    ползунок и округление верха разъедутся. -#}
+{% macro salary_row(label, sid, value) %}
+      <div class="salary-row">
+        <span class="lbl">{{ label }}</span>
+        <input type="range" id="{{ sid }}" min="0" max="{{ sal_max }}" step="{{ sal_step }}" value="{{ value }}">
+        <span class="sal-val" id="{{ sid }}-val">{{ value }}</span>
+      </div>
+{%- endmacro -%}
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -13,17 +40,7 @@
   <h1>Лента вакансий</h1>
   <span class="hdr-actions">
     <span id="sync-status" class="sync-status"></span>
-    <button id="theme-toggle" class="hdr-btn theme-toggle" type="button"
-            title="Переключить тему" aria-label="Включить светлую тему">
-      <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5z"/>
-      </svg>
-      <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="12" cy="12" r="4.2"/>
-        <path d="M12 2.6v2.2M12 19.2v2.2M4.4 12H2.2M21.8 12h-2.2
-                 M6.3 6.3 4.8 4.8M19.2 19.2l-1.5-1.5M17.7 6.3l1.5-1.5M4.8 19.2l1.5-1.5"/>
-      </svg>
-    </button>
+    {% with toggle_class = "hdr-btn theme-toggle" %}{% include "theme-toggle.html.j2" %}{% endwith %}
     <button id="marks-export" class="hdr-btn" title="Скачать отметки в marks.json">💾 Экспорт</button>
     <label class="hdr-btn" title="Загрузить marks.json">📂 Импорт<input id="marks-import" type="file" accept="application/json" hidden></label>
   </span>
@@ -35,13 +52,20 @@
      model.js::staleNow; пока срез свежий — узел скрыт и ничего не занимает. -->
 <div id="stale-banner" class="stale-banner" role="status" hidden></div>
 
-<!-- Липкой остаётся только эта полоса: поиск (инжектится сюда из main.js), счётчик выдачи
-     и переключатель панели фильтров. Сама панель ниже — нелипкая и сворачиваемая. -->
+<!-- Липкой остаётся только эта полоса: поиск, счётчик выдачи и переключатель панели
+     фильтров. Сама панель ниже — нелипкая и сворачиваемая.
+     Поиск набран прямо здесь, а не создаётся из main.js: бандл ленты грузится ПОСЛЕ
+     feed-data.js (~50 МБ), и до его разбора поля в полосе не было бы вовсе — то есть
+     ровно в те секунды, когда выдача ещё пуста. Место в потоке с JS не меняется:
+     между счётчиком и .toolbar-spacer. -->
 <div class="filter-toolbar" id="filter-toolbar">
   <button class="toolbar-toggle" id="filters-toggle" aria-expanded="true" aria-controls="filter-bar">
     <span class="chev">⌄</span> Фильтры<span class="filters-count" id="filters-count" hidden></span>
   </button>
   <span id="counter">Показано {{ total_records }} из {{ total_records }}</span>
+  <input type="search" id="search-input" class="search-input"
+         placeholder="🔍 напр. альфа-банк или python backend" autocomplete="off"
+         aria-label="Поиск: вакансия или компания">
   <span class="toolbar-spacer"></span>
   <button class="reset-btn" onclick="resetFilters()">Сбросить</button>
 </div>
@@ -51,10 +75,7 @@
   <div class="filter-group">
     <span class="filter-label">Язык</span>
     <div class="lang-grid">
-      {% for lang in langs %}
-      <input type="checkbox" class="lang-cb" id="lang-{{ loop.index }}" value="{{ lang }}">
-      <label class="lang-label" for="lang-{{ loop.index }}">{{ lang }}</label>
-      {% endfor %}
+      {{ chip_grid(langs, langs, 'lang-cb', 'lang-', 1) }}
     </div>
   </div>
 
@@ -62,40 +83,37 @@
   <div class="filter-group">
     <span class="filter-label">Роль</span>
     <div class="lang-grid">
-      {% for role in roles %}
-      <input type="checkbox" class="role-cb" id="role-{{ loop.index }}" value="{{ role }}">
-      <label class="lang-label" for="role-{{ loop.index }}">{{ role }}</label>
-      {% endfor %}
+      {{ chip_grid(roles, roles, 'role-cb', 'role-', 1) }}
     </div>
     <button class="sched-btn" id="nonit-toggle"
             title="Показать вакансии без IT-роли (продажи, инженеры-конструкторы и т.п.)">+ не-IT ({{ nonit }})</button>
   </div>
 
-  <!-- Currency (валюта показа зарплат) -->
+  <!-- Currency (валюты показа зарплат). МУЛЬТИВЫБОР (решение владельца 23.09.2026): вилка
+       печатается в КАЖДОЙ выбранной валюте («от 150 000 ₽/мес · от 1 700 $/мес»).
+       Нативный `<select multiple>` в строку панели не ложится — он рисуется списком на
+       четыре строки, поэтому `<details>` + чекбоксы: свёрнуто это одна строка с текущим
+       набором, выбор разворачивается поверх панели.
+       ПЕРВАЯ выбранная валюта (порядок разметки) задаёт валюту шкалы зарплатного ползунка
+       и сортировки — вилки сравниваются в одной валюте.
+       Дефолт — рубли: `checked` здесь и `main.js::CUR_DEFAULT` (единственная копия в JS). -->
   <div class="filter-group">
     <span class="filter-label">Валюта</span>
-    <div class="sched-btns">
-      <button class="sched-btn active" data-cur="RUB" title="Показывать зарплаты в рублях">₽ руб</button>
-      <button class="sched-btn" data-cur="USD" title="Показывать зарплаты в долларах">$ USD</button>
-      <button class="sched-btn" data-cur="EUR" title="Показывать зарплаты в евро">€ EUR</button>
-      <button class="sched-btn" data-cur="BYN" title="Показывать зарплаты в белорусских рублях">Br BYN</button>
-    </div>
+    <details class="multi-sel" id="cur-sel">
+      <summary id="cur-summary" title="В каких валютах показывать зарплаты">₽ руб</summary>
+      <div class="multi-sel-body">
+        <label class="multi-opt"><input type="checkbox" class="cur-cb" value="RUB" checked>₽ руб</label>
+        <label class="multi-opt"><input type="checkbox" class="cur-cb" value="USD">$ USD</label>
+        <label class="multi-opt"><input type="checkbox" class="cur-cb" value="EUR">€ EUR</label>
+        <label class="multi-opt"><input type="checkbox" class="cur-cb" value="BYN">Br BYN</label>
+      </div>
+    </details>
   </div>
 
   <!-- Salary -->
   <div class="filter-group">
     <span class="filter-label">Зарплата /мес</span>
-    <div class="salary-wrap">
-      <div class="salary-row">
-        <span class="lbl">от</span>
-        <input type="range" id="sal-min" min="0" max="{{ sal_max }}" step="{{ sal_step }}" value="0">
-        <span class="sal-val" id="sal-min-val">0</span>
-      </div>
-      <div class="salary-row">
-        <span class="lbl">до</span>
-        <input type="range" id="sal-max" min="0" max="{{ sal_max }}" step="{{ sal_step }}" value="{{ sal_max }}">
-        <span class="sal-val" id="sal-max-val">{{ sal_max }}</span>
-      </div>
+    <div class="salary-wrap">{{ salary_row('от', 'sal-min', 0) }}{{ salary_row('до', 'sal-max', sal_max) }}
     </div>
   </div>
 
@@ -125,17 +143,19 @@
   </div>
   {% endif %}
 
-  <!-- Schedule. «Удалённо» = remote + гибрид (Schedule.is_remote_like), тот же ответ,
-       что дают отчёты и графики; «Офис» — всё остальное. -->
+  <!-- Schedule. Селект вместо ряда пилюль (решение владельца 23.09.2026): группа занимает одну
+       строку панели. Значения — те же коды, что разбирает `model.js::filterVacancies`:
+       all/remote/office; «Удалённо» = remote + гибрид (`Schedule.is_remote_like`) — тот же
+       ответ, что дают отчёты и графики; «Офис» — всё остальное. Дефолт зажигается здесь
+       (`selected`), а сброс ставит его из `main.js::SELECT_GROUPS` — второй копии дефолта нет. -->
   <div class="filter-group">
     <span class="filter-label">Формат</span>
-    <div class="sched-btns">
-      <button class="sched-btn active" data-sched="all">Все</button>
-      <button class="sched-btn" data-sched="remote"
-              title="Удалённо и гибрид — так же считают отчёты и графики">Удалённо</button>
-      <button class="sched-btn" data-sched="office"
-              title="Всё, что не удалёнка и не гибрид">Офис</button>
-    </div>
+    <select class="filter-select" id="sched-sel" aria-label="Формат работы"
+            title="Удалённо — удалёнка и гибрид (как в отчётах и графиках); Офис — всё остальное">
+      <option value="all" selected>Все</option>
+      <option value="remote">Удалённо</option>
+      <option value="office">Офис</option>
+    </select>
   </div>
 
   <!-- Experience: чипы рендерятся из config.EXP_LABELS (единый источник подписей),
@@ -144,10 +164,7 @@
   <div class="filter-group">
     <span class="filter-label">Опыт</span>
     <div class="lang-grid">
-      {% for code, label in exps %}
-      <input type="checkbox" class="lang-cb exp-cb" id="exp-{{ loop.index0 }}" value="{{ code }}">
-      <label class="lang-label" for="exp-{{ loop.index0 }}">{{ label }}</label>
-      {% endfor %}
+      {{ chip_grid(exps|map(attribute=0)|list, exps|map(attribute=1)|list, 'lang-cb exp-cb', 'exp-', 0) }}
     </div>
   </div>
 
@@ -157,10 +174,7 @@
   <div class="filter-group">
     <span class="filter-label" title="Форма оформления названа в тексте вакансии; порталы отдельным полем её не отдают">Оформление</span>
     <div class="lang-grid">
-      {% for code, label in emps %}
-      <input type="checkbox" class="lang-cb emp-cb" id="emp-{{ loop.index0 }}" value="{{ code }}">
-      <label class="lang-label" for="emp-{{ loop.index0 }}">{{ label }}</label>
-      {% endfor %}
+      {{ chip_grid(emps|map(attribute=0)|list, emps|map(attribute=1)|list, 'lang-cb emp-cb', 'emp-', 0) }}
     </div>
   </div>
 

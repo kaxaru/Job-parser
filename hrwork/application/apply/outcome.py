@@ -23,7 +23,8 @@ class ApplyOutcome(Enum):
     APPLIED = "applied"    # отклик отправлен
     ALREADY = "already"    # уже откликались ранее (кнопки «Откликнуться» нет)
     FORM = "form"          # опросник/вопросы работодателя -> ручная форм-очередь
-    SKIP = "skip"          # архив/внешний сайт/не подтвердилось
+    SKIP = "skip"          # откликнуться НЕЛЬЗЯ: архив, внешний сайт, опросник
+    UNCONFIRMED = "unconfirmed"  # клик был, подтверждения от HH нет (окно 24ч / disabled сабмит)
     CAPTCHA = "captcha"    # HH увёл на /account/captcha -> прогон ОСТАНАВЛИВАЕТСЯ целиком
 
     @property
@@ -51,6 +52,10 @@ APPLY_LABELS: dict[str, str] = {
     ApplyOutcome.ALREADY.code: "уже откликались",
     ApplyOutcome.FORM.code: "📝 нужна форма — в очереди",
     ApplyOutcome.SKIP.code: "✖ пропущено (внешний/архив/опросник)",
+    # Клик по «Откликнуться» был, HH его не подтвердил. Отдельная подпись обязательна:
+    # 23.09.2026 серия из 33 таких отказов шла под общим ярлыком skip и была неотличима
+    # от «откликнуться нельзя» — ни в ленте, ни счётчиком прогона.
+    ApplyOutcome.UNCONFIRMED.code: "⚠ не подтвердилось — клик ушёл, ответа HH нет",
     ApplyOutcome.CAPTCHA.code: "⛔ капча HH — нужен вход руками",
     TransportStatus.QUEUED.code: "➕ в очереди крона",
     TransportStatus.BUSY.code: "⏳ занято — идёт крон-отклик, попробуйте через пару минут",
