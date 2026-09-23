@@ -23,4 +23,6 @@ cd /d "%~dp0.."
 set "REPO=%CD%"
 set "PY=%REPO%\..\.venv3\Scripts\python.exe"
 set "FORMS_LLM=1"
-"%PY%" hh.py autoclick --apply-limit 20 --daily-cap 0 >> logs\cron_apply.log 2>&1
+rem Лимит за прогон — 10 (APPLY_LIMIT_DEFAULT): выше 20 прогон упирается в скользящий потолок
+rem HH до того, как доберёт цель, и кликает в стену (замер и предохранители — config.HH_APPLY_ROLLING_CAP).
+"%PY%" hh.py autoclick --apply-limit 10 --daily-cap 0 >> logs\cron_apply.log 2>&1

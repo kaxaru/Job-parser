@@ -47,10 +47,17 @@ from hrwork.application.apply.candidates import (
 from hrwork.application.apply.chat import chat
 from hrwork.application.apply.forms.form_status import skippable_form_ids
 from hrwork.application.apply.outcome import ApplyChannel, ApplyOutcome, VacancyMark
-from hrwork.application.apply.runtime import bump_state, lock, watchdog
+from hrwork.application.apply.runtime import bump_state, lock, quota, watchdog
 from hrwork.application.apply.runtime.quota import DAILY_CAP_DEFAULT
 from hrwork.application.apply.runtime.store import store
-from hrwork.config import ACCOUNT, APPLY_SKIP_STREAK_MAX, FORMS_ENABLED, log
+from hrwork.config import (
+    ACCOUNT,
+    APPLY_SKIP_STREAK_MAX,
+    APPLY_UNCONFIRMED_STREAK_MAX,
+    FORMS_ENABLED,
+    HH_APPLY_ROLLING_CAP,
+    log,
+)
 from hrwork.infrastructure.storage import vacancy_repository
 
 # ── Отклик: параметры батча (отбор кандидатов -> candidates.pick_candidates) ──
@@ -163,7 +170,8 @@ def apply_one(page: Any, cand: Candidate, cover_text: str = "",
       APPLIED — отклик отправлен; ALREADY — уже откликались (кнопка заменена на «Чат»);
       FORM — вакансия с вопросами работодателя (в форм-очередь, руками);
       CAPTCHA — HH увёл на проверку, дальше идти бессмысленно;
-      SKIP — архив/внешний сайт/не подтвердилось."""
+      SKIP — откликнуться НЕЛЬЗЯ: архив, внешний сайт, опросник;
+      UNCONFIRMED — клик был, подтверждения нет (потолок 24ч HH либо `disabled` сабмит)."""
     browser._goto(page, cand.url)
     if _page_unreadable(page):
         # ни клика, ни поиска кнопки: состояние страницы неизвестно (см. `_page_unreadable`)
@@ -220,7 +228,7 @@ def apply_one(page: Any, cand: Candidate, cover_text: str = "",
         return ApplyOutcome.APPLIED
     log.warning("{}: отклик НЕ подтверждён за {}с — {}", cand.id,
                 selectors.CONFIRM_BUDGET_S, _submit_diag(page))
-    return ApplyOutcome.SKIP
+    return ApplyOutcome.UNCONFIRMED
 
 
 def _sync_applied_from_chats(ctx: Any, page: Any) -> int:
@@ -275,17 +283,24 @@ FORM_RATIO_WARN = 2.0
 
 
 def _run_summary(applied: int, skipped: int, forms: int, reconciled: int,
-                 letters_failed: int = 0) -> tuple[str, str]:
+                 letters_failed: int = 0, unconfirmed: int = 0) -> tuple[str, str]:
     """Уровень и текст итоговой строки прогона: ('warning'|'info', строка).
     Вынесено из `_apply_batch` чистой функцией — это ЕДИНСТВЕННЫЙ сигнал деградации,
     и он обязан проверяться тестом без браузера.
 
     `letters_failed` — сколько откликов ушло БЕЗ сопроводительного (слот чата не найден/ошибка
     записи). До 22.09.2026 батч отбрасывал возврат `_send_cover_via_chat`: работодатель получал
-    отклик без письма, а в сводке этого не было вовсе (аудит §1)."""
+    отклик без письма, а в сводке этого не было вовсе (аудит §1).
+
+    `unconfirmed` — сколько попыток осталось БЕЗ подтверждения от HH (клик был). В сводке он
+    печатается, но сам по себе строку в warning НЕ переводит: единичный случай — норма, а
+    серия рвёт прогон предохранителем APPLY_UNCONFIRMED_STREAK_MAX. Число в сводке нужно,
+    чтобы упор в потолок HH был виден в эксплуатации, а не только по серии."""
     ratio = f"{skipped / applied:.1f}" if applied else "все"
     line = (f"Итог прогона: откликов {applied}, анкет {forms}, пропусков {skipped} "
             f"(скип/отклик {ratio}), уже откликались {reconciled}")
+    if unconfirmed:
+        line += f", не подтвердилось {unconfirmed}"
     if letters_failed:
         line += f", писем не доставлено {letters_failed}"
     hot = (not applied
@@ -326,16 +341,36 @@ _POOL_WATCH_REASONS = frozenset({
 
 def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
                  cover_mode: str = "template") -> int:
-    """Разослать отклики с сопроводительным письмом, с учётом ДНЕВНОГО лимита HH
-    (~200/сутки). Эффективный лимит запуска = min(apply_limit, дневной_остаток) — так
-    N мелких запусков за день суммарно не превышают cap (идемпотентно: счётчик в
-    apply_quota.json, дубли режет marks.json). Письмо: шаблон или LLM (cover_mode)."""
+    """Разослать отклики с сопроводительным письмом, с учётом ДВУХ потолков HH: дневного
+    (~200/сутки) и скользящих 24ч (~45, config.HH_APPLY_ROLLING_CAP — эмпирика, HH её не
+    документирует). Эффективный лимит запуска = min(apply_limit, дневной_остаток, остаток
+    окна) — так N мелких запусков за день суммарно не превышают cap (идемпотентно: счётчик в
+    apply_quota.json, дубли режет marks.json), а прогон не кликает в стену, где HH уже не
+    подтверждает отклики. Письмо: шаблон или LLM (cover_mode)."""
     used = hh_sync._reconciled_today()
     remaining = max(0, daily_cap - used)
     eff = min(apply_limit or APPLY_LIMIT_DEFAULT, remaining)
     if eff <= 0:
         log.info("Дневной лимит откликов исчерпан: {}/{} — пропускаю отклики", used, daily_cap)
         return 0
+
+    # Второй потолок HH — скользящие сутки (config.HH_APPLY_ROLLING_CAP). Дневная квота выше
+    # его НЕ видит: 23.09.2026 счётчик показывал 189 свободных из 200, а HH уже не подтверждал
+    # ни один отклик — прогон прошёл 33 вакансии впустую. Считаем по журналу (он и про вчерашний
+    # вечер знает, в отличие от apply_quota.json) и урезаем ЦЕЛЬ прогона остатком окна: кликать
+    # в стену дороже, чем не добрать откликов, — каждый клик это бот-сигнал.
+    rolling = quota.applied_in_window(store.applied_log())
+    room = max(0, HH_APPLY_ROLLING_CAP - rolling)
+    if room <= 0:
+        log.error("За скользящие {}ч откликов {} (потолок HH ~{}) — выше него HH не подтверждает "
+                  "отклики. Прогон НЕ начинаю: пустая серия кликов = бот-сигналы. Окно "
+                  "(журнал applied_log.jsonl) просядет само; пул подхватит следующий слот.",
+                  quota.ROLLING_WINDOW_H, rolling, HH_APPLY_ROLLING_CAP)
+        return 0
+    if room < eff:
+        log.warning("Окно {}ч: откликов {} из {} — цель прогона урезана до {}",
+                    quota.ROLLING_WINDOW_H, rolling, HH_APPLY_ROLLING_CAP, room)
+        eff = room
 
     # eff — целевое число УСПЕШНЫХ откликов; пропуски (внешний/уже-откликнутые) его НЕ тратят.
     # Берём пул с запасом (×POOL_MULT) и идём по нему, пока не наберём eff.
@@ -375,6 +410,8 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     forms_n = 0                        # анкет отложено за прогон (в сводку: не отклик и не пропуск)
     letters_failed = 0                 # писем НЕ доставлено (в сводку: отклик ушёл без письма)
     streak = 0                         # ПОДРЯД идущих пропусков — детектор блокировки
+    unconfirmed = 0                    # попыток без подтверждения HH за прогон (в сводку)
+    unconfirmed_streak = 0             # ПОДРЯД идущих таких попыток — упор в потолок HH
     for cand in pool:
         if len(applied) >= eff:        # набрали нужное число НОВЫХ откликов — стоп
             break
@@ -422,6 +459,26 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
             log.error("HH показал капчу (/account/captcha) — прогон ОСТАНОВЛЕН на {}. "
                       "Пройди проверку вручную: hh.py autoclick --login", cand.url)
             break
+        elif status is ApplyOutcome.UNCONFIRMED:
+            # Клик был, подтверждения от HH нет: упор в потолок скользящих суток, либо на нашей
+            # стороне не снялся `disabled` сабмит (обязательное письмо, смена вёрстки). Отдельный
+            # счётчик нужен ИМЕННО здесь: до 23.09.2026 эти отказы шли под общим skip, и прогон
+            # продолжал кликать в стену — 33 вакансии за 18 минут, каждый клик бот-сигнал
+            # (порог APPLY_SKIP_STREAK_MAX=50 калиброван под «нет кнопки», то есть под архив).
+            skipped += 1
+            streak += 1
+            unconfirmed += 1
+            unconfirmed_streak += 1
+            log.info("Пропуск: {}  {}", cand.name, cand.url)   # причину пишет apply_one выше
+            if unconfirmed_streak >= APPLY_UNCONFIRMED_STREAK_MAX:
+                log.error("{} попыток ПОДРЯД не подтвердились (клик был, ответа HH нет) — прогон "
+                          "ОСТАНОВЛЕН. За скользящие {}ч откликов {} (потолок HH ~{}): похоже, "
+                          "упёрлись в него; если число далеко от потолка — дело в форме отклика "
+                          "(залипший disabled сабмит), причины отказов строками выше. Окно: "
+                          "hh.py autoclick --dry-pool; сессия: hh.py autoclick --login",
+                          unconfirmed_streak, quota.ROLLING_WINDOW_H,
+                          quota.applied_in_window(store.applied_log()), HH_APPLY_ROLLING_CAP)
+                break
         else:
             skipped += 1
             streak += 1
@@ -442,12 +499,15 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
                 #
                 # Причину каждого пропуска теперь пишет apply_one — она в логе выше.
                 log.error("{} вакансий ПОДРЯД без отклика — прогон идёт вхолостую и "
-                          "ОСТАНОВЛЕН. Причины пропусков — строками выше; если там «письмо "
-                          "обязательно» или «НЕ подтверждён», дело в форме отклика, а не в "
-                          "сессии. Сессию проверить: hh.py autoclick --login", streak)
+                          "ОСТАНОВЛЕН. Причины пропусков — строками выше (архив, внешний сайт, "
+                          "опросник); серию «клик был, а подтверждения нет» ловит отдельный "
+                          "предохранитель APPLY_UNCONFIRMED_STREAK_MAX. Сессию проверить: "
+                          "hh.py autoclick --login", streak)
                 break
-        if status is not ApplyOutcome.SKIP:
+        if status not in (ApplyOutcome.SKIP, ApplyOutcome.UNCONFIRMED):
             streak = 0                 # любой не-пропуск снимает подозрение
+            unconfirmed_streak = 0     # ...и серию «клик был, подтверждения нет» тоже:
+                                       # ALREADY/FORM доказывают, что поток отклика живой
         time.sleep(random.uniform(*APPLY_PAUSE))
 
     # найденные «уже откликались» — в marks (чтобы не выбирать их впредь); новые отклики
@@ -464,7 +524,8 @@ def _apply_batch(page: Any, apply_limit: int | None, daily_cap: int,
     # пользователь, а не лог: строк «Пропуск» много, но никто их не считал.
     # Ориентир: скип/отклик <=1.5 — норма, >=5 — разбираться; анкет вдвое больше откликов —
     # тоже разбираться (см. _run_summary).
-    level, line = _run_summary(len(applied), skipped, forms_n, len(reconciled), letters_failed)
+    level, line = _run_summary(len(applied), skipped, forms_n, len(reconciled), letters_failed,
+                               unconfirmed)
     (log.warning if level == "warning" else log.info)(line)
     return len(applied)
 
@@ -597,7 +658,9 @@ def _apply_one_vacancy(page: Any, vid: str, url: str, cover_text: str,
 def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> int:
     """Дренаж очереди ожидания (apply_pending.json): вакансии, что лента добавила, пока
     браузер был занят. Владелец браузера (крон после батча / воркер) дожимает их —
-    так клик «в фоне» при занятом кроне становится 26-й вакансией. Уважает дневной лимит.
+    так клик «в фоне» при занятом кроне становится 26-й вакансией. Уважает ОБА потолка HH:
+    дневной (`daily_cap`) и скользящие сутки (`HH_APPLY_ROLLING_CAP` — иначе дренаж
+    досылал бы клики в стену уже после того, как батч в неё упёрся).
     Возвращает число РЕАЛЬНО отправленных откликов.
 
     ПОЛИТИКА ВОССТАНОВЛЕНИЯ (аудит 08.08.2026, находка 5). `pop_pending` снимает запись с диска
@@ -620,8 +683,16 @@ def _drain_pending(page: Any, daily_cap: int, cover_mode: str = "template") -> i
     НАБЛЮДАЕМОСТЬ: строка «Очередь ленты: обработано N, откликов +K, возвращено R, осталось Q».
     Систематическая поломка = R>0 при неубывающем Q от прогона к прогону."""
     applied = returned = 0        # returned — сколько записей легло обратно в очередь
+    # Остаток скользящего окна на входе в дренаж. Именно ОСТАТОК, а не проверка «дошли до
+    # потолка»: окно общее у батча и дренажа, и батч мог уже съесть его целиком.
+    rolling_room = max(0, HH_APPLY_ROLLING_CAP - quota.applied_in_window(store.applied_log()))
+    if rolling_room <= 0:
+        log.warning("Очередь ленты НЕ дренажирую: за скользящие {}ч откликов {} (потолок HH ~{})",
+                    quota.ROLLING_WINDOW_H, quota.applied_in_window(store.applied_log()),
+                    HH_APPLY_ROLLING_CAP)
+        return 0
     seen: set[str] = set()
-    while store.applied_today() < daily_cap:
+    while store.applied_today() < daily_cap and applied < rolling_room:
         rec = store.pop_pending()
         if not rec:
             break

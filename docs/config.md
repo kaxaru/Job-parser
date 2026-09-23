@@ -172,6 +172,15 @@ INFO туда попадали вопрос рекрутера, отправля
 - `APPLY_SKIP_STREAK_MAX = 50` — сколько вакансий ПОДРЯД без кнопки отклика считать
   блокировкой HH, а не архивом; на пороге прогон останавливается. Замер 19 суток лога:
   в здоровые сутки максимальная серия 8 и 21, при блокировке — 97, 150, 268
+- `APPLY_UNCONFIRMED_STREAK_MAX = 5` — сколько ПОДРЯД идущих попыток без подтверждения от HH
+  (`ApplyOutcome.UNCONFIRMED`: клик был, ответа нет) считать упором в потолок окна; на пороге
+  прогон останавливается. Отдельный порог, потому что класс отказа другой: замер 23.09.2026 —
+  в здоровых прогонах таких отказов 0–1, а упор в потолок дал 33 подряд
+- `HH_APPLY_ROLLING_CAP = 45` — сколько откликов за СКОЛЬЗЯЩИЕ 24ч считать потолком HH.
+  Не документирован HH, получен из журнала: 23.09.2026 все попытки до базы 47 включительно
+  приняты, первая же с базой 48 отказана, при базе 28 отклик снова прошёл; 22.09 сутки с 37
+  откликами прошли целиком. Цель прогона = `min(лимит, дневной остаток, остаток окна)`;
+  окно считается по `applied_log.jsonl` (`runtime/quota.py::applied_in_window`)
 - `WATCHDOG_DUMP_S = 40 мин` / `WATCHDOG_KILL_S = 50 мин` (`runtime/watchdog.py`, не env) — дамп
   стека и снос зависшего прогона. Дедлайн на ОТДЕЛЬНЫЙ Playwright-вызов невозможен: sync-API
   привязан к своему потоку, см. `docs/errors.md`. Пороги подтверждены замером 128 прогонов:
@@ -415,7 +424,8 @@ LLM черновит ответ на поле анкеты **только из �
 **Поведение:** `DESC_CACHE_MAX_AGE_DAYS`, `COLLECT_MIN_RATIO`, `COLLECT_SANITY_MIN`,
 `CURL_MAX_TIME`, `HTTP_BACKEND`, `HH_ENRICH_BATCH_MULT`, `HH_CONCURRENCY`, `CACHE_TTL_HOURS`,
 `STALE_CACHE_HOURS`,
-`SERVE_PORT`, `HH_DAILY_APPLY_CAP`, `APPLY_SKIP_STREAK_MAX`, `APPLY_EMPLOYER_BLOCKLIST`,
+`SERVE_PORT`, `HH_DAILY_APPLY_CAP`, `HH_APPLY_ROLLING_CAP`, `APPLY_SKIP_STREAK_MAX`,
+`APPLY_UNCONFIRMED_STREAK_MAX`, `APPLY_EMPLOYER_BLOCKLIST`,
 `HH_DISABLE_PROXIES`,
 `HH_REDIRECT_URI`, `HH_API_UA`, `LOG_BODIES` (дословные тела в логе, см. «Пути»).
 

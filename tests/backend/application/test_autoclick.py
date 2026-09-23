@@ -21,6 +21,7 @@ from hrwork.application.apply import (
     browser,
     candidates,
     hh_sync,
+    selectors,
     session,
 )
 from hrwork.application.apply import worker as apply_worker
@@ -575,6 +576,50 @@ def test_journal_counts_todays_applies_deduped_by_id(monkeypatch):
     assert hh_sync._journal_applied_today("2026-08-08") == 2
 
 
+# ── Скользящее окно 24ч: второй потолок HH (замер 23.09.2026) ────────────────────────────
+# Замер по журналу acc2: HH перестаёт подтверждать отклики, когда за последние сутки их
+# накопилось ~48 — 7 из 7 прошли, пока база росла 42 -> 48, следующая попытка (база 48)
+# отказана, и все 33 после неё тоже; при базе 28 отклик снова прошёл. Суточная квота (200)
+# этого упора не видит, поэтому цель прогона считается ещё и по остатку окна.
+
+# Момент замера: 23.09.2026 12:00 UTC.
+_WINDOW_MOMENT = datetime.datetime(2026, 9, 23, 12, 0, tzinfo=datetime.timezone.utc)
+
+
+def _journal(*ts: str) -> list[dict[str, str]]:
+    return [{"id": str(i), "ts": t} for i, t in enumerate(ts)]
+
+
+def test_rolling_window_counts_only_the_last_24_hours():
+    rows = _journal(
+        "2026-09-23T11:00:00+00:00",   # час назад — в окне
+        "2026-09-22T13:00:00+00:00",   # 23 часа назад — в окне
+        "2026-09-22T11:00:00+00:00",   # 25 часов назад — вне окна
+    )
+    assert quota.applied_in_window(rows, moment=_WINDOW_MOMENT) == 2
+
+
+def test_rolling_window_dedups_a_vacancy_journaled_by_two_channels():
+    # ручной отклик на hh.ru + подхват из чатов — один отклик, а не два
+    rows = [{"id": "7", "ts": "2026-09-23T11:00:00+00:00"},
+            {"id": "7", "ts": "2026-09-23T11:05:00+00:00"},
+            {"id": "8", "ts": "2026-09-23T11:10:00+00:00"}]
+    assert quota.applied_in_window(rows, moment=_WINDOW_MOMENT) == 2
+
+
+def test_rolling_window_reads_the_five_digit_timestamp_written_by_the_chat_sync():
+    """Строки, дожурналенные синком из чатов, несут время HH с ПЯТЬЮ знаками доли секунды;
+    `datetime.fromisoformat` на такой строке падает — запись обязана считаться, а не выпадать
+    (иначе окно занижено ровно на отклики, сделанные руками, и потолок HH не виден)."""
+    rows = [{"id": "1", "ts": "2026-09-23T13:30:21.85756+03:00"}]   # = 10:30 UTC, в окне
+    assert quota.applied_in_window(rows, moment=_WINDOW_MOMENT) == 1
+
+
+def test_rolling_window_ignores_rows_without_a_readable_date():
+    rows = [{"id": "1", "ts": ""}, {"id": "2"}, {"id": "3", "ts": "вчера"}]
+    assert quota.applied_in_window(rows, moment=_WINDOW_MOMENT) == 0
+
+
 def test_quota_is_raised_when_the_click_never_reached_the_counter(monkeypatch):
     got = []
     monkeypatch.setattr(autoclick.store, "applied_today", lambda: 35)
@@ -1072,6 +1117,77 @@ def test_successful_apply_resets_the_skip_streak(batch_env, monkeypatch):
     assert len(seq) == 123                # 3 отклика × 41 карточка: порог 50 не сработал ни разу
 
 
+# ── Упор в потолок скользящих суток (замер 23.09.2026) ───────────────────────────────────
+# 23.09 acc2 откликнулся 7 раз, база за 24ч дошла до 48 — и дальше HH перестал подтверждать
+# отклики: 33 попытки подряд «клик был, подтверждения нет». Прогон этого не видел: под общим
+# ярлыком skip отказ был неотличим от архива, а суточная квота показывала 189 свободных.
+
+_UNCONFIRMED_STREAK_MAX = 5    # дефолт config.APPLY_UNCONFIRMED_STREAK_MAX
+_ROLLING_CAP = 45              # дефолт config.HH_APPLY_ROLLING_CAP
+
+
+def _recent_journal(n: int) -> list[dict[str, str]]:
+    """n откликов за последний час — база скользящего окна для теста батча."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return [{"id": f"j{i}", "ts": (now - datetime.timedelta(minutes=i + 1)).isoformat()}
+            for i in range(n)]
+
+
+def test_unconfirmed_streak_stops_the_run_instead_of_grinding_the_pool(batch_env, monkeypatch):
+    """«Клик был, подтверждения нет» — это упор в потолок HH, а не архив: прогон встаёт на
+    пороге, а не перемалывает пул (23.09.2026: 33 отказа подряд за 18 минут)."""
+    monkeypatch.setattr(autoclick, "APPLY_UNCONFIRMED_STREAK_MAX", _UNCONFIRMED_STREAK_MAX)
+    tried = []
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda page, cand, **kw: (tried.append(cand.id)
+                                                  or autoclick.ApplyOutcome.UNCONFIRMED))
+    assert autoclick._apply_batch(page=None, apply_limit=20, daily_cap=200) == 0
+    assert len(tried) == 5                # ровно порог (пул 200) — не весь пул
+
+
+def test_apply_resets_the_unconfirmed_streak(batch_env, monkeypatch):
+    """Отклик доказывает, что поток HH жив: серия «не подтвердилось» обнуляется, прогон идёт
+    до цели (иначе он вставал бы на любом четвёртом отказе вперемешку с откликами)."""
+    monkeypatch.setattr(autoclick, "APPLY_UNCONFIRMED_STREAK_MAX", _UNCONFIRMED_STREAK_MAX)
+    seq = []
+
+    def every_fifth(page, cand, **kw):
+        out = (autoclick.ApplyOutcome.APPLIED if int(cand.id) % 5 == 4
+               else autoclick.ApplyOutcome.UNCONFIRMED)
+        seq.append(out)
+        return out
+
+    monkeypatch.setattr(autoclick, "apply_one", every_fifth)
+    assert autoclick._apply_batch(page=None, apply_limit=3, daily_cap=200) == 3
+    assert len(seq) == 15                 # 3 отклика × 5 карточек: до порога 5 не доходит
+
+
+def test_batch_target_is_clamped_by_the_rolling_window_room(batch_env, monkeypatch):
+    """43 отклика за сутки при потолке 45 -> цель 10 урезается до 2: выше потолка HH отклики
+    не подтверждает, и лишние клики — только бот-сигналы."""
+    monkeypatch.setattr(autoclick, "HH_APPLY_ROLLING_CAP", _ROLLING_CAP)
+    monkeypatch.setattr(autoclick.store, "applied_log", lambda: _recent_journal(43))
+    tried = []
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda page, cand, **kw: (tried.append(cand.id)
+                                                  or autoclick.ApplyOutcome.APPLIED))
+    assert autoclick._apply_batch(page=None, apply_limit=10, daily_cap=200) == 2
+    assert tried == ["0", "1"]
+
+
+def test_batch_does_not_start_when_the_rolling_window_is_full(batch_env, monkeypatch):
+    """Окно заполнено целиком -> ни одного клика: прогон не идёт в стену, пул подхватит слот,
+    когда отклики выйдут за 24ч."""
+    monkeypatch.setattr(autoclick, "HH_APPLY_ROLLING_CAP", _ROLLING_CAP)
+    monkeypatch.setattr(autoclick.store, "applied_log", lambda: _recent_journal(45))
+    tried = []
+    monkeypatch.setattr(autoclick, "apply_one",
+                        lambda page, cand, **kw: (tried.append(cand.id)
+                                                  or autoclick.ApplyOutcome.APPLIED))
+    assert autoclick._apply_batch(page=None, apply_limit=10, daily_cap=200) == 0
+    assert tried == []
+
+
 # ── Сводка прогона: анкеты видны наравне с откликами и пропусками (аудит 08.08.2026) ────
 # Анкета — не отклик и не пропуск, поэтому в отношении «скип/отклик» её не было вовсе:
 # HH массово включает опросники, прогон даёт 3 отклика и 20 анкет, «пропусков 0», отношение
@@ -1101,6 +1217,21 @@ def test_run_summary_names_forms_and_flags_degradation(applied, skipped, forms, 
     assert autoclick._run_summary(applied, skipped, forms, reconciled, letters) == (level, line)
 
 
+@pytest.mark.parametrize("unconfirmed, level, line", [
+    # Единичная попытка без подтверждения — не деградация сама по себе (серия рвёт прогон
+    # предохранителем), но число обязано быть в сводке: по нему виден упор в потолок HH.
+    (1, "info",
+     "Итог прогона: откликов 10, анкет 0, пропусков 4 (скип/отклик 0.4), уже откликались 2, "
+     "не подтвердилось 1"),
+    (7, "warning",
+     "Итог прогона: откликов 0, анкет 0, пропусков 7 (скип/отклик все), уже откликались 0, "
+     "не подтвердилось 7"),
+])
+def test_run_summary_counts_unconfirmed_separately(unconfirmed, level, line):
+    applied, skipped, reconciled = (10, 4, 2) if unconfirmed == 1 else (0, 7, 0)
+    assert autoclick._run_summary(applied, skipped, 0, reconciled, 0, unconfirmed) == (level, line)
+
+
 def test_form_outcomes_reach_the_run_summary(batch_env, monkeypatch):
     """21 анкета на 3 отклика: анкеты обязаны доехать до счётчика сводки."""
     calls = []
@@ -1114,8 +1245,8 @@ def test_form_outcomes_reach_the_run_summary(batch_env, monkeypatch):
 
     monkeypatch.setattr(autoclick, "apply_one", survey_heavy)
     assert autoclick._apply_batch(page=None, apply_limit=3, daily_cap=200) == 3
-    # (откликов, пропусков, анкет, уже откликались, писем не доставлено)
-    assert calls == [(3, 0, 21, 0, 0)]
+    # (откликов, пропусков, анкет, уже откликались, писем не доставлено, без подтверждения HH)
+    assert calls == [(3, 0, 21, 0, 0, 0)]
 
 
 def test_batch_budget_uses_the_reconciled_quota(batch_env, monkeypatch):
@@ -1455,7 +1586,8 @@ def test_undelivered_letters_reach_the_run_summary(batch_env, monkeypatch):
                         lambda page, cand, **kw: autoclick.ApplyOutcome.APPLIED)
     monkeypatch.setattr(autoclick, "_send_cover_via_chat", lambda *a, **k: False)
     assert autoclick._apply_batch(page=None, apply_limit=2, daily_cap=200) == 2
-    assert calls == [(2, 0, 0, 0, 2)]        # (откликов, пропусков, анкет, синк, писем не доставлено)
+    assert calls == [(2, 0, 0, 0, 2, 0)]
+    # (откликов, пропусков, анкет, синк, писем не доставлено, без подтверждения HH)
 
 
 def test_pool_watch_reasons_come_from_the_candidates_constants():
@@ -1637,6 +1769,67 @@ def test_unreadable_page_is_skipped_without_clicking(monkeypatch, log_lines):
     assert page.touched == []
     assert log_lines == ["1: состояние страницы неизвестно (url не читается) — пропускаю, "
                          "вслепую не кликаю"]
+
+
+# ═══════ Клик был, а подтверждения нет: UNCONFIRMED, а не общий SKIP (23.09.2026) ═══════════
+
+class _FakeEl:
+    """Элемент страницы в объёме, который трогает `apply_one`."""
+
+    def __init__(self, text: str = "", count: int = 0):
+        self._text, self._count = text, count
+        self.clicks = 0
+
+    @property
+    def first(self) -> "_FakeEl":
+        return self
+
+    def wait_for(self, timeout: int | None = None) -> None:
+        return None
+
+    def count(self) -> int:
+        return self._count
+
+    def is_disabled(self, timeout: int | None = None) -> bool:
+        return False
+
+    def inner_text(self) -> str:
+        return self._text
+
+    def click(self, timeout: int | None = None) -> None:
+        self.clicks += 1
+
+
+class _VacancyPage:
+    """Страница вакансии: кнопка отклика есть, клик проходит, подтверждения HH не приходит."""
+
+    url = "https://hh.ru/vacancy/1"
+
+    def __init__(self, button: _FakeEl):
+        self._button = button
+
+    def locator(self, selector: str) -> _FakeEl:
+        return self._button if "response-link-top" in selector else _FakeEl()
+
+    def wait_for_timeout(self, ms: int) -> None:
+        return None
+
+
+def test_click_without_confirmation_is_unconfirmed_not_skip(monkeypatch):
+    """Кликнули, а HH молчит -> UNCONFIRMED, НЕ общий skip.
+
+    «Откликнуться нельзя» (архив/внешний сайт) и «клик ушёл, подтверждения нет» — разные
+    факты: 23.09.2026 33 таких отказа шли под общим ярлыком, прогон не видел упора в потолок
+    HH и продолжал кликать в стену."""
+    monkeypatch.setattr(browser, "_goto", lambda *a, **k: None)
+    monkeypatch.setattr(browser, "is_captcha", lambda page: False)
+    monkeypatch.setattr(selectors, "wait_response_confirmed", lambda page: False)
+    monkeypatch.setattr(autoclick, "_submit_diag", lambda page: "сабмит=нет")
+    button = _FakeEl(text="Откликнуться", count=1)
+    page = _VacancyPage(button)
+    cand = autoclick.Candidate(id="1", name="Python-разработчик", url="https://hh.ru/vacancy/1")
+    assert autoclick.apply_one(page, cand) is autoclick.ApplyOutcome.UNCONFIRMED
+    assert button.clicks == 1
 
 
 def test_apply_worker_logs_a_failed_drain(monkeypatch, log_lines):
