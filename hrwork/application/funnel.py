@@ -64,7 +64,7 @@ def _reject_event(messages: list[dict[str, Any]]) -> dt.datetime | None:
 
 def _earliest_applied() -> dict[str, dict[str, Any]]:
     """Журнал -> {id: запись с САМЫМ РАННИМ моментом отклика}. Дубли id в append-only
-    журнале бывают; ранний ts = реальный момент отклика (как в marks.js::applyJournal —
+    журнале бывают; ранний ts = реальный момент отклика (как в main.js::applyJournal —
     fix.md №7).
 
     Сравниваем РАЗОБРАННЫЕ метки, а не ISO-строки (баг 08.08.2026): в журнале сосуществуют
